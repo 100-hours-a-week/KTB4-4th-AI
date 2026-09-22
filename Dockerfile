@@ -1,4 +1,12 @@
+# syntax=docker/dockerfile:1
+
+# =========================================================
+# 1. Build Stage
+# =========================================================
+
 FROM python:3.12.11-slim AS builder
+
+WORKDIR /service
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.4 /uv /usr/local/bin/uv
 
@@ -6,24 +14,34 @@ ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never
 
-WORKDIR /service
-
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY app ./app
-RUN uv sync --frozen --no-dev --no-editable
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-editable
 
 
-FROM python:3.12.11-slim
+# =========================================================
+# 2. Runtime Stage
+# =========================================================
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PATH="/service/.venv/bin:$PATH"
+FROM python:3.12.11-slim AS runtime
 
 WORKDIR /service
 
-COPY --from=builder /service/.venv /service/.venv
+RUN groupadd --system app \
+    && useradd --system --gid app app
+
+COPY --from=builder --chown=app:app /service /service
+
+ENV PATH="/service/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
+USER app
 
 EXPOSE 8000
 
