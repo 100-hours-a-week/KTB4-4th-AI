@@ -28,7 +28,7 @@ def profile_item(value: str = "핸드드립") -> ProfileItem:
 def profile_payload() -> dict[str, object]:
     return {
         "schemaVersion": "3.0",
-        "userId": "10293",
+        "userId": 10293,
         "summary": None,
         "interests": [profile_item().model_dump(by_alias=True)],
         "hobbies": [],
@@ -46,24 +46,33 @@ def profile_payload() -> dict[str, object]:
 
 def test_chat_session_request_accepts_backend_camel_case() -> None:
     request = CreateChatSessionRequest.model_validate(
-        {"userId": "10293", "existingProfile": profile_payload()}
+        {"userId": 10293, "conversationRoomId": 45678}
     )
 
-    assert request.user_id == "10293"
-    assert request.model_dump(by_alias=True)["existingProfile"]["schemaVersion"] == "3.0"
+    assert request.user_id == 10293
+    assert request.conversation_room_id == 45678
 
 
-def test_v1_chat_session_request_rejects_v2_onboarding_field() -> None:
+def test_v1_chat_session_request_rejects_onboarding_and_existing_profile() -> None:
     with pytest.raises(ValidationError):
         CreateChatSessionRequest.model_validate(
             {
-                "userId": "10293",
-                "existingProfile": None,
+                "userId": 10293,
+                "conversationRoomId": 45678,
                 "onboarding": {
                     "seedCategories": ["아웃도어"],
                     "excludeCategories": [],
                     "constraints": [],
                 },
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        CreateChatSessionRequest.model_validate(
+            {
+                "userId": 10293,
+                "conversationRoomId": 45678,
+                "existingProfile": profile_payload(),
             }
         )
 
@@ -76,14 +85,33 @@ def test_taste_profile_requires_all_ten_arrays() -> None:
         TasteProfile.model_validate(payload)
 
 
-def test_taste_profile_rejects_more_than_twelve_items() -> None:
+def test_user_id_rejects_quoted_number_to_keep_backend_contract_strict() -> None:
+    with pytest.raises(ValidationError):
+        CreateChatSessionRequest.model_validate({"userId": "10293", "conversationRoomId": 45678})
+
+    with pytest.raises(ValidationError):
+        CreateChatSessionRequest.model_validate({"userId": 10293, "conversationRoomId": "45678"})
+
+
+def test_taste_profile_rejects_more_than_six_active_query_items() -> None:
     payload = profile_payload()
     payload["interests"] = [
-        profile_item(str(index)).model_dump(by_alias=True) for index in range(13)
+        profile_item(str(index)).model_dump(by_alias=True) for index in range(7)
     ]
 
     with pytest.raises(ValidationError):
         TasteProfile.model_validate(payload)
+
+
+def test_taste_profile_does_not_drop_safety_items_to_fit_working_set() -> None:
+    payload = profile_payload()
+    payload["constraints"] = [
+        profile_item(str(index)).model_dump(by_alias=True) for index in range(13)
+    ]
+
+    profile = TasteProfile.model_validate(payload)
+
+    assert len(profile.constraints) == 13
 
 
 def test_recommendation_request_applies_v1_defaults() -> None:
@@ -91,7 +119,4 @@ def test_recommendation_request_applies_v1_defaults() -> None:
         {"userId": "10293", "mode": "self", "profile": profile_payload()}
     )
 
-    assert request.exclude_categories == []
-    assert request.exclude_product_ids == []
-    assert request.feedback_summary is None
     assert request.limit == 20

@@ -3,7 +3,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from app.api.schemas.common import ApiModel
+from app.api.schemas.common import ApiModel, UserId
 
 TasteField = Literal[
     "interests",
@@ -44,7 +44,7 @@ class ProfileItem(ApiModel):
 
 class TasteProfile(ApiModel):
     schema_version: Literal["3.0"]
-    user_id: str = Field(min_length=1)
+    user_id: UserId
     summary: str | None
     interests: list[ProfileItem]
     hobbies: list[ProfileItem]
@@ -59,24 +59,24 @@ class TasteProfile(ApiModel):
     axes: list[str] = Field(max_length=3)
 
     @model_validator(mode="after")
-    def validate_item_count(self) -> Self:
-        item_count = sum(
+    def validate_active_working_set(self) -> Self:
+        query_count = sum(
             len(items)
             for items in (
                 self.interests,
                 self.hobbies,
-                self.preferences,
-                self.lifestyle,
                 self.wants,
                 self.unaffordable,
                 self.consumables,
-                self.owned,
-                self.dislikes,
-                self.constraints,
             )
         )
-        if item_count > 12:
-            raise ValueError("TasteProfile can contain at most 12 ProfileItems")
+        weight_count = len(self.preferences) + len(self.lifestyle)
+        if query_count > 6:
+            raise ValueError("TasteProfile can contain at most 6 active query items")
+        if weight_count > 3:
+            raise ValueError("TasteProfile can contain at most 3 active weight items")
+        if len(self.owned) > 3:
+            raise ValueError("TasteProfile can contain at most 3 active owned items")
         return self
 
 
