@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     response_model_max_tokens: int = Field(default=2048, gt=0)
     extraction_model_max_tokens: int = Field(default=2048, gt=0)
 
+    embedding_base_url: AnyHttpUrl = AnyHttpUrl("https://api.upstage.ai/v1")
+    # 짝으로 학습된 두 모델이 같은 벡터 공간을 쓴다. space id는 DB의 embedding_model_version 값이다.
+    embedding_space_id: str = "solar-embedding-2"
+    embedding_passage_model_name: str = "solar-embedding-2-passage"
+    embedding_query_model_name: str = "solar-embedding-2-query"
+    embedding_dimensions: int = Field(default=1024, gt=0)
+    embedding_batch_size: int = Field(default=100, ge=1, le=100)
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0)
+    upstage_api_key: SecretStr | None = None
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

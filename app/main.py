@@ -11,11 +11,17 @@ from app.api.router import api_router
 from app.application.chat_use_cases import ChatUseCases
 from app.application.conversation_service import ConversationService
 from app.application.conversation_state_store import ConversationStateStore
+from app.application.ports.catalog_repository import CatalogRepository
+from app.application.ports.embedder import Embedder
 from app.application.ports.model_gateway import ModelGateway
+from app.application.ports.recommendation_service import RecommendationService
 from app.application.ports.session_store import SessionStore
+from app.application.recommendation_engine import RecommendationEngine
+from app.application.recommendation_service import V1RecommendationService
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.middleware import RequestIdMiddleware
+from app.infrastructure.embedding import OpenAICompatibleEmbedder
 from app.infrastructure.model_gateway import OpenAICompatibleModelGateway
 from app.infrastructure.persistence import InMemorySessionStore, RedisSessionStore
 
@@ -25,6 +31,9 @@ def create_app(
     *,
     model_gateway: ModelGateway | None = None,
     session_store: SessionStore | None = None,
+    recommendation_service: RecommendationService | None = None,
+    embedder: Embedder | None = None,
+    catalog_repository: CatalogRepository | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
 
@@ -90,6 +99,35 @@ def create_app(
             response_timeout_seconds=resolved_settings.response_model_timeout_seconds,
             summary_timeout_seconds=resolved_settings.summary_model_timeout_seconds,
         )
+        resolved_recommendation_service = recommendation_service
+        if resolved_recommendation_service is None and catalog_repository is not None:
+            resolved_embedder = embedder
+            if resolved_embedder is None:
+                if http_client is None:
+                    http_client = httpx.AsyncClient(timeout=None)
+                embedding_secret = resolved_settings.upstage_api_key
+                resolved_embedder = OpenAICompatibleEmbedder(
+                    client=http_client,
+                    base_url=str(resolved_settings.embedding_base_url),
+                    space_id=resolved_settings.embedding_space_id,
+                    passage_model=resolved_settings.embedding_passage_model_name,
+                    query_model=resolved_settings.embedding_query_model_name,
+                    dimensions=resolved_settings.embedding_dimensions,
+                    api_key=(
+                        embedding_secret.get_secret_value()
+                        if embedding_secret is not None
+                        else None
+                    ),
+                    batch_size=resolved_settings.embedding_batch_size,
+                    timeout_seconds=resolved_settings.embedding_timeout_seconds,
+                )
+            resolved_recommendation_service = V1RecommendationService(
+                RecommendationEngine(
+                    embedder=resolved_embedder,
+                    catalog=catalog_repository,
+                )
+            )
+        application.state.recommendation_service = resolved_recommendation_service
         try:
             yield
         finally:
