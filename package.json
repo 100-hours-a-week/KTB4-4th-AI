@@ -1,0 +1,25 @@
+{
+  "name": "needu-ai-repository-tooling",
+  "version": "0.0.0-development",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.10.0"
+  },
+  "scripts": {
+    "lint:js": "eslint eslint.config.mjs release.config.mjs",
+    "format:check": "prettier --check \"**/*.{json,jsonc,yaml,yml,md}\" eslint.config.mjs release.config.mjs --ignore-path .prettierignore",
+    "format:write": "prettier --write \"**/*.{json,jsonc,yaml,yml,md}\" eslint.config.mjs release.config.mjs --ignore-path .prettierignore",
+    "release": "semantic-release"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/github": "12.0.9",
+    "@semantic-release/release-notes-generator": "14.1.1",
+    "conventional-changelog-conventionalcommits": "10.4.0",
+    "eslint": "10.10.0",
+    "prettier": "3.9.7",
+    "semantic-release": "25.0.9"
+  }
+}
