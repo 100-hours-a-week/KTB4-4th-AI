@@ -6,9 +6,11 @@ from app.domain.conversation.models import (
     ConversationState,
     CoverageStatus,
     GoalArea,
+    SessionStatus,
 )
 from app.domain.conversation.policy import (
     apply_goal_assessment,
+    conversation_progress,
     decide_goal,
     recommendation_readiness,
 )
@@ -194,3 +196,25 @@ def test_readiness_is_recomputed_when_last_active_signal_is_removed() -> None:
     assert readiness.sufficient is False
     assert "exclusion" in readiness.missing_signals
     assert conversation.goal_coverage[GoalArea.EXCLUSION] == CoverageStatus.PENDING
+
+
+def test_progress_uses_extracted_signals_and_resolved_goals() -> None:
+    conversation = state()
+    conversation.profile.signals.extend(
+        [
+            signal(TasteField.INTERESTS, "캠핑", confidence=0.9),
+            signal(TasteField.HOBBIES, "핸드드립", confidence=0.5),
+        ]
+    )
+    conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
+
+    assert conversation_progress(conversation) == 55
+
+
+def test_progress_is_complete_when_input_is_locked_or_under_review() -> None:
+    conversation = state()
+    conversation.status = SessionStatus.INPUT_LOCKED
+    assert conversation_progress(conversation) == 100
+
+    conversation.status = SessionStatus.REVIEW
+    assert conversation_progress(conversation) == 100

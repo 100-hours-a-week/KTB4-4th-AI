@@ -17,6 +17,10 @@ MIN_QUERY_SIGNALS = 3
 MIN_HIGH_CONFIDENCE_QUERY_SIGNALS = 2
 HIGH_CONFIDENCE_THRESHOLD = 0.6
 MAX_GOAL_ATTEMPTS = 3
+QUERY_PROGRESS_WEIGHT = 30
+HIGH_CONFIDENCE_PROGRESS_WEIGHT = 30
+GEAR_PROGRESS_WEIGHT = 20
+EXCLUSION_PROGRESS_WEIGHT = 20
 
 _GOAL_AREA = {
     ConversationGoal.INTEREST: GoalArea.INTEREST,
@@ -111,6 +115,37 @@ def recommendation_readiness(state: ConversationState) -> ReadinessResult:
     }:
         missing.append("exclusion")
     return ReadinessResult(sufficient=not missing, missing_signals=tuple(missing))
+
+
+def conversation_progress(state: ConversationState) -> int:
+    if state.status in {
+        SessionStatus.INPUT_LOCKED,
+        SessionStatus.REVIEW,
+        SessionStatus.CLOSED,
+    }:
+        return 100
+
+    refresh_derived_coverage(state)
+    query_signals = _query_signals(state)
+    high_confidence_count = sum(
+        signal.confidence >= HIGH_CONFIDENCE_THRESHOLD for signal in query_signals
+    )
+    progress = (
+        min(len(query_signals) / MIN_QUERY_SIGNALS, 1.0) * QUERY_PROGRESS_WEIGHT
+        + min(high_confidence_count / MIN_HIGH_CONFIDENCE_QUERY_SIGNALS, 1.0)
+        * HIGH_CONFIDENCE_PROGRESS_WEIGHT
+    )
+    if state.goal_coverage[GoalArea.GEAR] in {
+        CoverageStatus.FOUND,
+        CoverageStatus.CONFIRMED_NONE,
+    }:
+        progress += GEAR_PROGRESS_WEIGHT
+    if state.goal_coverage[GoalArea.EXCLUSION] in {
+        CoverageStatus.FOUND,
+        CoverageStatus.CONFIRMED_NONE,
+    }:
+        progress += EXCLUSION_PROGRESS_WEIGHT
+    return round(progress)
 
 
 def fields_for_goal(goal: ConversationGoal) -> frozenset[TasteField]:

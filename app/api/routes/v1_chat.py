@@ -1,21 +1,24 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query, Response, status
+from fastapi import APIRouter, Depends, Path, status
 
-from app.api.dependencies import get_chat_use_cases
+from app.api.dependencies import get_chat_use_cases, get_recommendation_service
 from app.api.schemas.chat import (
     AnalyzeChatSessionResponse,
-    ChatHistoryMessage,
     ChatMessageRequest,
     ChatMessageResponse,
+    CloseChatSessionRequest,
     CloseChatSessionResponse,
     CreateChatSessionRequest,
     CreateChatSessionResponse,
-    GetChatSessionResponse,
+    UpdateChatAnalysisRequest,
 )
 from app.api.schemas.common import JAVA_LONG_MAX
 from app.api.schemas.profile import ProfileItem, ProfileKeywords, TasteProfile
+from app.api.schemas.recommendation import RecommendationLists
 from app.application.chat_use_cases import (
+    AnalysisAlreadyCorrectedError,
+    AnalysisKeywordsCanOnlyBeDeletedError,
     AnalysisOutdatedError,
     AnalysisRequiredError,
     ChatUseCases,
@@ -28,9 +31,11 @@ from app.application.chat_use_cases import (
     SessionNotFoundError,
     TurnInProgressError,
 )
+from app.application.conversation_state_store import SessionLifetimeExceededError
+from app.application.ports.recommendation_service import RecommendationService
 from app.core.errors import ApiError
 from app.domain.conversation.models import SessionStatus
-from app.domain.conversation.policy import MAX_TURNS, recommendation_readiness
+from app.domain.conversation.policy import MAX_TURNS, conversation_progress
 from app.domain.profile.models import TasteField
 
 router = APIRouter()
@@ -39,14 +44,10 @@ ConversationRoomPath = Annotated[
     int,
     Path(alias="conversationRoomId", ge=1, le=JAVA_LONG_MAX),
 ]
-UserIdQuery = Annotated[
-    int,
-    Query(alias="userId", ge=1, le=JAVA_LONG_MAX),
-]
 
 
 def _raise_chat_error(error: Exception) -> None:
-    if isinstance(error, SessionNotFoundError):
+    if isinstance(error, (SessionNotFoundError, SessionLifetimeExceededError)):
         raise ApiError(
             status_code=404,
             code="SESSION_NOT_FOUND",
@@ -68,7 +69,10 @@ def _raise_chat_error(error: Exception) -> None:
         raise ApiError(
             status_code=409,
             code="INPUT_LOCKED",
-            message="입력이 종료되었습니다. 현재 취향 분석 결과를 먼저 확인해 주세요.",
+            message=(
+                "현재 상태에서는 대화 메시지를 보낼 수 없습니다. "
+                "취향 분석 결과를 확인하거나 수정해 주세요."
+            ),
         ) from error
     if isinstance(error, TurnInProgressError):
         raise ApiError(
@@ -94,6 +98,18 @@ def _raise_chat_error(error: Exception) -> None:
             status_code=409,
             code="ANALYSIS_OUTDATED",
             message="대화가 변경되었습니다. 취향 분석 결과를 다시 확인해 주세요.",
+        ) from error
+    if isinstance(error, AnalysisAlreadyCorrectedError):
+        raise ApiError(
+            status_code=409,
+            code="ANALYSIS_ALREADY_CORRECTED",
+            message="취향 분석 결과는 한 번만 수정할 수 있습니다.",
+        ) from error
+    if isinstance(error, AnalysisKeywordsCanOnlyBeDeletedError):
+        raise ApiError(
+            status_code=422,
+            code="KEYWORDS_DELETE_ONLY",
+            message="키워드는 기존 분석 결과에서 삭제만 할 수 있습니다.",
         ) from error
     if isinstance(error, ResponseModelUnavailableError):
         raise ApiError(
@@ -141,6 +157,20 @@ def _profile_response(result: ProfileAnalysis) -> TasteProfile:
     )
 
 
+def _analysis_response(analysis: ProfileAnalysis) -> AnalyzeChatSessionResponse:
+    return AnalyzeChatSessionResponse(
+        profile={
+            "userId": analysis.state.user_id,
+            "summary": analysis.summary,
+            "keywords": {
+                "taste": list(analysis.taste_keywords),
+                "interest": list(analysis.interest_keywords),
+            },
+            "correctionAvailable": not analysis.state.analysis_patch_used,
+        },
+    )
+
+
 @router.post(
     "/sessions",
     response_model=CreateChatSessionResponse,
@@ -158,50 +188,11 @@ async def create_chat_session(
     except Exception as error:
         _raise_chat_error(error)
     return CreateChatSessionResponse(
-        session_id=started.state.session_id,
+        conversation_room_id=started.state.conversation_room_id,
         greeting=started.greeting,
+        created_at=started.state.history[-1].created_at,
+        expiration_at=started.state.expiration_at,
         max_turns=MAX_TURNS,
-    )
-
-
-@router.get(
-    "/sessions/{conversationRoomId}",
-    response_model=GetChatSessionResponse,
-)
-async def get_chat_session(
-    conversation_room_id: ConversationRoomPath,
-    user_id: UserIdQuery,
-    use_cases: Annotated[ChatUseCases, Depends(get_chat_use_cases)],
-) -> GetChatSessionResponse:
-    try:
-        state = await use_cases.get_session(conversation_room_id, user_id=user_id)
-    except Exception as error:
-        _raise_chat_error(error)
-    readiness = recommendation_readiness(state)
-    input_locked = state.status == SessionStatus.INPUT_LOCKED
-    analysis_available = (
-        state.analysis_turn_count is not None and state.analysis_turn_count == state.turn_count
-    )
-    review_or_locked = state.status in {SessionStatus.INPUT_LOCKED, SessionStatus.REVIEW}
-    return GetChatSessionResponse(
-        session_id=state.session_id,
-        user_id=state.user_id,
-        status=state.status.value,
-        turn=state.turn_count,
-        max_turns=MAX_TURNS,
-        messages=[
-            ChatHistoryMessage(role=message.role, content=message.content)
-            for message in state.history
-        ],
-        item_count=len(state.profile.active_signals()),
-        input_locked=input_locked,
-        analysis_available=analysis_available,
-        can_close=readiness.sufficient,
-        completion_reason=(state.completion_reason.value if state.completion_reason else None),
-        profile_completeness=("sufficient" if readiness.sufficient else "partial")
-        if review_or_locked
-        else None,
-        last_active_at=state.last_active_at,
     )
 
 
@@ -215,42 +206,24 @@ async def create_chat_message(
     use_cases: Annotated[ChatUseCases, Depends(get_chat_use_cases)],
 ) -> ChatMessageResponse:
     try:
-        completed = await use_cases.send_message(conversation_room_id, body.message)
+        completed = await use_cases.send_message(
+            conversation_room_id,
+            body.message,
+            user_id=body.user_id,
+        )
     except Exception as error:
         _raise_chat_error(error)
     input_locked = completed.state.status == SessionStatus.INPUT_LOCKED
     return ChatMessageResponse(
         reply=completed.reply,
+        created_at=completed.state.history[-1].created_at,
+        expiration_at=completed.state.expiration_at,
         turn=completed.state.turn_count,
         max_turns=MAX_TURNS,
+        progress=conversation_progress(completed.state),
         can_close=completed.readiness.sufficient,
-        item_count=len(completed.state.profile.active_signals()),
         input_locked=input_locked,
-        completion_reason=(
-            completed.state.completion_reason.value
-            if completed.state.completion_reason is not None
-            else None
-        ),
-        profile_completeness=("sufficient" if completed.readiness.sufficient else "partial")
-        if input_locked
-        else None,
-        last_turn_extraction_failed=completed.extraction_failed,
     )
-
-
-@router.delete(
-    "/sessions/{conversationRoomId}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def delete_chat_session(
-    conversation_room_id: ConversationRoomPath,
-    use_cases: Annotated[ChatUseCases, Depends(get_chat_use_cases)],
-) -> Response:
-    try:
-        await use_cases.delete_session(conversation_room_id)
-    except Exception as error:
-        _raise_chat_error(error)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -265,16 +238,29 @@ async def analyze_chat_session(
         analysis = await use_cases.analyze_session(conversation_room_id)
     except Exception as error:
         _raise_chat_error(error)
-    return AnalyzeChatSessionResponse(
-        profile=_profile_response(analysis),
-        summary=analysis.summary,
-        keywords=ProfileKeywords(
-            taste=list(analysis.taste_keywords),
-            interest=list(analysis.interest_keywords),
-        ),
-        profile_completeness=("sufficient" if analysis.readiness.sufficient else "partial"),
-        missing_signals=list(analysis.readiness.missing_signals),
-    )
+    return _analysis_response(analysis)
+
+
+@router.patch(
+    "/sessions/{conversationRoomId}/analysis",
+    response_model=AnalyzeChatSessionResponse,
+)
+async def update_chat_analysis(
+    conversation_room_id: ConversationRoomPath,
+    body: UpdateChatAnalysisRequest,
+    use_cases: Annotated[ChatUseCases, Depends(get_chat_use_cases)],
+) -> AnalyzeChatSessionResponse:
+    try:
+        analysis = await use_cases.update_analysis(
+            conversation_room_id,
+            user_id=body.user_id,
+            summary=body.summary,
+            taste_keywords=body.keywords.taste,
+            interest_keywords=body.keywords.interest,
+        )
+    except Exception as error:
+        _raise_chat_error(error)
+    return _analysis_response(analysis)
 
 
 @router.post(
@@ -283,20 +269,36 @@ async def analyze_chat_session(
 )
 async def close_chat_session(
     conversation_room_id: ConversationRoomPath,
+    body: CloseChatSessionRequest,
     use_cases: Annotated[ChatUseCases, Depends(get_chat_use_cases)],
+    recommendation_service: Annotated[
+        RecommendationService,
+        Depends(get_recommendation_service),
+    ],
 ) -> CloseChatSessionResponse:
     try:
-        finalized = await use_cases.close_session(conversation_room_id)
+        closable = await use_cases.get_close_analysis(
+            conversation_room_id,
+            user_id=body.user_id,
+        )
+        profile = _profile_response(closable)
+        recommendation_result = await recommendation_service.recommend_lists(
+            {
+                "userId": closable.state.user_id,
+                "profile": profile.model_dump(mode="json", by_alias=True),
+            }
+        )
+        recommendations = RecommendationLists.model_validate(recommendation_result)
+        finalized = await use_cases.close_session(conversation_room_id, user_id=body.user_id)
     except Exception as error:
         _raise_chat_error(error)
     return CloseChatSessionResponse(
-        profile=_profile_response(finalized),
+        conversation_id=finalized.state.conversation_room_id,
+        user_id=finalized.state.user_id,
         summary=finalized.summary,
         keywords=ProfileKeywords(
             taste=list(finalized.taste_keywords),
             interest=list(finalized.interest_keywords),
         ),
-        completion_reason=finalized.state.completion_reason.value,
-        profile_completeness=("sufficient" if finalized.readiness.sufficient else "partial"),
-        missing_signals=list(finalized.readiness.missing_signals),
+        recommendations=recommendations,
     )

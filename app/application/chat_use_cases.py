@@ -9,7 +9,6 @@ from app.application.conversation_state_store import ConversationStateStore
 from app.application.ports.model_gateway import ModelGateway
 from app.domain.conversation.models import (
     CompletionReason,
-    ConversationGoal,
     ConversationState,
     ReadinessResult,
     SessionStatus,
@@ -56,6 +55,14 @@ class AnalysisRequiredError(ChatUseCaseError):
 
 
 class AnalysisOutdatedError(ChatUseCaseError):
+    pass
+
+
+class AnalysisAlreadyCorrectedError(ChatUseCaseError):
+    pass
+
+
+class AnalysisKeywordsCanOnlyBeDeletedError(ChatUseCaseError):
     pass
 
 
@@ -124,38 +131,28 @@ class ChatUseCases:
             await self._states.save(prepared.state)
             return StartedSession(state=prepared.state, greeting=greeting)
 
-    async def get_session(self, session_id: int, *, user_id: int) -> ConversationState:
-        async with self._lock(session_id):
-            state = await self._states.load(session_id)
-            if state is None or state.user_id != user_id:
-                raise SessionNotFoundError(session_id)
-            if state.status == SessionStatus.CLOSED or state.finalized:
-                raise SessionClosedError(session_id)
-            # Opening the conversation counts as activity and refreshes the idle TTL.
-            await self._states.save(state)
-            return state
-
-    async def send_message(self, session_id: int, message: str) -> CompletedTurn:
+    async def send_message(
+        self,
+        session_id: int,
+        message: str,
+        *,
+        user_id: int,
+    ) -> CompletedTurn:
         lock = self._lock(session_id)
         if lock.locked():
             raise TurnInProgressError(session_id)
         async with lock:
             state = await self._states.load(session_id)
-            if state is None:
+            if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
             if state.status == SessionStatus.CLOSED or state.finalized:
                 raise SessionClosedError(session_id)
-            if state.status == SessionStatus.INPUT_LOCKED:
+            if state.status in {SessionStatus.INPUT_LOCKED, SessionStatus.REVIEW}:
                 raise SessionInputLockedError(session_id)
 
-            correction = state.status == SessionStatus.REVIEW
-            if correction:
-                state.status = SessionStatus.ACTIVE
-                state.completion_reason = None
             prepared = self._conversations.prepare_turn(
                 state,
                 message,
-                goal=ConversationGoal.CORRECT if correction else None,
             )
             raw_reply = await self._complete(
                 prepared.messages,
@@ -171,11 +168,6 @@ class ChatUseCases:
             await self._states.save(completed.state)
             return completed
 
-    async def delete_session(self, session_id: int) -> None:
-        async with self._lock(session_id):
-            if not await self._states.delete(session_id):
-                raise SessionNotFoundError(session_id)
-
     def _stored_analysis(self, state: ConversationState) -> ProfileAnalysis:
         return ProfileAnalysis(
             state=state,
@@ -185,6 +177,23 @@ class ChatUseCases:
             interest_keywords=tuple(state.analysis_interest_keywords),
             readiness=recommendation_readiness(state),
         )
+
+    @staticmethod
+    def _validate_closable(state: ConversationState) -> None:
+        if state.status == SessionStatus.CLOSED or state.finalized:
+            raise SessionClosedError(state.session_id)
+        if state.analysis_turn_count is None:
+            raise AnalysisRequiredError(state.session_id)
+        if state.analysis_turn_count != state.turn_count:
+            raise AnalysisOutdatedError(state.session_id)
+
+    async def get_close_analysis(self, session_id: int, *, user_id: int) -> ProfileAnalysis:
+        async with self._lock(session_id):
+            state = await self._states.load(session_id)
+            if state is None or state.user_id != user_id:
+                raise SessionNotFoundError(session_id)
+            self._validate_closable(state)
+            return self._stored_analysis(state)
 
     async def analyze_session(self, session_id: int) -> ProfileAnalysis:
         async with self._lock(session_id):
@@ -220,21 +229,46 @@ class ChatUseCases:
             state.analysis_interest_keywords = (safe_values["interests"] + safe_values["hobbies"])[
                 :3
             ]
+            state.analysis_patch_used = False
             state.status = SessionStatus.REVIEW
             await self._states.save(state)
             return self._stored_analysis(state)
 
-    async def close_session(self, session_id: int) -> ProfileAnalysis:
+    async def update_analysis(
+        self,
+        session_id: int,
+        *,
+        user_id: int,
+        summary: str | None,
+        taste_keywords: list[str],
+        interest_keywords: list[str],
+    ) -> ProfileAnalysis:
         async with self._lock(session_id):
             state = await self._states.load(session_id)
-            if state is None:
+            if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
-            if state.status == SessionStatus.CLOSED or state.finalized:
-                raise SessionClosedError(session_id)
-            if state.analysis_turn_count is None:
-                raise AnalysisRequiredError(session_id)
-            if state.analysis_turn_count != state.turn_count:
-                raise AnalysisOutdatedError(session_id)
+            self._validate_closable(state)
+            if state.analysis_patch_used:
+                raise AnalysisAlreadyCorrectedError(session_id)
+            if not set(taste_keywords).issubset(state.analysis_taste_keywords) or not set(
+                interest_keywords
+            ).issubset(state.analysis_interest_keywords):
+                raise AnalysisKeywordsCanOnlyBeDeletedError(session_id)
+
+            state.analysis_summary = summary
+            state.analysis_taste_keywords = list(taste_keywords)
+            state.analysis_interest_keywords = list(interest_keywords)
+            state.analysis_patch_used = True
+            state.status = SessionStatus.REVIEW
+            await self._states.save(state)
+            return self._stored_analysis(state)
+
+    async def close_session(self, session_id: int, *, user_id: int) -> ProfileAnalysis:
+        async with self._lock(session_id):
+            state = await self._states.load(session_id)
+            if state is None or state.user_id != user_id:
+                raise SessionNotFoundError(session_id)
+            self._validate_closable(state)
 
             readiness = recommendation_readiness(state)
             state.status = SessionStatus.CLOSED
