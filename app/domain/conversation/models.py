@@ -51,9 +51,28 @@ class CompletionReason(StrEnum):
 class ConversationTurn:
     role: str
     content: str
+    created_at: datetime
 
     def to_dict(self) -> dict[str, str]:
-        return {"role": self.role, "content": self.content}
+        return {
+            "role": self.role,
+            "content": self.content,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: dict[str, Any],
+        *,
+        fallback_created_at: datetime,
+    ) -> ConversationTurn:
+        created_at = payload.get("created_at")
+        return cls(
+            role=payload["role"],
+            content=payload["content"],
+            created_at=(datetime.fromisoformat(created_at) if created_at else fallback_created_at),
+        )
 
 
 def _default_coverage() -> dict[GoalArea, CoverageStatus]:
@@ -74,6 +93,7 @@ class ConversationState:
     completion_reason: CompletionReason | None = None
     created_at: datetime = field(default_factory=utc_now)
     last_active_at: datetime = field(default_factory=utc_now)
+    expiration_at: datetime | None = None
     last_turn_extraction_failed: bool = False
     finalized: bool = False
     analysis_turn_count: int | None = None
@@ -101,6 +121,7 @@ class ConversationState:
             "completion_reason": (self.completion_reason.value if self.completion_reason else None),
             "created_at": self.created_at.isoformat(),
             "last_active_at": self.last_active_at.isoformat(),
+            "expiration_at": self.expiration_at.isoformat() if self.expiration_at else None,
             "last_turn_extraction_failed": self.last_turn_extraction_failed,
             "finalized": self.finalized,
             "analysis_turn_count": self.analysis_turn_count,
@@ -111,6 +132,7 @@ class ConversationState:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ConversationState:
+        created_at = datetime.fromisoformat(payload["created_at"])
         coverage = _default_coverage()
         for area, status in payload.get("goal_coverage", {}).items():
             coverage[GoalArea(area)] = CoverageStatus(status)
@@ -121,7 +143,10 @@ class ConversationState:
             conversation_room_id=int(payload["conversation_room_id"]),
             status=SessionStatus(payload.get("status", SessionStatus.ACTIVE)),
             turn_count=int(payload.get("turn_count", 0)),
-            history=[ConversationTurn(**turn) for turn in payload.get("history", [])],
+            history=[
+                ConversationTurn.from_dict(turn, fallback_created_at=created_at)
+                for turn in payload.get("history", [])
+            ],
             profile=ProfileState.from_dict(payload.get("profile")),
             goal_coverage=coverage,
             goal_attempts={
@@ -129,8 +154,13 @@ class ConversationState:
             },
             last_goal=ConversationGoal(last_goal) if last_goal else None,
             completion_reason=(CompletionReason(completion_reason) if completion_reason else None),
-            created_at=datetime.fromisoformat(payload["created_at"]),
+            created_at=created_at,
             last_active_at=datetime.fromisoformat(payload["last_active_at"]),
+            expiration_at=(
+                datetime.fromisoformat(payload["expiration_at"])
+                if payload.get("expiration_at")
+                else None
+            ),
             last_turn_extraction_failed=bool(payload.get("last_turn_extraction_failed", False)),
             finalized=bool(payload.get("finalized", False)),
             analysis_turn_count=(
