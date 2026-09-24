@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from app.api.schemas.chat import CreateChatSessionRequest
+from app.api.schemas.chat import CreateChatSessionRequest, UpdateChatAnalysisRequest
 from app.api.schemas.profile import ProfileItem, TasteProfile
 from app.api.schemas.recommendation import RecommendedItem
 
@@ -114,6 +114,18 @@ def test_taste_profile_does_not_drop_safety_items_to_fit_working_set() -> None:
     assert len(profile.constraints) == 13
 
 
+def test_analysis_update_requires_backend_user_id() -> None:
+    request = UpdateChatAnalysisRequest.model_validate(
+        {
+            "userId": 10293,
+            "summary": "캠핑을 즐기는 분입니다.",
+            "keywords": {"taste": [], "interest": ["캠핑"]},
+        }
+    )
+
+    assert request.user_id == 10293
+
+
 def test_recommended_item_contains_backend_join_key_rank_score_and_reason() -> None:
     item = RecommendedItem.model_validate(
         {
@@ -130,3 +142,13 @@ def test_recommended_item_contains_backend_join_key_rank_score_and_reason() -> N
         "score": 9.2,
         "reason": "캠핑 취향과 잘 맞는 상품이에요.",
     }
+
+
+def test_analysis_update_rejects_missing_user_id() -> None:
+    with pytest.raises(ValidationError):
+        UpdateChatAnalysisRequest.model_validate(
+            {
+                "summary": "캠핑을 즐기는 분입니다.",
+                "keywords": {"taste": [], "interest": ["캠핑"]},
+            }
+        )

@@ -100,6 +100,7 @@ class ConversationState:
     analysis_summary: str | None = None
     analysis_taste_keywords: list[str] = field(default_factory=list)
     analysis_interest_keywords: list[str] = field(default_factory=list)
+    analysis_patch_used: bool = False
 
     @property
     def session_id(self) -> int:
@@ -128,6 +129,7 @@ class ConversationState:
             "analysis_summary": self.analysis_summary,
             "analysis_taste_keywords": list(self.analysis_taste_keywords),
             "analysis_interest_keywords": list(self.analysis_interest_keywords),
+            "analysis_patch_used": self.analysis_patch_used,
         }
 
     @classmethod
@@ -171,6 +173,7 @@ class ConversationState:
             analysis_summary=payload.get("analysis_summary"),
             analysis_taste_keywords=list(payload.get("analysis_taste_keywords", [])),
             analysis_interest_keywords=list(payload.get("analysis_interest_keywords", [])),
+            analysis_patch_used=bool(payload.get("analysis_patch_used", False)),
         )
 
 

@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -56,7 +57,32 @@ class FakeModelGateway:
         }
 
 
+class FakeRecommendationService:
+    def __init__(self) -> None:
+        self.lists_payload: Mapping[str, Any] | None = None
+
+    async def recommend_lists(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        self.lists_payload = payload
+        return {
+            "generatedAt": "2026-09-21T07:00:00Z",
+            "self": {"items": _recommended_items()},
+            "gift": {"items": _recommended_items()},
+        }
+
+
+def _recommended_items() -> list[dict[str, object]]:
+    return [
+        {
+            "platform": "coupang",
+            "externalId": "12345",
+            "score": 9.2,
+            "reason": "캠핑 취향과 잘 맞는 상품이에요.",
+        }
+    ]
+
+
 def test_chat_http_lifecycle_matches_v1_contract() -> None:
+    recommendation_service = FakeRecommendationService()
     app = create_app(
         Settings(
             app_env="test",
@@ -67,6 +93,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
         ),
         model_gateway=FakeModelGateway(),
         session_store=InMemorySessionStore(),
+        recommendation_service=recommendation_service,
     )
     headers = {"Authorization": "Bearer test-token", "X-Request-ID": "req_route_test"}
 
@@ -79,43 +106,59 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
         message = client.post(
             "/v1/chat/sessions/45678/messages",
             headers=headers,
-            json={"message": "주말마다 캠핑 가요"},
+            json={"userId": 10293, "message": "주말마다 캠핑 가요"},
         )
         analysis = client.post("/v1/chat/sessions/45678/analysis", headers=headers)
-        closed = client.post("/v1/chat/sessions/45678/close", headers=headers)
-        closed_again = client.post("/v1/chat/sessions/45678/close", headers=headers)
-        deleted = client.delete("/v1/chat/sessions/45678", headers=headers)
-
+        closed = client.post(
+            "/v1/chat/sessions/45678/close", headers=headers, json={"userId": 10293}
+        )
+        closed_again = client.post(
+            "/v1/chat/sessions/45678/close", headers=headers, json={"userId": 10293}
+        )
     assert created.status_code == 201
-    assert created.json() == {
-        "sessionId": 45678,
+    created_body = created.json()
+    created_at = datetime.fromisoformat(created_body.pop("createdAt"))
+    expiration_at = datetime.fromisoformat(created_body.pop("expirationAt"))
+    assert expiration_at > created_at
+    assert created_body == {
+        "conversationRoomId": 45678,
         "greeting": "안녕하세요! 요즘 어떻게 지내세요?",
         "maxTurns": 20,
     }
     assert message.status_code == 200
-    assert message.json() == {
+    message_body = message.json()
+    message_created_at = datetime.fromisoformat(message_body.pop("createdAt"))
+    message_expiration_at = datetime.fromisoformat(message_body.pop("expirationAt"))
+    assert message_expiration_at > message_created_at
+    assert message_body == {
         "reply": "캠핑 좋죠. 주로 어디로 다니세요?",
         "turn": 1,
         "maxTurns": 20,
+        "progress": 25,
         "canClose": False,
-        "itemCount": 1,
         "inputLocked": False,
-        "completionReason": None,
-        "profileCompleteness": None,
-        "lastTurnExtractionFailed": False,
     }
     assert analysis.status_code == 200
-    assert analysis.json()["profile"]["hobbies"][0]["value"] == "캠핑"
-    assert analysis.json()["summary"] == "캠핑을 즐기고 직접 장비를 고르는 분입니다."
-    assert analysis.json()["keywords"] == {"taste": [], "interest": ["캠핑"]}
-    assert analysis.json()["correctionAvailable"] is True
+    assert analysis.json()["profile"] == {
+        "userId": 10293,
+        "summary": "캠핑을 즐기고 직접 장비를 고르는 분입니다.",
+        "keywords": {"taste": [], "interest": ["캠핑"]},
+        "correctionAvailable": True,
+    }
     assert closed.status_code == 200
-    assert closed.json()["profile"] == analysis.json()["profile"]
-    assert closed.json()["summary"] == analysis.json()["summary"]
-    assert "correctionAvailable" not in closed.json()
+    assert set(closed.json()) == {
+        "conversationId",
+        "userId",
+        "summary",
+        "keywords",
+        "recommendations",
+    }
+    assert closed.json()["conversationId"] == 45678
+    assert closed.json()["summary"] == analysis.json()["profile"]["summary"]
+    assert closed.json()["recommendations"]["generatedAt"] == "2026-09-21T07:00:00Z"
+    assert set(closed.json()["recommendations"]) == {"generatedAt", "self", "gift"}
     assert closed_again.status_code == 409
     assert closed_again.json()["code"] == "SESSION_CLOSED"
-    assert deleted.status_code == 204
     assert created.headers["X-Request-ID"] == "req_route_test"
 
 
@@ -136,66 +179,24 @@ def test_v1_routes_require_service_token() -> None:
     assert response.json()["code"] == "UNAUTHORIZED"
 
 
-def test_get_chat_session_restores_history_and_current_state() -> None:
+def test_removed_session_restore_and_delete_routes_are_not_exposed() -> None:
     app = create_app(
         Settings(app_env="test", service_token="test-token", redis_url=None),
         model_gateway=FakeModelGateway(),
         session_store=InMemorySessionStore(),
     )
-    headers = {"Authorization": "Bearer test-token"}
 
-    with TestClient(app) as client:
-        missing = client.get("/v1/chat/sessions/99999?userId=10293", headers=headers)
-        client.post(
-            "/v1/chat/sessions",
-            headers=headers,
-            json={"userId": 10293, "conversationRoomId": 45678},
-        )
-        client.post(
-            "/v1/chat/sessions/45678/messages",
-            headers=headers,
-            json={"message": "주말마다 캠핑 가요"},
-        )
-        wrong_user = client.get("/v1/chat/sessions/45678?userId=77777", headers=headers)
-        active = client.get("/v1/chat/sessions/45678?userId=10293", headers=headers)
-        client.post("/v1/chat/sessions/45678/analysis", headers=headers)
-        review = client.get("/v1/chat/sessions/45678?userId=10293", headers=headers)
-        client.post("/v1/chat/sessions/45678/close", headers=headers)
-        closed = client.get("/v1/chat/sessions/45678?userId=10293", headers=headers)
+    paths = app.openapi()["paths"]
 
-    assert missing.status_code == 404
-    assert missing.json()["code"] == "SESSION_NOT_FOUND"
-    assert wrong_user.status_code == 404
-    assert wrong_user.json()["code"] == "SESSION_NOT_FOUND"
-    assert active.status_code == 200
-    assert active.json()["sessionId"] == 45678
-    assert active.json()["userId"] == 10293
-    assert active.json()["status"] == "active"
-    assert active.json()["turn"] == 1
-    assert active.json()["itemCount"] == 1
-    assert active.json()["inputLocked"] is False
-    assert active.json()["analysisAvailable"] is False
-    assert active.json()["messages"] == [
-        {"role": "assistant", "content": "안녕하세요! 요즘 어떻게 지내세요?"},
-        {"role": "user", "content": "주말마다 캠핑 가요"},
-        {"role": "assistant", "content": "캠핑 좋죠. 주로 어디로 다니세요?"},
-    ]
-    assert review.status_code == 200
-    assert review.json()["status"] == "review"
-    assert review.json()["analysisAvailable"] is True
-    assert review.json()["profileCompleteness"] == "partial"
-    assert closed.status_code == 409
-    assert closed.json()["code"] == "SESSION_CLOSED"
+    assert "/v1/chat/sessions/{conversationRoomId}" not in paths
 
 
-def test_close_requires_current_analysis_and_correction_reuses_message_api() -> None:
+def test_analysis_patch_directly_updates_summary_and_keywords() -> None:
     gateway = FakeModelGateway(
         completions=[
             "안녕하세요! 요즘 어떻게 지내세요?",
             "캠핑을 좋아하시는군요.",
             "캠핑을 즐기는 분입니다.",
-            "캠핑이 아니라 등산이라는 내용으로 바로잡아 둘게요.",
-            "등산을 즐기는 분입니다.",
         ],
         structured_results=[
             {
@@ -214,28 +215,13 @@ def test_close_requires_current_analysis_and_correction_reuses_message_api() -> 
                 "drop": [],
                 "goalAssessment": {"goal": "INTEREST", "status": "found"},
             },
-            {
-                "items": [
-                    {
-                        "field": "hobbies",
-                        "value": "등산",
-                        "confidence": 0.9,
-                        "evidence": "등산을 좋아해요",
-                        "evidenceType": "explicit",
-                        "intentType": "both",
-                        "deferralReason": None,
-                    }
-                ],
-                "axes": [],
-                "drop": [{"field": "hobbies", "value": "캠핑"}],
-                "goalAssessment": {"goal": "CORRECT", "status": "found"},
-            },
         ],
     )
     app = create_app(
         Settings(app_env="test", service_token="test-token", redis_url=None),
         model_gateway=gateway,
         session_store=InMemorySessionStore(),
+        recommendation_service=FakeRecommendationService(),
     )
     headers = {"Authorization": "Bearer test-token"}
 
@@ -248,27 +234,75 @@ def test_close_requires_current_analysis_and_correction_reuses_message_api() -> 
         client.post(
             "/v1/chat/sessions/45678/messages",
             headers=headers,
-            json={"message": "캠핑을 좋아해요"},
+            json={"userId": 10293, "message": "캠핑을 좋아해요"},
         )
-        close_without_analysis = client.post("/v1/chat/sessions/45678/close", headers=headers)
+        patch_without_analysis = client.patch(
+            "/v1/chat/sessions/45678/analysis",
+            headers=headers,
+            json={
+                "userId": 10293,
+                "summary": "캠핑을 즐기는 사람입니다.",
+                "keywords": {"taste": ["가벼운 장비"], "interest": ["캠핑"]},
+            },
+        )
         client.post("/v1/chat/sessions/45678/analysis", headers=headers)
-        correction = client.post(
+        keyword_addition = client.patch(
+            "/v1/chat/sessions/45678/analysis",
+            headers=headers,
+            json={
+                "userId": 10293,
+                "summary": "캠핑과 자연을 좋아합니다.",
+                "keywords": {"taste": [], "interest": ["캠핑", "자연"]},
+            },
+        )
+        message_in_review = client.post(
             "/v1/chat/sessions/45678/messages",
             headers=headers,
-            json={"message": "캠핑이 아니라 등산을 좋아해요"},
+            json={"userId": 10293, "message": "요약을 수정할게요"},
         )
-        close_with_stale_analysis = client.post("/v1/chat/sessions/45678/close", headers=headers)
-        corrected_analysis = client.post("/v1/chat/sessions/45678/analysis", headers=headers)
-        closed = client.post("/v1/chat/sessions/45678/close", headers=headers)
+        updated = client.patch(
+            "/v1/chat/sessions/45678/analysis",
+            headers=headers,
+            json={
+                "userId": 10293,
+                "summary": "주말마다 자연에서 쉬는 것을 좋아합니다.",
+                "keywords": {"taste": [], "interest": []},
+            },
+        )
+        second_patch = client.patch(
+            "/v1/chat/sessions/45678/analysis",
+            headers=headers,
+            json={
+                "userId": 10293,
+                "summary": "다시 수정합니다.",
+                "keywords": {"taste": [], "interest": []},
+            },
+        )
+        closed = client.post(
+            "/v1/chat/sessions/45678/close", headers=headers, json={"userId": 10293}
+        )
 
-    assert close_without_analysis.status_code == 409
-    assert close_without_analysis.json()["code"] == "ANALYSIS_REQUIRED"
-    assert correction.status_code == 200
-    assert close_with_stale_analysis.status_code == 409
-    assert close_with_stale_analysis.json()["code"] == "ANALYSIS_OUTDATED"
-    assert corrected_analysis.json()["profile"]["hobbies"][0]["value"] == "등산"
+    assert patch_without_analysis.status_code == 409
+    assert patch_without_analysis.json()["code"] == "ANALYSIS_REQUIRED"
+    assert keyword_addition.status_code == 422
+    assert keyword_addition.json()["code"] == "KEYWORDS_DELETE_ONLY"
+    assert message_in_review.status_code == 409
+    assert message_in_review.json()["code"] == "INPUT_LOCKED"
+    assert updated.status_code == 200
+    assert updated.json()["profile"]["summary"] == "주말마다 자연에서 쉬는 것을 좋아합니다."
+    assert updated.json()["profile"]["keywords"] == {
+        "taste": [],
+        "interest": [],
+    }
+    assert updated.json()["profile"]["correctionAvailable"] is False
+    assert second_patch.status_code == 409
+    assert second_patch.json()["code"] == "ANALYSIS_ALREADY_CORRECTED"
     assert closed.status_code == 200
-    assert closed.json()["profile"]["hobbies"][0]["value"] == "등산"
+    assert closed.json()["summary"] == updated.json()["profile"]["summary"]
+    assert closed.json()["keywords"] == updated.json()["profile"]["keywords"]
+    recommendation_payload = app.state.recommendation_service.lists_payload
+    assert recommendation_payload is not None
+    assert recommendation_payload["profile"]["hobbies"][0]["value"] == "캠핑"
 
 
 def test_routes_include_recommendation_contract_but_exclude_v2_and_unagreed_apis() -> None:
@@ -284,5 +318,67 @@ def test_routes_include_recommendation_contract_but_exclude_v2_and_unagreed_apis
     assert "/v1/recommendations/jobs/{jobId}" not in paths
     assert "/v1/recommendations" not in paths
     assert "/v1/chat/sessions/{conversationRoomId}/analysis" in paths
+    assert "patch" in paths["/v1/chat/sessions/{conversationRoomId}/analysis"]
+    assert "/v1/chat/sessions/{conversationRoomId}" not in paths
     assert "/v1/recommendations/{recommendationId}/feedback" not in paths
     assert "/v1/catalog/coverage" not in paths
+
+
+def test_close_reports_unavailable_until_pipeline_is_injected() -> None:
+    app = create_app(
+        Settings(app_env="test", service_token="test-token", redis_url=None),
+        model_gateway=FakeModelGateway(),
+        session_store=InMemorySessionStore(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/sessions/45678/close",
+            headers={"Authorization": "Bearer test-token"},
+            json={"userId": 10293},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "RECOMMENDATION_UNAVAILABLE"
+
+
+def test_close_returns_initial_recommendations_without_second_request() -> None:
+    recommendation_service = FakeRecommendationService()
+    app = create_app(
+        Settings(app_env="test", service_token="test-token", redis_url=None),
+        model_gateway=FakeModelGateway(),
+        session_store=InMemorySessionStore(),
+        recommendation_service=recommendation_service,
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": 45678},
+        )
+        client.post(
+            "/v1/chat/sessions/45678/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "주말마다 캠핑 가요"},
+        )
+        client.post("/v1/chat/sessions/45678/analysis", headers=headers)
+        response = client.post(
+            "/v1/chat/sessions/45678/close", headers=headers, json={"userId": 10293}
+        )
+    assert response.status_code == 200
+    recommendations = response.json()["recommendations"]
+    assert recommendations["generatedAt"] == "2026-09-21T07:00:00Z"
+    assert recommendations["self"]["items"] == [
+        {
+            "platform": "coupang",
+            "externalId": "12345",
+            "score": 9.2,
+            "reason": "캠핑 취향과 잘 맞는 상품이에요.",
+        }
+    ]
+    assert "jobId" not in recommendations
+    assert recommendation_service.lists_payload is not None
+    assert recommendation_service.lists_payload["userId"] == 10293
+    assert "sessionId" not in recommendation_service.lists_payload

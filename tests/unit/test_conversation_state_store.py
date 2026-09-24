@@ -43,6 +43,7 @@ def test_state_store_round_trips_redis_serializable_state() -> None:
         conversation_room_id=101,
         last_goal=ConversationGoal.INTEREST,
         history=[ConversationTurn(role="assistant", content="안녕하세요", created_at=now)],
+        analysis_patch_used=True,
         created_at=now,
         last_active_at=now,
     )
