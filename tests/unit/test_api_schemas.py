@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from app.api.schemas.chat import CreateChatSessionRequest
 from app.api.schemas.profile import ProfileItem, TasteProfile
-from app.api.schemas.recommendation import CreateRecommendationRequest, RecommendedItem
+from app.api.schemas.recommendation import RecommendedItem
 
 
 def profile_item(value: str = "핸드드립") -> ProfileItem:
@@ -114,19 +114,12 @@ def test_taste_profile_does_not_drop_safety_items_to_fit_working_set() -> None:
     assert len(profile.constraints) == 13
 
 
-def test_recommendation_request_applies_v1_defaults() -> None:
-    request = CreateRecommendationRequest.model_validate(
-        {"userId": 10293, "mode": "self", "profile": profile_payload()}
-    )
-
-    assert request.limit == 20
-
-
-def test_recommended_item_contains_only_backend_join_key_and_reason() -> None:
+def test_recommended_item_contains_backend_join_key_rank_score_and_reason() -> None:
     item = RecommendedItem.model_validate(
         {
             "platform": "coupang",
             "externalId": "12345",
+            "score": 9.2,
             "reason": "캠핑 취향과 잘 맞는 상품이에요.",
         }
     )
@@ -134,23 +127,6 @@ def test_recommended_item_contains_only_backend_join_key_and_reason() -> None:
     assert item.model_dump(by_alias=True) == {
         "platform": "coupang",
         "externalId": "12345",
+        "score": 9.2,
         "reason": "캠핑 취향과 잘 맞는 상품이에요.",
     }
-
-
-def test_v1_recommendation_request_rejects_feedback_summary() -> None:
-    with pytest.raises(ValidationError):
-        CreateRecommendationRequest.model_validate(
-            {
-                "userId": 10293,
-                "mode": "self",
-                "profile": profile_payload(),
-                "feedbackSummary": {
-                    "likedProductIds": [],
-                    "dislikedProductIds": [],
-                    "alreadyHaveProductIds": [],
-                    "hiddenProductIds": [],
-                    "dislikedSignals": [],
-                },
-            }
-        )
