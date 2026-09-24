@@ -195,8 +195,11 @@ class ConversationService:
         now: datetime | None = None,
     ) -> str:
         greeting = self.guard_reply(raw_greeting, ConversationGoal.OPENING)
-        state.history.append(ConversationTurn(role="assistant", content=greeting))
-        state.last_active_at = now or utc_now()
+        resolved_now = now or utc_now()
+        state.history.append(
+            ConversationTurn(role="assistant", content=greeting, created_at=resolved_now)
+        )
+        state.last_active_at = resolved_now
         return greeting
 
     def prepare_turn(
@@ -289,8 +292,12 @@ class ConversationService:
             assessment_status = assessment.status
         apply_goal_assessment(state, goal, assessment_status)
 
-        state.history.append(ConversationTurn(role="user", content=utterance))
-        state.history.append(ConversationTurn(role="assistant", content=reply))
+        state.history.append(
+            ConversationTurn(role="user", content=utterance, created_at=resolved_now)
+        )
+        state.history.append(
+            ConversationTurn(role="assistant", content=reply, created_at=resolved_now)
+        )
         state.turn_count += 1
         state.last_active_at = resolved_now
         state.last_turn_extraction_failed = extraction_failed

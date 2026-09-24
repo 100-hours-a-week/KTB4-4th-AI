@@ -93,6 +93,7 @@ def test_prepare_session_uses_room_as_session_id_and_records_safe_opening() -> N
     assert len(prepared.messages) == 2
     assert greeting == "반가워요! 요즘 어떻게 지내세요?"
     assert prepared.state.history[0].content == greeting
+    assert prepared.state.history[0].created_at == now
     assert prepared.state.turn_count == 0
 
 
@@ -123,13 +124,14 @@ def test_complete_turn_extracts_merges_and_updates_state() -> None:
 
     assert state.goal_attempts == {}
 
+    completed_at = datetime(2026, 9, 18, tzinfo=UTC)
     completed = asyncio.run(
         service.complete_turn(
             state,
             utterance="핸드드립을 자주 해요",
             raw_reply="주로 어떤 원두를 사용하세요? 두 번째 질문? <<<STATE>>>비밀",
             goal=prepared.decision.goal,
-            now=datetime(2026, 9, 18, tzinfo=UTC),
+            now=completed_at,
         )
     )
 
@@ -137,6 +139,10 @@ def test_complete_turn_extracts_merges_and_updates_state() -> None:
     assert completed.reply == "주로 어떤 원두를 사용하세요?"
     assert completed.state.turn_count == 1
     assert completed.state.profile.active_signals()[0].value == "핸드드립"
+    assert [turn.created_at for turn in completed.state.history] == [
+        completed_at,
+        completed_at,
+    ]
     assert completed.extraction_failed is False
     assert completed.state.goal_attempts[ConversationGoal.INTEREST.value] == 1
 
