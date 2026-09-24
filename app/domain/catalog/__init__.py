@@ -12,6 +12,7 @@ from app.domain.catalog.models import (
     price_band,
     validate_document_text,
 )
+from app.domain.catalog.sync import ProcessingStatus, SourceProduct, SyncMode
 
 __all__ = [
     "DOCUMENT_VERSION",
@@ -20,8 +21,11 @@ __all__ = [
     "DocumentSourceProduct",
     "DocumentValidationError",
     "PriceBand",
+    "ProcessingStatus",
     "ProductDocument",
     "ProductDocumentSet",
+    "SourceProduct",
+    "SyncMode",
     "price_band",
     "validate_document_text",
 ]
