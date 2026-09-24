@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     # AI 카탈로그 PostgreSQL. 예: postgresql://user:pw@host:5432/ai_catalog
     catalog_database_url: str | None = None
+    catalog_database_url_ro: str | None = None
     catalog_pool_min_size: int = Field(default=1, ge=1)
     catalog_pool_max_size: int = Field(default=5, ge=1)
     catalog_sync_batch_size: int = Field(default=1000, ge=1, le=10000)

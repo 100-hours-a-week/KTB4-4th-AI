@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from fastapi import FastAPI
@@ -41,6 +42,7 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         http_client: httpx.AsyncClient | None = None
         redis_client: Redis | None = None
+        catalog_pool: Any | None = None
 
         resolved_gateway = model_gateway
         if resolved_gateway is None:
@@ -54,6 +56,10 @@ def create_app(
                 model_base_urls[resolved_settings.extraction_model_name] = str(
                     resolved_settings.extraction_model_base_url
                 )
+            if resolved_settings.document_model_base_url is not None:
+                model_base_urls[resolved_settings.document_model_name] = str(
+                    resolved_settings.document_model_base_url
+                )
             secret = resolved_settings.model_api_key or resolved_settings.openrouter_api_key
             resolved_gateway = OpenAICompatibleModelGateway(
                 client=http_client,
@@ -64,6 +70,9 @@ def create_app(
                     ),
                     resolved_settings.extraction_model_name: (
                         resolved_settings.extraction_model_max_tokens
+                    ),
+                    resolved_settings.document_model_name: (
+                        resolved_settings.document_model_max_tokens
                     ),
                 },
                 api_key=secret.get_secret_value() if secret is not None else None,
@@ -100,7 +109,28 @@ def create_app(
             summary_timeout_seconds=resolved_settings.summary_model_timeout_seconds,
         )
         resolved_recommendation_service = recommendation_service
-        if resolved_recommendation_service is None and catalog_repository is not None:
+        resolved_catalog = catalog_repository
+        catalog_read_database_url = (
+            resolved_settings.catalog_database_url_ro or resolved_settings.catalog_database_url
+        )
+        if (
+            resolved_catalog is None
+            and resolved_recommendation_service is None
+            and catalog_read_database_url is not None
+        ):
+            import asyncpg
+
+            from app.infrastructure.persistence.postgres_catalog_repository import (
+                PostgresCatalogRepository,
+            )
+
+            catalog_pool = await asyncpg.create_pool(
+                dsn=catalog_read_database_url,
+                min_size=resolved_settings.catalog_pool_min_size,
+                max_size=resolved_settings.catalog_pool_max_size,
+            )
+            resolved_catalog = PostgresCatalogRepository(pool=catalog_pool)
+        if resolved_recommendation_service is None and resolved_catalog is not None:
             resolved_embedder = embedder
             if resolved_embedder is None:
                 if http_client is None:
@@ -124,7 +154,7 @@ def create_app(
             resolved_recommendation_service = V1RecommendationService(
                 RecommendationEngine(
                     embedder=resolved_embedder,
-                    catalog=catalog_repository,
+                    catalog=resolved_catalog,
                 )
             )
         application.state.recommendation_service = resolved_recommendation_service
@@ -135,6 +165,8 @@ def create_app(
                 await redis_client.aclose()
             if http_client is not None:
                 await http_client.aclose()
+            if catalog_pool is not None:
+                await catalog_pool.close()
 
     application = FastAPI(
         title=resolved_settings.app_name,
