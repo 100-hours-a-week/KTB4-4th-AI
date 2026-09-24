@@ -56,45 +56,6 @@ class FakeModelGateway:
         }
 
 
-class FakeRecommendationService:
-    def __init__(self) -> None:
-        self.lists_payload: Mapping[str, Any] | None = None
-
-    async def recommend_lists(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        self.lists_payload = payload
-        return {
-            "self": _recommendation_result("self", "r_self"),
-            "gift": _recommendation_result("gift", "r_gift"),
-        }
-
-    async def recommend(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        return _recommendation_result(str(payload["mode"]), "r_refresh")
-
-
-def _recommendation_result(mode: str, recommendation_id: str) -> dict[str, Any]:
-    return {
-        "recommendationId": recommendation_id,
-        "generatedAt": "2026-09-21T07:00:00Z",
-        "mode": mode,
-        "priceRange": None,
-        "items": [
-            {
-                "platform": "coupang",
-                "externalId": "12345",
-                "reason": "캠핑 취향과 잘 맞는 상품이에요.",
-            }
-        ],
-        "emptyReason": None,
-        "suggestion": None,
-        "funnel": {
-            "retrieved": 1,
-            "afterHardFilter": 1,
-            "afterScoreFloor": 1,
-            "returned": 1,
-        },
-    }
-
-
 def test_chat_http_lifecycle_matches_v1_contract() -> None:
     app = create_app(
         Settings(
@@ -319,96 +280,9 @@ def test_routes_include_recommendation_contract_but_exclude_v2_and_unagreed_apis
 
     paths = app.openapi()["paths"]
 
-    assert "/v1/recommendations/jobs" in paths
+    assert "/v1/recommendations/jobs" not in paths
     assert "/v1/recommendations/jobs/{jobId}" not in paths
-    assert "/v1/recommendations" in paths
+    assert "/v1/recommendations" not in paths
     assert "/v1/chat/sessions/{conversationRoomId}/analysis" in paths
     assert "/v1/recommendations/{recommendationId}/feedback" not in paths
     assert "/v1/catalog/coverage" not in paths
-
-
-def test_recommendation_routes_report_unavailable_until_pipeline_is_injected() -> None:
-    app = create_app(
-        Settings(app_env="test", service_token="test-token", redis_url=None),
-        model_gateway=FakeModelGateway(),
-        session_store=InMemorySessionStore(),
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/recommendations",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "userId": 10293,
-                "mode": "self",
-                "profile": {
-                    "schemaVersion": "3.0",
-                    "userId": 10293,
-                    "summary": None,
-                    "interests": [],
-                    "hobbies": [],
-                    "preferences": [],
-                    "lifestyle": [],
-                    "wants": [],
-                    "unaffordable": [],
-                    "consumables": [],
-                    "owned": [],
-                    "dislikes": [],
-                    "constraints": [],
-                    "axes": [],
-                },
-            },
-        )
-
-    assert response.status_code == 503
-    assert response.json()["code"] == "RECOMMENDATION_UNAVAILABLE"
-
-
-def test_initial_recommendations_complete_in_post_without_polling() -> None:
-    recommendation_service = FakeRecommendationService()
-    app = create_app(
-        Settings(app_env="test", service_token="test-token", redis_url=None),
-        model_gateway=FakeModelGateway(),
-        session_store=InMemorySessionStore(),
-        recommendation_service=recommendation_service,
-    )
-    headers = {"Authorization": "Bearer test-token"}
-
-    with TestClient(app) as client:
-        client.post(
-            "/v1/chat/sessions",
-            headers=headers,
-            json={"userId": 10293, "conversationRoomId": 45678},
-        )
-        client.post(
-            "/v1/chat/sessions/45678/messages",
-            headers=headers,
-            json={"message": "주말마다 캠핑 가요"},
-        )
-        analysis = client.post("/v1/chat/sessions/45678/analysis", headers=headers)
-        client.post("/v1/chat/sessions/45678/close", headers=headers)
-        response = client.post(
-            "/v1/recommendations/jobs",
-            headers=headers,
-            json={
-                "userId": 10293,
-                "sessionId": 45678,
-                "profile": analysis.json()["profile"],
-            },
-        )
-        deleted_session = client.delete("/v1/chat/sessions/45678", headers=headers)
-
-    assert response.status_code == 200
-    assert response.json()["self"]["recommendationId"] == "r_self"
-    assert response.json()["gift"]["recommendationId"] == "r_gift"
-    assert response.json()["self"]["items"] == [
-        {
-            "platform": "coupang",
-            "externalId": "12345",
-            "reason": "캠핑 취향과 잘 맞는 상품이에요.",
-        }
-    ]
-    assert "jobId" not in response.json()
-    assert recommendation_service.lists_payload is not None
-    assert recommendation_service.lists_payload["sessionId"] == 45678
-    assert deleted_session.status_code == 404

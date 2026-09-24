@@ -3,10 +3,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi.testclient import TestClient
-
 from app.application.recommendation_engine import RecommendationEngine
-from app.core.config import Settings
 from app.domain.profile.models import TasteField, Visibility
 from app.domain.recommendation import (
     CatalogProduct,
@@ -15,8 +12,6 @@ from app.domain.recommendation import (
     RecommendationSignal,
     VectorSpace,
 )
-from app.infrastructure.persistence import InMemorySessionStore
-from app.main import create_app
 
 
 class FakeEmbedder:
@@ -105,69 +100,3 @@ def test_engine_batches_query_embeddings_and_searches_each_vector_space() -> Non
         "usage",
         "gift",
     }
-
-
-def test_app_wires_recommendations_with_backend_join_key_and_reason() -> None:
-    timestamp = datetime(2026, 9, 22, tzinfo=UTC).isoformat()
-    app = create_app(
-        Settings(app_env="test", service_token="test-token", redis_url=None),
-        session_store=InMemorySessionStore(),
-        embedder=FakeEmbedder(),
-        catalog_repository=FakeCatalog(),
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/recommendations/jobs",
-            headers={"Authorization": "Bearer test-token"},
-            json={
-                "userId": 10293,
-                "sessionId": None,
-                "profile": {
-                    "schemaVersion": "3.0",
-                    "userId": 10293,
-                    "summary": None,
-                    "interests": [
-                        {
-                            "value": "커피",
-                            "confidence": 0.9,
-                            "linkRole": "query",
-                            "visibility": "friends",
-                            "intentType": "both",
-                            "deferralSignal": False,
-                            "deferralReason": None,
-                            "evidence": "커피를 좋아해요",
-                            "taxonomyPath": None,
-                            "firstSeenAt": timestamp,
-                            "updatedAt": timestamp,
-                        }
-                    ],
-                    "hobbies": [],
-                    "preferences": [],
-                    "lifestyle": [],
-                    "wants": [],
-                    "unaffordable": [],
-                    "consumables": [],
-                    "owned": [],
-                    "dislikes": [],
-                    "constraints": [],
-                    "axes": [],
-                },
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["self"]["items"] == [
-        {
-            "platform": "coupang",
-            "externalId": "content",
-            "reason": "커피에 대한 관심과 잘 맞는 상품이에요.",
-        }
-    ]
-    assert response.json()["gift"]["items"] == [
-        {
-            "platform": "coupang",
-            "externalId": "content",
-            "reason": "커피에 관심 있는 분에게 선물하기 좋은 상품이에요.",
-        }
-    ]
