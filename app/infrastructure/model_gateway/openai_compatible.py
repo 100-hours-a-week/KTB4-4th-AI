@@ -21,6 +21,7 @@ class OpenAICompatibleModelGateway:
         model_base_urls: Mapping[str, str],
         api_key: str | None = None,
         model_max_tokens: Mapping[str, int] | None = None,
+        model_enable_thinking: Mapping[str, bool] | None = None,
     ) -> None:
         self._client = client
         self._model_base_urls = {
@@ -28,6 +29,7 @@ class OpenAICompatibleModelGateway:
         }
         self._api_key = api_key
         self._model_max_tokens = dict(model_max_tokens or {})
+        self._model_enable_thinking = dict(model_enable_thinking or {})
 
     def _url(self, model: str) -> str:
         base_url = self._model_base_urls.get(model)
@@ -41,6 +43,8 @@ class OpenAICompatibleModelGateway:
         max_tokens = self._model_max_tokens.get(model)
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if model in self._model_enable_thinking:
+            payload["enable_thinking"] = self._model_enable_thinking[model]
         return payload
 
     def _headers(self) -> dict[str, str]:
