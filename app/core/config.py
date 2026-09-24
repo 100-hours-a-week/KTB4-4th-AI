@@ -25,6 +25,22 @@ class Settings(BaseSettings):
     chat_session_max_lifetime_seconds: int = Field(default=7200, ge=60)
     ai_database_url: str | None = None
 
+    # 백엔드 MySQL 원본. 같은 EC2에 있으면 127.0.0.1 로 붙는다.
+    # 읽기 전용 계정을 쓴다. 이 경로로는 절대 쓰기를 하지 않는다.
+    source_mysql_host: str | None = None
+    source_mysql_port: int = Field(default=3306, gt=0, le=65535)
+    source_mysql_user: str | None = None
+    source_mysql_password: SecretStr | None = None
+    source_mysql_database: str | None = None
+    source_mysql_table: str = "products"
+    source_mysql_pool_size: int = Field(default=2, ge=1, le=20)
+
+    # AI 카탈로그 PostgreSQL. 예: postgresql://user:pw@host:5432/ai_catalog
+    catalog_database_url: str | None = None
+    catalog_pool_min_size: int = Field(default=1, ge=1)
+    catalog_pool_max_size: int = Field(default=5, ge=1)
+    catalog_sync_batch_size: int = Field(default=1000, ge=1, le=10000)
+
     response_model_base_url: AnyHttpUrl | None = None
     extraction_model_base_url: AnyHttpUrl | None = None
     model_api_key: SecretStr | None = None
