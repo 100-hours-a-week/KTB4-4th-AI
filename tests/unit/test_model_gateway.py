@@ -75,3 +75,26 @@ def test_sends_configured_max_tokens_per_model() -> None:
 
     assert payloads[0]["max_tokens"] == 256
     assert "max_tokens" not in payloads[1]
+
+
+def test_sends_configured_thinking_mode_per_model() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            gateway = OpenAICompatibleModelGateway(
+                client=client,
+                model_base_urls={"gemma": "http://x/v1", "other": "http://x/v1"},
+                model_enable_thinking={"gemma": False},
+            )
+            await gateway.complete([{"role": "user", "content": "hi"}], model="gemma")
+            await gateway.complete([{"role": "user", "content": "hi"}], model="other")
+
+    asyncio.run(exercise())
+
+    assert payloads[0]["enable_thinking"] is False
+    assert "enable_thinking" not in payloads[1]
