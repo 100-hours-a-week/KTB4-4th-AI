@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     catalog_pool_min_size: int = Field(default=1, ge=1)
     catalog_pool_max_size: int = Field(default=5, ge=1)
     catalog_sync_batch_size: int = Field(default=1000, ge=1, le=10000)
+    # 문서 생성 배치가 한 번에 집어가는 상품 수. LLM 속도에 맞춰 조절한다.
+    catalog_enrich_batch_size: int = Field(default=50, ge=1, le=500)
+    catalog_enrich_stale_seconds: int = Field(default=3600, ge=60)
 
     response_model_base_url: AnyHttpUrl | None = None
     extraction_model_base_url: AnyHttpUrl | None = None
