@@ -23,3 +23,7 @@ docs/
 prompts/
 
 data/
+
+# Local catalog test databases
+.local/
+scripts/local_catalog/env.sh
