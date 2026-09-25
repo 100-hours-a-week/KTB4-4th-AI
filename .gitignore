@@ -15,5 +15,15 @@ build/
 dist/
 *.egg-info/
 
+# Node-based repository tooling
+node_modules/
+.npm/
+
 docs/
 prompts/
+
+data/
+
+# Local catalog test databases
+.local/
+scripts/local_catalog/env.sh

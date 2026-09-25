@@ -1,6 +1,11 @@
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+JAVA_LONG_MAX = 9_223_372_036_854_775_807
+JavaLongId = Annotated[int, Field(strict=True, ge=1, le=JAVA_LONG_MAX)]
+UserId = JavaLongId
+ConversationRoomId = JavaLongId
 
 
 def to_camel(value: str) -> str:

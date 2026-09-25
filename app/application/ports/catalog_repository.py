@@ -1,5 +1,7 @@
-from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from collections.abc import Sequence
+from typing import Protocol
+
+from app.domain.recommendation import CatalogSearchResult, VectorSpace
 
 
 class CatalogRepository(Protocol):
@@ -9,6 +11,7 @@ class CatalogRepository(Protocol):
         self,
         *,
         vector: Sequence[float],
-        filters: Mapping[str, Any],
+        space: VectorSpace,
+        embedding_space_id: str,
         limit: int,
-    ) -> Sequence[Mapping[str, Any]]: ...
+    ) -> Sequence[CatalogSearchResult]: ...
