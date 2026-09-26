@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,36 @@ _SPACE_FIELDS = {
     VectorSpace.USAGE: "usageDocument",
     VectorSpace.GIFT: "giftDocument",
 }
+
+_NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)*")
+_MATERIAL_TERMS = (
+    "티타늄",
+    "스테인리스",
+    "알루미늄",
+    "세라믹",
+    "도자기",
+    "실리콘",
+    "플라스틱",
+    "아크릴",
+    "유리",
+    "가죽",
+    "원목",
+    "나무",
+    "고무",
+    "황동",
+    "구리",
+    "순금",
+    "14k",
+    "18k",
+    "24k",
+    "순은",
+    "실버",
+    "코튼",
+    "메리노울",
+    "캐시미어",
+    "폴리에스터",
+    "나일론",
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -107,6 +138,11 @@ class CatalogDocumentService:
             text = payload.get(field)
             if not isinstance(text, str):
                 raise DocumentValidationError(f"{field} is missing from the model response")
+            unsupported_numbers = _numbers(text) - _numbers(product.name)
+            if unsupported_numbers:
+                raise DocumentValidationError(
+                    f"{field} contains numeric facts absent from the product name"
+                )
             documents.append(ProductDocument(space=space, text=text))
 
         category_code = payload.get("categoryCode")
@@ -121,6 +157,8 @@ class CatalogDocumentService:
         attributes = payload.get("attributes")
         if not isinstance(attributes, Mapping):
             raise DocumentValidationError("attributes must be an object")
+        normalized_attributes = dict(attributes)
+        normalized_attributes["materials"] = _materials_from_name(product.name)
 
         return ProductEnrichment(
             key=product.key,
@@ -132,5 +170,14 @@ class CatalogDocumentService:
             category_code=category_code.strip(),
             category_confidence=confidence,
             price_band=price_band(product.price),
-            attributes=dict(attributes),
+            attributes=normalized_attributes,
         )
+
+
+def _numbers(text: str) -> set[str]:
+    return {match.group().replace(",", "") for match in _NUMBER_PATTERN.finditer(text)}
+
+
+def _materials_from_name(name: str) -> list[str]:
+    normalized_name = name.casefold()
+    return [material for material in _MATERIAL_TERMS if material.casefold() in normalized_name]
