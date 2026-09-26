@@ -75,7 +75,7 @@ def _recommended_items() -> list[dict[str, object]]:
         {
             "platform": "coupang",
             "externalId": "12345",
-            "score": 9.2,
+            "score": 0.92,
             "reason": "캠핑 취향과 잘 맞는 상품이에요.",
         }
     ]
@@ -375,7 +375,7 @@ def test_close_returns_initial_recommendations_without_second_request() -> None:
         {
             "platform": "coupang",
             "externalId": "12345",
-            "score": 9.2,
+            "score": 0.92,
             "reason": "캠핑 취향과 잘 맞는 상품이에요.",
         }
     ]

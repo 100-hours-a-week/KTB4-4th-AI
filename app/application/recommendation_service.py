@@ -60,7 +60,7 @@ def _items(recommendations: Sequence[RankedRecommendation]) -> list[dict[str, ob
         {
             "platform": recommendation.product.key.platform,
             "externalId": recommendation.product.key.external_id,
-            "score": round(recommendation.score * 10, 1),
+            "score": round(recommendation.score, 2),
             "reason": recommendation.reason,
         }
         for recommendation in recommendations
