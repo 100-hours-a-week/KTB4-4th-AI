@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from app.application.conversation_prompts import build_friend_summary_messages
@@ -14,8 +15,16 @@ from app.domain.conversation.models import (
     SessionStatus,
 )
 from app.domain.conversation.policy import MAX_TURNS, recommendation_readiness
-from app.domain.profile.merger import friend_summary_values
-from app.domain.profile.models import ProfileState
+from app.domain.profile.merger import friend_summary_values, ranked_friend_signals
+from app.domain.profile.models import ProfileSignal, ProfileState, TasteField
+
+ANALYSIS_KEYWORD_LIMIT = 3
+_TASTE_KEYWORD_FIELDS = (TasteField.PREFERENCES,)
+_INTEREST_KEYWORD_FIELDS = (TasteField.INTERESTS, TasteField.HOBBIES)
+
+
+def _keyword_score(signal: ProfileSignal) -> float:
+    return round(signal.confidence, 2)
 
 
 class ChatUseCaseError(RuntimeError):
@@ -79,6 +88,7 @@ class ProfileAnalysis:
     summary: str | None
     taste_keywords: tuple[str, ...]
     interest_keywords: tuple[str, ...]
+    keyword_scores: Mapping[str, float]
     readiness: ReadinessResult
 
 
@@ -175,6 +185,7 @@ class ChatUseCases:
             summary=state.analysis_summary,
             taste_keywords=tuple(state.analysis_taste_keywords),
             interest_keywords=tuple(state.analysis_interest_keywords),
+            keyword_scores=dict(state.analysis_keyword_scores),
             readiness=recommendation_readiness(state),
         )
 
@@ -225,10 +236,18 @@ class ChatUseCases:
 
             state.analysis_turn_count = state.turn_count
             state.analysis_summary = summary
-            state.analysis_taste_keywords = safe_values["preferences"][:3]
-            state.analysis_interest_keywords = (safe_values["interests"] + safe_values["hobbies"])[
-                :3
+            taste_signals = ranked_friend_signals(state.profile, _TASTE_KEYWORD_FIELDS)[
+                :ANALYSIS_KEYWORD_LIMIT
             ]
+            interest_signals = ranked_friend_signals(state.profile, _INTEREST_KEYWORD_FIELDS)[
+                :ANALYSIS_KEYWORD_LIMIT
+            ]
+            state.analysis_taste_keywords = [signal.value for signal in taste_signals]
+            state.analysis_interest_keywords = [signal.value for signal in interest_signals]
+            state.analysis_keyword_scores = {
+                signal.value: _keyword_score(signal)
+                for signal in (*taste_signals, *interest_signals)
+            }
             state.analysis_patch_used = False
             state.status = SessionStatus.REVIEW
             await self._states.save(state)
@@ -256,8 +275,15 @@ class ChatUseCases:
                 raise AnalysisKeywordsCanOnlyBeDeletedError(session_id)
 
             state.analysis_summary = summary
-            state.analysis_taste_keywords = list(taste_keywords)
-            state.analysis_interest_keywords = list(interest_keywords)
+            # 키워드는 지우기만 가능하므로 남은 키워드는 분석 때의 점수 순서를 따른다.
+            state.analysis_taste_keywords = [
+                keyword for keyword in state.analysis_taste_keywords if keyword in taste_keywords
+            ]
+            state.analysis_interest_keywords = [
+                keyword
+                for keyword in state.analysis_interest_keywords
+                if keyword in interest_keywords
+            ]
             state.analysis_patch_used = True
             state.status = SessionStatus.REVIEW
             await self._states.save(state)

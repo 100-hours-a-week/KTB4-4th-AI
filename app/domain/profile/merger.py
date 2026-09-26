@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -277,3 +278,28 @@ def friend_summary_values(profile: ProfileState) -> dict[str, list[str]]:
         if signal.field in allowed and signal.visibility == Visibility.FRIENDS:
             values[signal.field.value].append(signal.value)
     return values
+
+
+def ranked_friend_signals(
+    profile: ProfileState,
+    fields: Iterable[TasteField],
+) -> list[ProfileSignal]:
+    """친구에게 보여도 되는 신호를 working set 과 같은 기준의 우선순위 순으로 돌려준다."""
+    allowed = set(fields)
+    ordered = sorted(
+        (
+            signal
+            for signal in profile.active_signals()
+            if signal.field in allowed and signal.visibility == Visibility.FRIENDS
+        ),
+        key=_signal_sort_key,
+        reverse=True,
+    )
+    ranked: list[ProfileSignal] = []
+    seen: set[str] = set()
+    for signal in ordered:
+        if signal.normalized_value in seen:
+            continue
+        seen.add(signal.normalized_value)
+        ranked.append(signal)
+    return ranked

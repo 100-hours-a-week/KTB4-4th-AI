@@ -83,3 +83,15 @@ class TasteProfile(ApiModel):
 class ProfileKeywords(ApiModel):
     taste: list[str] = Field(max_length=3)
     interest: list[str] = Field(max_length=3)
+
+
+class ScoredKeyword(ApiModel):
+    value: str = Field(min_length=1)
+    score: float = Field(ge=0.0, le=1.0)
+
+
+class ScoredProfileKeywords(ApiModel):
+    """점수 내림차순으로 정렬된 키워드. 배열 순서가 곧 화면 우선순위다."""
+
+    taste: list[ScoredKeyword] = Field(max_length=3)
+    interest: list[ScoredKeyword] = Field(max_length=3)
