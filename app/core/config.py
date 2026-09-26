@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     document_model_max_tokens: int = Field(default=1024, gt=0)
     document_model_concurrency: int = Field(default=4, ge=1)
     document_model_enable_thinking: bool | None = None
+    document_model_temperature: float | None = Field(default=None, ge=0, le=2)
+    document_model_stop_sequence: str | None = None
     document_model_timeout_seconds: float = Field(default=180.0, gt=0)
 
     response_model_max_tokens: int = Field(default=2048, gt=0)

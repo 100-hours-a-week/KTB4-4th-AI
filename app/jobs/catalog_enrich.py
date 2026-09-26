@@ -74,6 +74,20 @@ async def build_service(
                 if settings.document_model_enable_thinking is not None
                 else None
             ),
+            model_temperatures=(
+                {
+                    settings.document_model_name: settings.document_model_temperature,
+                }
+                if settings.document_model_temperature is not None
+                else None
+            ),
+            model_stop_sequences=(
+                {
+                    settings.document_model_name: (settings.document_model_stop_sequence,),
+                }
+                if settings.document_model_stop_sequence is not None
+                else None
+            ),
             api_key=(
                 settings.model_api_key.get_secret_value()
                 if settings.model_api_key is not None
