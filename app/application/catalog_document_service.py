@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,18 +68,6 @@ class ProductEnrichment:
     attributes: Mapping[str, Any]
 
 
-@dataclass(slots=True, frozen=True)
-class DocumentGenerationFailure:
-    key: ProductKey
-    reason: str
-
-
-@dataclass(slots=True, frozen=True)
-class DocumentGenerationResult:
-    enriched: tuple[ProductEnrichment, ...]
-    failed: tuple[DocumentGenerationFailure, ...]
-
-
 class CatalogDocumentService:
     """상품명과 가격만으로 content·usage·gift 검색 문서를 만든다.
 
@@ -108,25 +96,6 @@ class CatalogDocumentService:
                 json_schema=JSON_SCHEMA,
             )
         return self._to_enrichment(product, payload)
-
-    async def generate_many(
-        self,
-        products: Sequence[DocumentSourceProduct],
-    ) -> DocumentGenerationResult:
-        outcomes = await asyncio.gather(
-            *(self.generate(product) for product in products),
-            return_exceptions=True,
-        )
-        enriched: list[ProductEnrichment] = []
-        failed: list[DocumentGenerationFailure] = []
-        for product, outcome in zip(products, outcomes, strict=True):
-            if isinstance(outcome, ProductEnrichment):
-                enriched.append(outcome)
-            elif isinstance(outcome, Exception):
-                failed.append(DocumentGenerationFailure(key=product.key, reason=str(outcome)))
-            else:  # pragma: no cover - gather 는 결과 아니면 예외만 돌려준다
-                raise TypeError("unexpected generation outcome")
-        return DocumentGenerationResult(enriched=tuple(enriched), failed=tuple(failed))
 
     def _to_enrichment(
         self,

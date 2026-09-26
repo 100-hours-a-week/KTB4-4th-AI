@@ -14,7 +14,9 @@ export SOURCE_MYSQL_TABLE=products
 
 # 적재 대상: 로컬 PostgreSQL + pgvector
 export CATALOG_DATABASE_URL="postgresql://$(whoami)@127.0.0.1:5432/needu_catalog_local"
-export CATALOG_ENRICH_BATCH_SIZE=30
+export CATALOG_ENRICH_BATCH_SIZE=100
+export CATALOG_ENRICH_EMBEDDING_CONCURRENCY=4
+export CATALOG_ENRICH_PROGRESS_INTERVAL=100
 
 # LM Studio 로컬 서버
 export DOCUMENT_MODEL_BASE_URL="${DOCUMENT_MODEL_BASE_URL:-http://127.0.0.1:1234/v1}"

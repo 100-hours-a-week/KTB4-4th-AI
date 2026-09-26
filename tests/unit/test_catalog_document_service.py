@@ -129,22 +129,6 @@ def test_generate_does_not_match_one_character_material_substrings() -> None:
     assert enrichment.attributes["materials"] == []
 
 
-def test_generate_many_separates_failures() -> None:
-    service = _service([_payload(), RuntimeError("endpoint down")])
-    products = [
-        DocumentSourceProduct(key=KEY, name="티타늄 머그컵 350ml"),
-        DocumentSourceProduct(
-            key=ProductKey(platform="coupang", external_id="99"), name="캠핑 랜턴"
-        ),
-    ]
-
-    result = asyncio.run(service.generate_many(products))
-
-    assert len(result.enriched) == 1
-    assert len(result.failed) == 1
-    assert result.failed[0].key.external_id == "99"
-
-
 def test_prompt_includes_price_band_not_amount() -> None:
     product = DocumentSourceProduct(key=KEY, name="티타늄 머그컵", price=Decimal(120000))
     messages = build_document_messages(product)
