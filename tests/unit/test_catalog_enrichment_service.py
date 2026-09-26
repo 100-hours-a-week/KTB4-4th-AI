@@ -6,8 +6,6 @@ from decimal import Decimal
 from typing import Any
 
 from app.application.catalog_document_service import (
-    DocumentGenerationFailure,
-    DocumentGenerationResult,
     ProductEnrichment,
 )
 from app.application.catalog_enrichment_service import CatalogEnrichmentService
@@ -48,16 +46,11 @@ class FakeDocumentService:
         self.fail_keys = fail_keys or set()
         self.seen: list[str] = []
 
-    async def generate_many(self, products: Sequence[Any]) -> DocumentGenerationResult:
-        enriched = []
-        failed = []
-        for product in products:
-            self.seen.append(product.key.external_id)
-            if product.key.external_id in self.fail_keys:
-                failed.append(DocumentGenerationFailure(key=product.key, reason="bad json"))
-            else:
-                enriched.append(_enrichment(product.key))
-        return DocumentGenerationResult(enriched=tuple(enriched), failed=tuple(failed))
+    async def generate(self, product: Any) -> ProductEnrichment:
+        self.seen.append(product.key.external_id)
+        if product.key.external_id in self.fail_keys:
+            raise ValueError("bad json")
+        return _enrichment(product.key)
 
 
 class FakeEmbedder:
@@ -79,6 +72,33 @@ class FakeEmbedder:
 
     async def embed_queries(self, texts: Sequence[str]) -> list[list[float]]:
         raise NotImplementedError
+
+
+class OverlapDocumentService:
+    def __init__(self) -> None:
+        self.embedding_started = asyncio.Event()
+        self.second_generation_waiting = False
+
+    async def generate(self, product: Any) -> ProductEnrichment:
+        if product.key.external_id == "1":
+            await asyncio.sleep(0)
+            return _enrichment(product.key)
+        self.second_generation_waiting = True
+        await self.embedding_started.wait()
+        self.second_generation_waiting = False
+        return _enrichment(product.key)
+
+
+class OverlapEmbedder(FakeEmbedder):
+    def __init__(self, documents: OverlapDocumentService) -> None:
+        super().__init__()
+        self._documents = documents
+        self.overlap_observed = False
+
+    async def embed_passages(self, texts: Sequence[str]) -> list[list[float]]:
+        self.overlap_observed |= self._documents.second_generation_waiting
+        self._documents.embedding_started.set()
+        return await super().embed_passages(texts)
 
 
 class FakeRepository:
@@ -158,6 +178,23 @@ def test_documents_are_embedded_in_stable_space_order() -> None:
         VectorSpace.USAGE,
     ]
     assert embedder.batches[0] == list(saved.documents.ordered_texts)
+
+
+def test_generation_and_embedding_overlap() -> None:
+    repository = FakeRepository([[_source("1"), _source("2")]])
+    documents = OverlapDocumentService()
+    embedder = OverlapEmbedder(documents)
+    service = CatalogEnrichmentService(
+        documents=documents,  # type: ignore[arg-type]
+        embedder=embedder,
+        repository=repository,
+        batch_size=10,
+    )
+
+    report = asyncio.run(service.run_once())
+
+    assert report.succeeded == 2
+    assert embedder.overlap_observed
 
 
 def test_llm_failure_is_isolated_to_one_product() -> None:

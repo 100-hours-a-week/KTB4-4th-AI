@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     catalog_sync_batch_size: int = Field(default=1000, ge=1, le=10000)
     # 문서 생성 배치가 한 번에 집어가는 상품 수. LLM 속도에 맞춰 조절한다.
     catalog_enrich_batch_size: int = Field(default=50, ge=1, le=500)
+    catalog_enrich_embedding_concurrency: int = Field(default=4, ge=1, le=20)
+    catalog_enrich_progress_interval: int = Field(default=100, ge=1)
     catalog_enrich_stale_seconds: int = Field(default=3600, ge=60)
 
     response_model_base_url: AnyHttpUrl | None = None
@@ -61,6 +63,8 @@ class Settings(BaseSettings):
     document_model_max_tokens: int = Field(default=1024, gt=0)
     document_model_concurrency: int = Field(default=4, ge=1)
     document_model_enable_thinking: bool | None = None
+    document_model_temperature: float | None = Field(default=None, ge=0, le=2)
+    document_model_stop_sequence: str | None = None
     document_model_timeout_seconds: float = Field(default=180.0, gt=0)
 
     response_model_max_tokens: int = Field(default=2048, gt=0)

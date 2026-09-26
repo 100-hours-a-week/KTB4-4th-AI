@@ -73,6 +73,7 @@ def test_generate_builds_three_documents() -> None:
     assert enrichment.documents.evidence is DocumentEvidence.NAME_ONLY
     assert len(enrichment.documents.documents) == 3
     assert "캠핑" in enrichment.documents.text_for(VectorSpace.USAGE)
+    assert enrichment.attributes["materials"] == ["티타늄"]
 
 
 def test_generate_rejects_identical_documents() -> None:
@@ -94,20 +95,38 @@ def test_generate_rejects_document_with_price() -> None:
         asyncio.run(service.generate(product))
 
 
-def test_generate_many_separates_failures() -> None:
-    service = _service([_payload(), RuntimeError("endpoint down")])
-    products = [
-        DocumentSourceProduct(key=KEY, name="티타늄 머그컵"),
-        DocumentSourceProduct(
-            key=ProductKey(platform="coupang", external_id="99"), name="캠핑 랜턴"
-        ),
-    ]
+def test_generate_rejects_numeric_fact_absent_from_product_name() -> None:
+    service = _service(
+        [_payload(contentDocument="100ml 용량의 라벤더 향 핸드크림 선물세트입니다.")]
+    )
+    product = DocumentSourceProduct(key=KEY, name="라벤더 향 핸드크림 선물세트")
 
-    result = asyncio.run(service.generate_many(products))
+    with pytest.raises(DocumentValidationError):
+        asyncio.run(service.generate(product))
 
-    assert len(result.enriched) == 1
-    assert len(result.failed) == 1
-    assert result.failed[0].key.external_id == "99"
+
+def test_generate_discards_material_not_present_in_product_name() -> None:
+    service = _service([_payload(attributes={"isConsumable": True, "materials": ["핸드크림"]})])
+    product = DocumentSourceProduct(
+        key=KEY,
+        name="라벤더 향 핸드크림 선물세트 350ml",
+    )
+
+    enrichment = asyncio.run(service.generate(product))
+
+    assert enrichment.attributes["materials"] == []
+
+
+def test_generate_does_not_match_one_character_material_substrings() -> None:
+    service = _service([_payload(attributes={"materials": ["금", "은", "면", "울"]})])
+    product = DocumentSourceProduct(
+        key=KEY,
+        name="지금 쓰는 서울 면도기 350ml",
+    )
+
+    enrichment = asyncio.run(service.generate(product))
+
+    assert enrichment.attributes["materials"] == []
 
 
 def test_prompt_includes_price_band_not_amount() -> None:

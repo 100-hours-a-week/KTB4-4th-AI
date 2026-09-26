@@ -8,7 +8,7 @@ from app.api.schemas.common import ApiModel
 class RecommendedItem(ApiModel):
     platform: str = Field(min_length=1, max_length=50)
     external_id: str = Field(min_length=1, max_length=255)
-    score: float = Field(ge=0.0, le=10.0)
+    score: float = Field(ge=0.0, le=1.0)
     reason: str = Field(min_length=1)
 
 

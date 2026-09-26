@@ -193,3 +193,35 @@ def test_results_are_capped_at_twenty_without_padding() -> None:
     assert len(ranked) == 20
     assert [item.rank for item in ranked] == list(range(20))
     assert len(sparse) == 3
+
+
+def test_diversity_pick_does_not_break_descending_score_order() -> None:
+    coffee_query, camping_query = build_search_queries(
+        [
+            _signal(TasteField.INTERESTS, "커피", confidence=1.0),
+            _signal(TasteField.HOBBIES, "캠핑", confidence=0.5),
+        ]
+    )
+    coffee_matches = [
+        VectorMatch(
+            query=coffee_query,
+            product=_product("coupang", f"coffee-{index}", f"커피 상품 {index}"),
+            similarity=0.9 - index / 100,
+        )
+        for index in range(5)
+    ]
+    camping_product = _product("coupang", "camping", "캠핑 의자")
+    camping_match = VectorMatch(query=camping_query, product=camping_product, similarity=0.9)
+
+    ranked = rank_recommendations(
+        [*coffee_matches, camping_match],
+        mode=RecommendationMode.SELF,
+        now=NOW,
+        limit=3,
+    )
+
+    scores = [item.score for item in ranked]
+    assert camping_product in [item.product for item in ranked]
+    assert scores == sorted(scores, reverse=True)
+    assert ranked[-1].product == camping_product
+    assert [item.rank for item in ranked] == [0, 1, 2]

@@ -22,6 +22,8 @@ class OpenAICompatibleModelGateway:
         api_key: str | None = None,
         model_max_tokens: Mapping[str, int] | None = None,
         model_enable_thinking: Mapping[str, bool] | None = None,
+        model_temperatures: Mapping[str, float] | None = None,
+        model_stop_sequences: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self._client = client
         self._model_base_urls = {
@@ -30,6 +32,10 @@ class OpenAICompatibleModelGateway:
         self._api_key = api_key
         self._model_max_tokens = dict(model_max_tokens or {})
         self._model_enable_thinking = dict(model_enable_thinking or {})
+        self._model_temperatures = dict(model_temperatures or {})
+        self._model_stop_sequences = {
+            model: tuple(sequences) for model, sequences in (model_stop_sequences or {}).items()
+        }
 
     def _url(self, model: str) -> str:
         base_url = self._model_base_urls.get(model)
@@ -45,6 +51,10 @@ class OpenAICompatibleModelGateway:
             payload["max_tokens"] = max_tokens
         if model in self._model_enable_thinking:
             payload["enable_thinking"] = self._model_enable_thinking[model]
+        if model in self._model_temperatures:
+            payload["temperature"] = self._model_temperatures[model]
+        if model in self._model_stop_sequences:
+            payload["stop"] = list(self._model_stop_sequences[model])
         return payload
 
     def _headers(self) -> dict[str, str]:

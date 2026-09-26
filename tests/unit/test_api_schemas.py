@@ -131,7 +131,7 @@ def test_recommended_item_contains_backend_join_key_rank_score_and_reason() -> N
         {
             "platform": "coupang",
             "externalId": "12345",
-            "score": 9.2,
+            "score": 0.92,
             "reason": "캠핑 취향과 잘 맞는 상품이에요.",
         }
     )
@@ -139,7 +139,7 @@ def test_recommended_item_contains_backend_join_key_rank_score_and_reason() -> N
     assert item.model_dump(by_alias=True) == {
         "platform": "coupang",
         "externalId": "12345",
-        "score": 9.2,
+        "score": 0.92,
         "reason": "캠핑 취향과 잘 맞는 상품이에요.",
     }
 

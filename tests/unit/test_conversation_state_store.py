@@ -43,6 +43,8 @@ def test_state_store_round_trips_redis_serializable_state() -> None:
         conversation_room_id=101,
         last_goal=ConversationGoal.INTEREST,
         history=[ConversationTurn(role="assistant", content="안녕하세요", created_at=now)],
+        analysis_interest_keywords=["캠핑"],
+        analysis_keyword_scores={"캠핑": 0.9},
         analysis_patch_used=True,
         created_at=now,
         last_active_at=now,

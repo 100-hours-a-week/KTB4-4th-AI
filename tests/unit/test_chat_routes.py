@@ -75,7 +75,7 @@ def _recommended_items() -> list[dict[str, object]]:
         {
             "platform": "coupang",
             "externalId": "12345",
-            "score": 9.2,
+            "score": 0.92,
             "reason": "캠핑 취향과 잘 맞는 상품이에요.",
         }
     ]
@@ -142,7 +142,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
     assert analysis.json()["profile"] == {
         "userId": 10293,
         "summary": "캠핑을 즐기고 직접 장비를 고르는 분입니다.",
-        "keywords": {"taste": [], "interest": ["캠핑"]},
+        "keywords": {"taste": [], "interest": [{"value": "캠핑", "score": 0.9}]},
         "correctionAvailable": True,
     }
     assert closed.status_code == 200
@@ -155,6 +155,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
     }
     assert closed.json()["conversationId"] == 45678
     assert closed.json()["summary"] == analysis.json()["profile"]["summary"]
+    assert closed.json()["keywords"] == analysis.json()["profile"]["keywords"]
     assert closed.json()["recommendations"]["generatedAt"] == "2026-09-21T07:00:00Z"
     assert set(closed.json()["recommendations"]) == {"generatedAt", "self", "gift"}
     assert closed_again.status_code == 409
@@ -374,7 +375,7 @@ def test_close_returns_initial_recommendations_without_second_request() -> None:
         {
             "platform": "coupang",
             "externalId": "12345",
-            "score": 9.2,
+            "score": 0.92,
             "reason": "캠핑 취향과 잘 맞는 상품이에요.",
         }
     ]
@@ -382,3 +383,78 @@ def test_close_returns_initial_recommendations_without_second_request() -> None:
     assert recommendation_service.lists_payload is not None
     assert recommendation_service.lists_payload["userId"] == 10293
     assert "sessionId" not in recommendation_service.lists_payload
+
+
+def _extracted(field: str, value: str, confidence: float) -> dict[str, object]:
+    return {
+        "field": field,
+        "value": value,
+        "confidence": confidence,
+        "evidence": value,
+        "evidenceType": "explicit",
+        "intentType": "both",
+        "deferralReason": None,
+    }
+
+
+def test_analysis_keywords_are_ordered_by_score_and_patch_keeps_that_order() -> None:
+    gateway = FakeModelGateway(
+        completions=[
+            "안녕하세요! 요즘 어떻게 지내세요?",
+            "좋은 취미가 많으시네요.",
+            "산책과 사진을 즐기는 분입니다.",
+        ],
+        structured_results=[
+            {
+                "items": [
+                    _extracted("interests", "음악", 0.6),
+                    _extracted("interests", "사진", 0.8),
+                    _extracted("hobbies", "산책", 0.95),
+                ],
+                "axes": [],
+                "drop": [],
+                "goalAssessment": {"goal": "INTEREST", "status": "found"},
+            },
+        ],
+    )
+    app = create_app(
+        Settings(app_env="test", service_token="test-token", redis_url=None),
+        model_gateway=gateway,
+        session_store=InMemorySessionStore(),
+        recommendation_service=FakeRecommendationService(),
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": 45678},
+        )
+        client.post(
+            "/v1/chat/sessions/45678/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "음악, 사진, 산책 다 좋아해요"},
+        )
+        analysis = client.post("/v1/chat/sessions/45678/analysis", headers=headers)
+        updated = client.patch(
+            "/v1/chat/sessions/45678/analysis",
+            headers=headers,
+            json={
+                "userId": 10293,
+                "summary": "산책과 음악을 즐기는 분입니다.",
+                "keywords": {"taste": [], "interest": ["음악", "산책"]},
+            },
+        )
+
+    assert analysis.status_code == 200
+    assert analysis.json()["profile"]["keywords"]["interest"] == [
+        {"value": "산책", "score": 0.95},
+        {"value": "사진", "score": 0.8},
+        {"value": "음악", "score": 0.6},
+    ]
+    assert updated.status_code == 200
+    assert updated.json()["profile"]["keywords"]["interest"] == [
+        {"value": "산책", "score": 0.95},
+        {"value": "음악", "score": 0.6},
+    ]

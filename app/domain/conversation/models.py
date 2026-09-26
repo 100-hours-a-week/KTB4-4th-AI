@@ -100,6 +100,7 @@ class ConversationState:
     analysis_summary: str | None = None
     analysis_taste_keywords: list[str] = field(default_factory=list)
     analysis_interest_keywords: list[str] = field(default_factory=list)
+    analysis_keyword_scores: dict[str, float] = field(default_factory=dict)
     analysis_patch_used: bool = False
 
     @property
@@ -129,6 +130,7 @@ class ConversationState:
             "analysis_summary": self.analysis_summary,
             "analysis_taste_keywords": list(self.analysis_taste_keywords),
             "analysis_interest_keywords": list(self.analysis_interest_keywords),
+            "analysis_keyword_scores": dict(self.analysis_keyword_scores),
             "analysis_patch_used": self.analysis_patch_used,
         }
 
@@ -173,6 +175,10 @@ class ConversationState:
             analysis_summary=payload.get("analysis_summary"),
             analysis_taste_keywords=list(payload.get("analysis_taste_keywords", [])),
             analysis_interest_keywords=list(payload.get("analysis_interest_keywords", [])),
+            analysis_keyword_scores={
+                key: float(value)
+                for key, value in payload.get("analysis_keyword_scores", {}).items()
+            },
             analysis_patch_used=bool(payload.get("analysis_patch_used", False)),
         )
 
