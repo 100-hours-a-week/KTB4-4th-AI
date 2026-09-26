@@ -14,7 +14,7 @@ from app.api.schemas.chat import (
     UpdateChatAnalysisRequest,
 )
 from app.api.schemas.common import JAVA_LONG_MAX
-from app.api.schemas.profile import ProfileItem, ProfileKeywords, TasteProfile
+from app.api.schemas.profile import ProfileItem, ScoredProfileKeywords, TasteProfile
 from app.api.schemas.recommendation import RecommendationLists
 from app.application.chat_use_cases import (
     AnalysisAlreadyCorrectedError,
@@ -157,15 +157,28 @@ def _profile_response(result: ProfileAnalysis) -> TasteProfile:
     )
 
 
+def _scored_keywords(analysis: ProfileAnalysis) -> ScoredProfileKeywords:
+    def scored(keywords: tuple[str, ...]) -> list[dict[str, object]]:
+        # 분석 이전 버전에서 저장된 세션에는 점수가 없으므로 0점으로 내려준다.
+        return [
+            {"value": keyword, "score": analysis.keyword_scores.get(keyword, 0.0)}
+            for keyword in keywords
+        ]
+
+    return ScoredProfileKeywords.model_validate(
+        {
+            "taste": scored(analysis.taste_keywords),
+            "interest": scored(analysis.interest_keywords),
+        }
+    )
+
+
 def _analysis_response(analysis: ProfileAnalysis) -> AnalyzeChatSessionResponse:
     return AnalyzeChatSessionResponse(
         profile={
             "userId": analysis.state.user_id,
             "summary": analysis.summary,
-            "keywords": {
-                "taste": list(analysis.taste_keywords),
-                "interest": list(analysis.interest_keywords),
-            },
+            "keywords": _scored_keywords(analysis),
             "correctionAvailable": not analysis.state.analysis_patch_used,
         },
     )
@@ -296,9 +309,6 @@ async def close_chat_session(
         conversation_id=finalized.state.conversation_room_id,
         user_id=finalized.state.user_id,
         summary=finalized.summary,
-        keywords=ProfileKeywords(
-            taste=list(finalized.taste_keywords),
-            interest=list(finalized.interest_keywords),
-        ),
+        keywords=_scored_keywords(finalized),
         recommendations=recommendations,
     )

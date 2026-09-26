@@ -70,7 +70,7 @@ def test_service_returns_composite_key_and_reason_for_both_lists() -> None:
         {
             "platform": "coupang",
             "externalId": "12345",
-            "score": 8.0,
+            "score": 0.8,
             "reason": "캠핑에 대한 관심과 잘 맞는 상품이에요.",
         }
     ]
@@ -78,7 +78,7 @@ def test_service_returns_composite_key_and_reason_for_both_lists() -> None:
         {
             "platform": "coupang",
             "externalId": "12345",
-            "score": 7.0,
+            "score": 0.7,
             "reason": "캠핑에 관심 있는 분에게 선물하기 좋은 상품이에요.",
         }
     ]

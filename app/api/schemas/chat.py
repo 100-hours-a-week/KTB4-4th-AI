@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import Field
 
 from app.api.schemas.common import ApiModel, ConversationRoomId, UserId
-from app.api.schemas.profile import ProfileKeywords
+from app.api.schemas.profile import ProfileKeywords, ScoredProfileKeywords
 from app.api.schemas.recommendation import RecommendationLists
 
 
@@ -39,7 +39,7 @@ class ChatMessageResponse(ApiModel):
 class ClientProfileAnalysis(ApiModel):
     user_id: UserId
     summary: str | None
-    keywords: ProfileKeywords
+    keywords: ScoredProfileKeywords
     correction_available: bool
 
 
@@ -61,5 +61,5 @@ class CloseChatSessionResponse(ApiModel):
     conversation_id: ConversationRoomId
     user_id: UserId
     summary: str | None
-    keywords: ProfileKeywords
+    keywords: ScoredProfileKeywords
     recommendations: RecommendationLists
