@@ -9,7 +9,7 @@ from enum import StrEnum
 from app.domain.recommendation.models import ProductKey, VectorSpace
 
 # 문서 생성 규칙 버전. 프롬프트나 아래 검증 규칙을 바꾸면 반드시 올린다.
-DOCUMENT_VERSION = "catalog-doc-v1-name-price"
+DOCUMENT_VERSION = "catalog-doc-v2-name-price-strict"
 
 MAX_DOCUMENT_LENGTH = 200
 MIN_DOCUMENT_LENGTH = 10

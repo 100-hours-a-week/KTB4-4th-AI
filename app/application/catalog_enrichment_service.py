@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
 from app.application.catalog_document_service import CatalogDocumentService, ProductEnrichment
 from app.application.ports.catalog_document_repository import CatalogDocumentRepository
 from app.application.ports.embedder import Embedder
+from app.domain.catalog.models import DocumentSourceProduct
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +40,22 @@ class CatalogEnrichmentService:
         embedder: Embedder,
         repository: CatalogDocumentRepository,
         batch_size: int = 50,
+        embedding_concurrency: int = 4,
+        progress_interval: int = 100,
         stale_processing_seconds: int = 3600,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if embedding_concurrency <= 0:
+            raise ValueError("embedding_concurrency must be positive")
+        if progress_interval <= 0:
+            raise ValueError("progress_interval must be positive")
         self._documents = documents
         self._embedder = embedder
         self._repository = repository
         self._batch_size = batch_size
+        self._embedding_semaphore = asyncio.Semaphore(embedding_concurrency)
+        self._progress_interval = progress_interval
         self._stale_processing_seconds = stale_processing_seconds
 
     async def run_once(self) -> EnrichmentReport:
@@ -57,28 +67,10 @@ class CatalogEnrichmentService:
         if not claimed:
             return EnrichmentReport(claimed=0, succeeded=0, failed=0, released=released)
 
-        result = await self._documents.generate_many(
-            [product.to_document_input() for product in claimed]
+        outcomes = await asyncio.gather(
+            *(self._process(product.to_document_input()) for product in claimed)
         )
-        for failure in result.failed:
-            logger.warning(
-                "document generation failed",
-                extra={"product": str(failure.key), "reason": failure.reason},
-            )
-            await self._repository.mark_failed(failure.key, reason=failure.reason)
-
-        succeeded = 0
-        for enrichment in result.enriched:
-            try:
-                await self._store(enrichment)
-            except Exception as error:  # 임베딩이나 저장 실패는 상품 단위로 격리한다
-                logger.warning(
-                    "embedding or persistence failed",
-                    extra={"product": str(enrichment.key), "reason": str(error)},
-                )
-                await self._repository.mark_failed(enrichment.key, reason=str(error))
-            else:
-                succeeded += 1
+        succeeded = sum(outcomes)
 
         return EnrichmentReport(
             claimed=len(claimed),
@@ -102,6 +94,7 @@ class CatalogEnrichmentService:
             released=0,
             requeued=requeued,
         )
+        next_progress = self._progress_interval
         for _ in range(max_batches):
             report = await self.run_once()
             totals = EnrichmentReport(
@@ -111,9 +104,40 @@ class CatalogEnrichmentService:
                 released=totals.released + report.released,
                 requeued=totals.requeued,
             )
+            while totals.claimed >= next_progress:
+                logger.info(
+                    "catalog enrichment progress: claimed=%d succeeded=%d failed=%d",
+                    totals.claimed,
+                    totals.succeeded,
+                    totals.failed,
+                )
+                next_progress += self._progress_interval
             if report.exhausted:
                 break
         return totals
+
+    async def _process(self, product: DocumentSourceProduct) -> bool:
+        try:
+            enrichment = await self._documents.generate(product)
+        except Exception as error:  # 생성 실패는 상품 단위로 격리한다
+            logger.warning(
+                "document generation failed",
+                extra={"product": str(product.key), "reason": str(error)},
+            )
+            await self._repository.mark_failed(product.key, reason=str(error))
+            return False
+
+        try:
+            async with self._embedding_semaphore:
+                await self._store(enrichment)
+        except Exception as error:  # 임베딩이나 저장 실패는 상품 단위로 격리한다
+            logger.warning(
+                "embedding or persistence failed",
+                extra={"product": str(enrichment.key), "reason": str(error)},
+            )
+            await self._repository.mark_failed(enrichment.key, reason=str(error))
+            return False
+        return True
 
     async def _store(self, enrichment: ProductEnrichment) -> None:
         # 문서 순서는 ProductDocumentSet 이 space 이름순으로 고정해 둔다.

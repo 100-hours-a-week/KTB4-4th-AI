@@ -98,3 +98,29 @@ def test_sends_configured_thinking_mode_per_model() -> None:
 
     assert payloads[0]["enable_thinking"] is False
     assert "enable_thinking" not in payloads[1]
+
+
+def test_sends_configured_temperature_and_stop_sequences_per_model() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            gateway = OpenAICompatibleModelGateway(
+                client=client,
+                model_base_urls={"kanana": "http://x/v1", "other": "http://x/v1"},
+                model_temperatures={"kanana": 0.2},
+                model_stop_sequences={"kanana": ("<|eot_id|>",)},
+            )
+            await gateway.complete([{"role": "user", "content": "hi"}], model="kanana")
+            await gateway.complete([{"role": "user", "content": "hi"}], model="other")
+
+    asyncio.run(exercise())
+
+    assert payloads[0]["temperature"] == 0.2
+    assert payloads[0]["stop"] == ["<|eot_id|>"]
+    assert "temperature" not in payloads[1]
+    assert "stop" not in payloads[1]

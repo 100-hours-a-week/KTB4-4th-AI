@@ -74,6 +74,20 @@ async def build_service(
                 if settings.document_model_enable_thinking is not None
                 else None
             ),
+            model_temperatures=(
+                {
+                    settings.document_model_name: settings.document_model_temperature,
+                }
+                if settings.document_model_temperature is not None
+                else None
+            ),
+            model_stop_sequences=(
+                {
+                    settings.document_model_name: (settings.document_model_stop_sequence,),
+                }
+                if settings.document_model_stop_sequence is not None
+                else None
+            ),
             api_key=(
                 settings.model_api_key.get_secret_value()
                 if settings.model_api_key is not None
@@ -104,6 +118,8 @@ async def build_service(
             embedder=embedder,
             repository=PostgresCatalogDocumentRepository(pool=pool),
             batch_size=settings.catalog_enrich_batch_size,
+            embedding_concurrency=settings.catalog_enrich_embedding_concurrency,
+            progress_interval=settings.catalog_enrich_progress_interval,
             stale_processing_seconds=settings.catalog_enrich_stale_seconds,
         )
         yield service, pool
