@@ -459,3 +459,50 @@ def test_analysis_keywords_are_ordered_by_score_and_patch_keeps_that_order() -> 
         {"value": "음악", "score": 0.6},
     ]
 
+
+def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
+    gateway = FakeModelGateway(
+        completions=[
+            "안녕하세요! 요즘 어떻게 지내세요?",
+            "그렇군요. 다른 이야기도 해볼까요?",
+            "다시 만나서 반가워요!",
+        ],
+        structured_results=[{"items": [], "axes": [], "drop": [], "noneAnswer": True}],
+    )
+    app = create_app(
+        Settings(app_env="test", service_token="test-token", redis_url=None),
+        model_gateway=gateway,
+        session_store=InMemorySessionStore(),
+        recommendation_service=FakeRecommendationService(),
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": 45678},
+        )
+        client.post(
+            "/v1/chat/sessions/45678/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "몰라요"},
+        )
+        analysis = client.post("/v1/chat/sessions/45678/analysis", headers=headers)
+        message_after_expiry = client.post(
+            "/v1/chat/sessions/45678/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "안녕"},
+        )
+        restarted = client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": 45678},
+        )
+
+    assert analysis.status_code == 422
+    assert analysis.json()["code"] == "PROFILE_TOO_SPARSE"
+    assert message_after_expiry.status_code == 404
+    assert message_after_expiry.json()["code"] == "SESSION_NOT_FOUND"
+    assert restarted.status_code == 201
+    assert restarted.json()["greeting"] == "다시 만나서 반가워요!"

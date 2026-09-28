@@ -216,6 +216,8 @@ class ChatUseCases:
 
             active_signals = state.profile.active_signals()
             if not active_signals and state.turn_count < MAX_TURNS:
+                # 새 대화로 다시 시작하도록 세션을 만료시켜 같은 방 번호로 재생성할 수 있게 한다.
+                await self._states.delete(session_id)
                 raise ProfileTooSparseError(session_id)
 
             if state.analysis_turn_count == state.turn_count:
