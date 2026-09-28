@@ -56,7 +56,8 @@ class Settings(BaseSettings):
 
     response_model_timeout_seconds: float = Field(default=60.0, gt=0)
     extraction_model_timeout_seconds: float = Field(default=30.0, gt=0)
-    summary_model_timeout_seconds: float = Field(default=5.0, gt=0)
+    # 취향 요약이 3~4문장으로 길어져서 5초로는 잘릴 수 있다.
+    summary_model_timeout_seconds: float = Field(default=10.0, gt=0)
     # 카탈로그 문서 생성용 로컬 LLM. LM Studio 기본값은 http://127.0.0.1:1234/v1 이다.
     document_model_base_url: AnyHttpUrl | None = None
     document_model_name: str = "document-model"

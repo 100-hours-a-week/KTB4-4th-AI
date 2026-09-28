@@ -2,12 +2,10 @@ from datetime import UTC, datetime, timedelta
 
 from app.domain.profile.merger import ProfileMerger, friend_summary_values
 from app.domain.profile.models import (
-    AssessmentStatus,
     DeferralReason,
     EvidenceType,
     ExtractedItem,
     ExtractionDelta,
-    GoalAssessment,
     ProfileState,
     SignalStatus,
     TasteField,
@@ -36,10 +34,7 @@ def item(
 
 
 def delta(*items: ExtractedItem) -> ExtractionDelta:
-    return ExtractionDelta(
-        items=items,
-        goal_assessment=GoalAssessment("INTEREST", AssessmentStatus.FOUND),
-    )
+    return ExtractionDelta(items=items)
 
 
 def test_rejects_signal_without_user_evidence_and_generic_value() -> None:
@@ -105,7 +100,7 @@ def test_owned_supersedes_matching_want() -> None:
     assert statuses[TasteField.OWNED] == SignalStatus.ACTIVE
 
 
-def test_only_top_six_query_signals_are_active_but_candidates_are_preserved() -> None:
+def test_only_top_five_query_signals_are_active_but_candidates_are_preserved() -> None:
     merger = ProfileMerger()
     profile = ProfileState()
     for index in range(8):
@@ -119,8 +114,8 @@ def test_only_top_six_query_signals_are_active_but_candidates_are_preserved() ->
         ).profile
 
     assert len(profile.signals) == 8
-    assert len(profile.active_signals()) == 6
-    assert sum(signal.status == SignalStatus.INACTIVE for signal in profile.signals) == 2
+    assert len(profile.active_signals()) == 5
+    assert sum(signal.status == SignalStatus.INACTIVE for signal in profile.signals) == 3
 
 
 def test_friend_summary_projection_excludes_sensitive_fields() -> None:
@@ -156,10 +151,7 @@ def test_friend_summary_projection_excludes_sensitive_fields() -> None:
 
 
 def test_axis_must_be_grounded_in_current_user_utterance() -> None:
-    extraction = ExtractionDelta(
-        axes=("손으로 만드는 재미", "모델이 지어낸 기준"),
-        goal_assessment=GoalAssessment("DEEPEN", AssessmentStatus.FOUND),
-    )
+    extraction = ExtractionDelta(axes=("손으로 만드는 재미", "모델이 지어낸 기준"))
 
     result = ProfileMerger().merge(
         ProfileState(),
@@ -170,3 +162,55 @@ def test_axis_must_be_grounded_in_current_user_utterance() -> None:
     )
 
     assert result.profile.axes == ["손으로 만드는 재미"]
+
+
+def test_evidence_from_recent_user_turn_creates_new_signal_with_that_turn() -> None:
+    result = ProfileMerger().merge(
+        ProfileState(),
+        delta(item(TasteField.INTERESTS, "퇴근 후 요리", "퇴근하고 요리해요", 0.6)),
+        utterance="그 시간이 제일 좋아요",
+        now=NOW,
+        source_turn=3,
+        context_utterances=[(1, "요즘 퇴근하고 요리해요"), (2, "파스타 자주 해요")],
+    )
+
+    [signal] = result.accepted
+    assert signal.value == "퇴근 후 요리"
+    assert signal.source_turn == 1
+
+
+def test_evidence_only_in_recent_turn_does_not_bump_existing_signal() -> None:
+    merger = ProfileMerger()
+    first = merger.merge(
+        ProfileState(),
+        delta(item(TasteField.INTERESTS, "요리", "퇴근하고 요리해요")),
+        utterance="요즘 퇴근하고 요리해요",
+        now=NOW,
+        source_turn=1,
+    )
+
+    second = merger.merge(
+        first.profile,
+        delta(item(TasteField.INTERESTS, "요리", "퇴근하고 요리해요")),
+        utterance="주말엔 좀 쉬었어요",
+        now=NOW,
+        source_turn=2,
+        context_utterances=[(1, "요즘 퇴근하고 요리해요")],
+    )
+
+    assert second.accepted == ()
+    [signal] = second.profile.signals
+    assert signal.mention_count == 1
+
+
+def test_evidence_absent_from_all_user_turns_is_rejected() -> None:
+    result = ProfileMerger().merge(
+        ProfileState(),
+        delta(item(TasteField.INTERESTS, "등산", "산에 가요")),
+        utterance="그 시간이 제일 좋아요",
+        now=NOW,
+        source_turn=2,
+        context_utterances=[(1, "요즘 퇴근하고 요리해요")],
+    )
+
+    assert result.rejected_values == ("등산",)
