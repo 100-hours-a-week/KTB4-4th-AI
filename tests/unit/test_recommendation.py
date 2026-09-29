@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from app.domain.profile.models import DeferralReason, TasteField, Visibility
+from app.domain.profile.models import DeferralReason, PreferenceAspect, TasteField, Visibility
 from app.domain.recommendation import (
     CatalogProduct,
     ProductKey,
@@ -281,3 +281,33 @@ def test_excluded_products_are_dropped_and_boosts_raise_score() -> None:
     assert [item.product.key for item in plain] == [strong.key, light.key]
     assert [item.product.key for item in guided] == [light.key]
     assert guided[0].score > plain[1].score
+
+
+def test_situation_preferences_become_extra_usage_queries_with_the_usage_template() -> None:
+    def preference(value: str, aspect: PreferenceAspect, confidence: float) -> RecommendationSignal:
+        return RecommendationSignal(
+            field=TasteField.PREFERENCES,
+            value=value,
+            confidence=confidence,
+            visibility=Visibility.FRIENDS,
+            updated_at=NOW,
+            aspect=aspect,
+        )
+
+    queries = build_search_queries(
+        [
+            _signal(TasteField.HOBBIES, "여행", confidence=0.9),
+            preference("조용한 시골 여행", PreferenceAspect.SITUATION, 0.9),
+            preference("사람 적은 평일 오전", PreferenceAspect.SITUATION, 0.8),
+            preference("새벽 드라이브", PreferenceAspect.SITUATION, 0.7),
+            preference("고소한 커피", PreferenceAspect.SENSORY, 0.9),
+        ]
+    )
+
+    extra = [query for query in queries if query.query_id.startswith("s_")]
+    assert [query.text for query in extra] == [
+        "조용한 시골 여행 활동에서 사용하는 제품",
+        "사람 적은 평일 오전 활동에서 사용하는 제품",
+    ]
+    assert all(query.space == VectorSpace.USAGE for query in extra)
+    assert "고소한 커피" not in {query.signal.value for query in queries}

@@ -10,7 +10,8 @@ from app.domain.conversation.models import (
     ReadinessResult,
     SessionStatus,
 )
-from app.domain.profile.models import AssessmentStatus, LinkRole, TasteField
+from app.domain.profile.merger import normalize_text
+from app.domain.profile.models import AssessmentStatus, LinkRole, ProfileSignal, TasteField
 
 MAX_TURNS = 20
 # 충분하다고 보는 취향 개수. merger의 MAX_ACTIVE_QUERY_SIGNALS와 같아서 이 이상은 모으지 않는다.
@@ -25,6 +26,8 @@ QUERY_PROGRESS_WEIGHT = 30
 HIGH_CONFIDENCE_PROGRESS_WEIGHT = 30
 GEAR_PROGRESS_WEIGHT = 20
 EXCLUSION_PROGRESS_WEIGHT = 20
+# 새 관심사 없이 같은 이야기로 이만큼 주고받으면 옆 화제로 넓힌다.
+TOPIC_BROADEN_AFTER_TURNS = 2
 
 _GOAL_AREA = {
     ConversationGoal.INTEREST: GoalArea.INTEREST,
@@ -259,6 +262,34 @@ def _goal_for_missing(
     if len(candidates) > 1 and state.last_goal in candidates:
         candidates.remove(state.last_goal)
     return min(candidates, key=lambda goal: state.goal_attempts.get(goal.value, 0))
+
+
+def known_query_values(state: ConversationState) -> set[str]:
+    return {
+        normalize_text(signal.value)
+        for signal in state.profile.signals
+        if signal.link_role == LinkRole.QUERY
+    }
+
+
+def record_interest_progress(
+    state: ConversationState,
+    known_values: set[str],
+    accepted: tuple[ProfileSignal, ...],
+) -> None:
+    """이번 턴에 처음 보는 관심사가 들어왔는지로 같은 화제에 머문 턴 수를 센다.
+
+    취향(preferences)은 기존 관심사를 더 자세히 들은 것이라 새 관심사로 치지 않는다.
+    """
+    found_new = any(
+        signal.link_role == LinkRole.QUERY and normalize_text(signal.value) not in known_values
+        for signal in accepted
+    )
+    state.turns_since_new_interest = 0 if found_new else state.turns_since_new_interest + 1
+
+
+def should_broaden_topic(state: ConversationState) -> bool:
+    return state.turns_since_new_interest >= TOPIC_BROADEN_AFTER_TURNS
 
 
 def record_goal_attempt(state: ConversationState, goal: ConversationGoal) -> None:

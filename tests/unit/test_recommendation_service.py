@@ -88,3 +88,37 @@ def test_service_returns_composite_key_and_reason_for_both_lists() -> None:
             "reason": "캠핑에 관심 있는 분에게 선물하기 좋은 상품이에요.",
         }
     ]
+
+
+def test_recommendation_inputs_route_preferences_by_aspect() -> None:
+    from app.application.recommendation_service import recommendation_inputs
+
+    timestamp = datetime(2026, 9, 22, tzinfo=UTC).isoformat()
+
+    def preference(value: str, aspect: str | None) -> dict[str, object]:
+        return {
+            "value": value,
+            "confidence": 0.8,
+            "rankScore": 0.8,
+            "visibility": "friends",
+            "updatedAt": timestamp,
+            "aspect": aspect,
+        }
+
+    signals, guide = recommendation_inputs(
+        {
+            "profile": {
+                "preferences": [
+                    preference("조용한 시골 여행", "situation"),
+                    preference("고소한 커피", "sensory"),
+                    preference("머리 비우는 시간", "motive"),
+                    preference("가벼운 것", None),
+                ],
+                "dislikes": [{"value": "강한 향"}],
+            }
+        }
+    )
+
+    assert [signal.value for signal in signals] == ["조용한 시골 여행"]
+    assert guide.preferences == ("고소한 커피", "가벼운 것")
+    assert guide.exclusions == ("강한 향",)

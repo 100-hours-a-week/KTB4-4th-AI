@@ -37,8 +37,10 @@ from app.domain.conversation.policy import (
     apply_goal_assessment,
     decide_goal,
     fields_for_goal,
+    known_query_values,
     recommendation_readiness,
     record_goal_attempt,
+    record_interest_progress,
 )
 from app.domain.profile.merger import MergeResult, ProfileMerger
 from app.domain.profile.models import (
@@ -49,6 +51,7 @@ from app.domain.profile.models import (
     ExtractedItem,
     ExtractionDelta,
     IntentType,
+    PreferenceAspect,
     TasteField,
     utc_now,
 )
@@ -96,6 +99,8 @@ class ExtractedItemPayload(_ExtractionModel):
     evidence_type: EvidenceType
     intent_type: IntentType | None = None
     deferral_reason: DeferralReason | None = None
+    aspect: PreferenceAspect | None = None
+    target: ShortValue | None = None
 
     @model_validator(mode="after")
     def validate_deferral(self) -> Self:
@@ -130,6 +135,12 @@ def _repair_item(raw: Mapping[str, object]) -> dict[str, object]:
         item["field"] = TasteField.WANTS.value
     elif item.get("field") != TasteField.UNAFFORDABLE.value and has_reason:
         item.pop("deferralReason", None)
+    # aspect와 target은 취향에만 의미가 있다. 다른 field에 붙어 오면 항목은 살리고 떼어 낸다.
+    if item.get("field") != TasteField.PREFERENCES.value:
+        item.pop("aspect", None)
+        item.pop("target", None)
+    elif isinstance(item.get("target"), str) and not item["target"].strip():
+        item["target"] = None
     return item
 
 
@@ -142,6 +153,8 @@ def _to_item(payload: ExtractedItemPayload) -> ExtractedItem:
         evidence_type=payload.evidence_type,
         intent_type=payload.intent_type,
         deferral_reason=payload.deferral_reason,
+        aspect=payload.aspect,
+        target=payload.target,
     )
 
 
@@ -327,6 +340,7 @@ class ConversationService:
             resolved_completion_reason = decide_goal(state, utterance).completion_reason
         reply = self.guard_reply(raw_reply, goal)
         delta, extraction_failed = await self._extract(state, utterance)
+        known_values = known_query_values(state)
         merge_result = self._merger.merge(
             state.profile,
             delta,
@@ -336,6 +350,7 @@ class ConversationService:
             context_utterances=state.user_turns()[-EXTRACTION_CONTEXT_USER_TURNS:],
         )
         state.profile = merge_result.profile
+        record_interest_progress(state, known_values, merge_result.accepted)
         record_goal_attempt(state, goal)
         apply_goal_assessment(state, goal, _assess_goal(goal, delta, merge_result))
 

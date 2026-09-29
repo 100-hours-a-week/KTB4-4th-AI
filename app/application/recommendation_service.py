@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.application.recommendation_engine import RecommendationEngine
-from app.domain.profile.models import DeferralReason, TasteField, Visibility
+from app.domain.profile.models import DeferralReason, PreferenceAspect, TasteField, Visibility
 from app.domain.recommendation import (
     RankedRecommendation,
     RecommendationGuide,
@@ -19,6 +19,14 @@ _PROFILE_FIELDS = (
     TasteField.UNAFFORDABLE,
     TasteField.CONSUMABLES,
 )
+# content 유사도 가산에 쓰는 취향 측면. 상황은 보조 usage 쿼리로 쓰고,
+# 동기는 상품 문서와 맞지 않아 추천에 쓰지 않는다. 측면이 없는 이전 세션 값은 가산에 쓴다.
+_BOOST_ASPECTS = {
+    None,
+    PreferenceAspect.ATTRIBUTE,
+    PreferenceAspect.SENSORY,
+    PreferenceAspect.CRITERION,
+}
 
 
 def _parse_datetime(value: object) -> datetime:
@@ -29,12 +37,46 @@ def _parse_datetime(value: object) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _aspect(item: Mapping[str, Any]) -> PreferenceAspect | None:
+    value = item.get("aspect")
+    try:
+        return PreferenceAspect(str(value)) if value else None
+    except ValueError:
+        return None
+
+
+def _situation_signals(profile: Mapping[str, Any]) -> list[RecommendationSignal]:
+    items = profile.get(TasteField.PREFERENCES.value, [])
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return []
+    return [
+        RecommendationSignal(
+            field=TasteField.PREFERENCES,
+            value=str(item["value"]),
+            confidence=float(item["confidence"]),
+            visibility=Visibility(str(item.get("visibility", Visibility.FRIENDS))),
+            updated_at=_parse_datetime(item["updatedAt"]),
+            rank_score=(float(item["rankScore"]) if item.get("rankScore") is not None else None),
+            aspect=PreferenceAspect.SITUATION,
+        )
+        for item in items
+        if isinstance(item, Mapping) and _aspect(item) == PreferenceAspect.SITUATION
+    ]
+
+
+def recommendation_inputs(
+    payload: Mapping[str, Any],
+) -> tuple[tuple[RecommendationSignal, ...], RecommendationGuide]:
+    """추천 엔진에 넘기는 신호와 가이드. 플레이그라운드도 같은 함수로 쿼리를 미리 본다."""
+    return _recommendation_signals(payload), _recommendation_guide(payload)
+
+
 def _recommendation_signals(payload: Mapping[str, Any]) -> tuple[RecommendationSignal, ...]:
     profile = payload.get("profile")
     if not isinstance(profile, Mapping):
         raise ValueError("profile must be an object")
 
-    signals: list[RecommendationSignal] = []
+    signals: list[RecommendationSignal] = _situation_signals(profile)
     for field in _PROFILE_FIELDS:
         items = profile.get(field.value, [])
         if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
@@ -59,14 +101,23 @@ def _recommendation_signals(payload: Mapping[str, Any]) -> tuple[RecommendationS
     return tuple(signals)
 
 
-def _values(profile: Mapping[str, Any], fields: Sequence[TasteField]) -> tuple[str, ...]:
+def _values(
+    profile: Mapping[str, Any],
+    fields: Sequence[TasteField],
+    *,
+    aspects: set[PreferenceAspect | None] | None = None,
+) -> tuple[str, ...]:
     values: list[str] = []
     for field in fields:
         items = profile.get(field.value, [])
         if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
             continue
         values.extend(
-            str(item["value"]) for item in items if isinstance(item, Mapping) and item.get("value")
+            str(item["value"])
+            for item in items
+            if isinstance(item, Mapping)
+            and item.get("value")
+            and (aspects is None or _aspect(item) in aspects)
         )
     return tuple(values)
 
@@ -77,7 +128,7 @@ def _recommendation_guide(payload: Mapping[str, Any]) -> RecommendationGuide:
         return RecommendationGuide()
     return RecommendationGuide(
         exclusions=_values(profile, (TasteField.DISLIKES, TasteField.CONSTRAINTS)),
-        preferences=_values(profile, (TasteField.PREFERENCES,)),
+        preferences=_values(profile, (TasteField.PREFERENCES,), aspects=_BOOST_ASPECTS),
     )
 
 
@@ -98,8 +149,8 @@ class V1RecommendationService:
         self._engine = engine
 
     async def recommend_lists(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        signals = _recommendation_signals(payload)
-        batch = await self._engine.recommend(signals, guide=_recommendation_guide(payload))
+        signals, guide = recommendation_inputs(payload)
+        batch = await self._engine.recommend(signals, guide=guide)
         return {
             "generatedAt": datetime.now(UTC).isoformat(),
             "self": {"items": _items(batch.self)},
