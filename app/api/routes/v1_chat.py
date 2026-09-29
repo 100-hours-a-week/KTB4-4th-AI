@@ -36,6 +36,7 @@ from app.application.ports.recommendation_service import RecommendationService
 from app.core.errors import ApiError
 from app.domain.conversation.models import SessionStatus
 from app.domain.conversation.policy import MAX_TURNS, conversation_progress
+from app.domain.profile.merger import taste_rank_score
 from app.domain.profile.models import TasteField
 
 router = APIRouter()
@@ -128,6 +129,7 @@ def _profile_response(result: ProfileAnalysis) -> TasteProfile:
             ProfileItem(
                 value=signal.value,
                 confidence=signal.confidence,
+                rank_score=taste_rank_score(signal),
                 link_role=signal.link_role.value,
                 visibility=signal.visibility.value,
                 intent_type=signal.intent_type.value if signal.intent_type else None,

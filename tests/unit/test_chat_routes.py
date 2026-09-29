@@ -53,7 +53,7 @@ class FakeModelGateway:
             ],
             "axes": [],
             "drop": [],
-            "goalAssessment": {"goal": "INTEREST", "status": "found"},
+            "noneAnswer": False,
         }
 
 
@@ -134,7 +134,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
         "reply": "캠핑 좋죠. 주로 어디로 다니세요?",
         "turn": 1,
         "maxTurns": 20,
-        "progress": 25,
+        "progress": 21,
         "canClose": False,
         "inputLocked": False,
     }
@@ -142,7 +142,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
     assert analysis.json()["profile"] == {
         "userId": 10293,
         "summary": "캠핑을 즐기고 직접 장비를 고르는 분입니다.",
-        "keywords": {"taste": [], "interest": [{"value": "캠핑", "score": 0.9}]},
+        "keywords": {"taste": [], "interest": [{"value": "캠핑", "score": 0.95}]},
         "correctionAvailable": True,
     }
     assert closed.status_code == 200
@@ -214,7 +214,7 @@ def test_analysis_patch_directly_updates_summary_and_keywords() -> None:
                 ],
                 "axes": [],
                 "drop": [],
-                "goalAssessment": {"goal": "INTEREST", "status": "found"},
+                "noneAnswer": False,
             },
         ],
     )
@@ -413,7 +413,7 @@ def test_analysis_keywords_are_ordered_by_score_and_patch_keeps_that_order() -> 
                 ],
                 "axes": [],
                 "drop": [],
-                "goalAssessment": {"goal": "INTEREST", "status": "found"},
+                "noneAnswer": False,
             },
         ],
     )
@@ -449,12 +449,60 @@ def test_analysis_keywords_are_ordered_by_score_and_patch_keeps_that_order() -> 
 
     assert analysis.status_code == 200
     assert analysis.json()["profile"]["keywords"]["interest"] == [
-        {"value": "산책", "score": 0.95},
+        {"value": "산책", "score": 1.0},
         {"value": "사진", "score": 0.8},
         {"value": "음악", "score": 0.6},
     ]
     assert updated.status_code == 200
     assert updated.json()["profile"]["keywords"]["interest"] == [
-        {"value": "산책", "score": 0.95},
+        {"value": "산책", "score": 1.0},
         {"value": "음악", "score": 0.6},
     ]
+
+
+def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
+    gateway = FakeModelGateway(
+        completions=[
+            "안녕하세요! 요즘 어떻게 지내세요?",
+            "그렇군요. 다른 이야기도 해볼까요?",
+            "다시 만나서 반가워요!",
+        ],
+        structured_results=[{"items": [], "axes": [], "drop": [], "noneAnswer": True}],
+    )
+    app = create_app(
+        Settings(app_env="test", service_token="test-token", redis_url=None),
+        model_gateway=gateway,
+        session_store=InMemorySessionStore(),
+        recommendation_service=FakeRecommendationService(),
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": 45678},
+        )
+        client.post(
+            "/v1/chat/sessions/45678/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "몰라요"},
+        )
+        analysis = client.post("/v1/chat/sessions/45678/analysis", headers=headers)
+        message_after_expiry = client.post(
+            "/v1/chat/sessions/45678/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "안녕"},
+        )
+        restarted = client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": 45678},
+        )
+
+    assert analysis.status_code == 422
+    assert analysis.json()["code"] == "PROFILE_TOO_SPARSE"
+    assert message_after_expiry.status_code == 404
+    assert message_after_expiry.json()["code"] == "SESSION_NOT_FOUND"
+    assert restarted.status_code == 201
+    assert restarted.json()["greeting"] == "다시 만나서 반가워요!"

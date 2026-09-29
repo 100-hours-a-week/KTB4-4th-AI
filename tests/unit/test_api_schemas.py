@@ -13,6 +13,7 @@ def profile_item(value: str = "핸드드립") -> ProfileItem:
     return ProfileItem(
         value=value,
         confidence=0.9,
+        rankScore=0.9,
         linkRole="query",
         visibility="friends",
         intentType="want",
@@ -93,10 +94,10 @@ def test_user_id_rejects_quoted_number_to_keep_backend_contract_strict() -> None
         CreateChatSessionRequest.model_validate({"userId": 10293, "conversationRoomId": "45678"})
 
 
-def test_taste_profile_rejects_more_than_six_active_query_items() -> None:
+def test_taste_profile_rejects_more_than_five_active_query_items() -> None:
     payload = profile_payload()
     payload["interests"] = [
-        profile_item(str(index)).model_dump(by_alias=True) for index in range(7)
+        profile_item(str(index)).model_dump(by_alias=True) for index in range(6)
     ]
 
     with pytest.raises(ValidationError):

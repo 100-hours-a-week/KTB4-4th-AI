@@ -13,10 +13,14 @@ from app.domain.conversation.models import (
 from app.domain.profile.models import AssessmentStatus, LinkRole, TasteField
 
 MAX_TURNS = 20
-MIN_QUERY_SIGNALS = 3
+# 충분하다고 보는 취향 개수. merger의 MAX_ACTIVE_QUERY_SIGNALS와 같아서 이 이상은 모으지 않는다.
+MIN_QUERY_SIGNALS = 5
 MIN_HIGH_CONFIDENCE_QUERY_SIGNALS = 2
+DISENGAGED_MESSAGE_LENGTH = 10
 HIGH_CONFIDENCE_THRESHOLD = 0.6
 MAX_GOAL_ATTEMPTS = 3
+# 기본 순서 이후 모자란 소지품·싫은 것을 다시 물을 수 있는 총 시도 횟수.
+MAX_FOLLOW_UP_ATTEMPTS = 5
 QUERY_PROGRESS_WEIGHT = 30
 HIGH_CONFIDENCE_PROGRESS_WEIGHT = 30
 GEAR_PROGRESS_WEIGHT = 20
@@ -158,10 +162,11 @@ def _recent_user_messages(state: ConversationState) -> list[str]:
 
 def _shows_disengagement(state: ConversationState) -> bool:
     messages = _recent_user_messages(state)
+    # 한국어 대화체는 짧은 답이 흔해서, 세 번 연속 짧게 줄어들 때만 이탈로 본다.
     return (
         len(messages) == 3
         and len(messages[0]) > len(messages[1]) > len(messages[2])
-        and len(messages[2]) < 12
+        and all(len(message) < DISENGAGED_MESSAGE_LENGTH for message in messages)
     )
 
 
@@ -214,7 +219,46 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     ):
         return GoalDecision(ConversationGoal.DEEPEN)
 
+    # 기본 순서를 다 돌았어도 완료 조건에 모자란 신호가 있으면 끝내지 않고 그 신호를 묻는다.
+    # 대화는 MAX_TURNS, 이탈 판정, 또는 더 물을 게 없을 때 끝난다.
+    readiness = recommendation_readiness(state)
+    follow_up = _goal_for_missing(state, readiness.missing_signals, query_count)
+    if follow_up is not None:
+        return GoalDecision(follow_up)
+
     return GoalDecision(ConversationGoal.WRAP, CompletionReason.MAX_CYCLES)
+
+
+def _goal_for_missing(
+    state: ConversationState,
+    missing: tuple[str, ...],
+    query_count: int,
+) -> ConversationGoal | None:
+    """모자란 신호를 채울 목표 중 덜 쓴 것을 고른다. 직전 목표는 되도록 피한다."""
+    candidates: list[ConversationGoal] = []
+    if "query_signals" in missing:
+        candidates += [ConversationGoal.INTEREST, ConversationGoal.INTEREST_VIA_ROUTINE]
+    if query_count >= 1 and (
+        "query_signals" in missing or "high_confidence_query_signals" in missing
+    ):
+        candidates.append(ConversationGoal.DEEPEN)
+    # 소지품과 싫은 것은 계속 물으면 캐묻는 느낌이 들어서 횟수를 제한한다.
+    if (
+        "gear" in missing
+        and query_count >= 1
+        and state.goal_attempts.get(ConversationGoal.GEAR.value, 0) < MAX_FOLLOW_UP_ATTEMPTS
+    ):
+        candidates.append(ConversationGoal.GEAR)
+    if (
+        "exclusion" in missing
+        and state.goal_attempts.get(ConversationGoal.DISLIKE.value, 0) < MAX_FOLLOW_UP_ATTEMPTS
+    ):
+        candidates.append(ConversationGoal.DISLIKE)
+    if not candidates:
+        return None
+    if len(candidates) > 1 and state.last_goal in candidates:
+        candidates.remove(state.last_goal)
+    return min(candidates, key=lambda goal: state.goal_attempts.get(goal.value, 0))
 
 
 def record_goal_attempt(state: ConversationState, goal: ConversationGoal) -> None:

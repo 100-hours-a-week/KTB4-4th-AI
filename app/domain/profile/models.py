@@ -79,24 +79,12 @@ class DropRef:
 
 
 @dataclass(slots=True, frozen=True)
-class GoalAssessment:
-    goal: str
-    status: AssessmentStatus
-
-
-@dataclass(slots=True, frozen=True)
 class ExtractionDelta:
     items: tuple[ExtractedItem, ...] = ()
     axes: tuple[str, ...] = ()
     drop: tuple[DropRef, ...] = ()
-    goal_assessment: GoalAssessment | None = None
-
-    @classmethod
-    def empty(cls, *, goal: str | None = None) -> ExtractionDelta:
-        assessment = None
-        if goal is not None:
-            assessment = GoalAssessment(goal=goal, status=AssessmentStatus.UNRESOLVED)
-        return cls(goal_assessment=assessment)
+    # 사용자가 직전 AI 질문에 해당하는 게 없다고 명확히 답했는지. 목표 판정은 코드가 한다.
+    none_answer: bool = False
 
 
 @dataclass(slots=True)

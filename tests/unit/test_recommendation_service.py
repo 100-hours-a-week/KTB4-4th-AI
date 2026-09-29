@@ -13,8 +13,12 @@ from app.domain.recommendation import (
 
 
 class FakeEngine:
-    async def recommend(self, signals, *, now=None, limit: int = 20) -> RecommendationBatch:
+    async def recommend(
+        self, signals, *, now=None, limit: int = 20, guide=None
+    ) -> RecommendationBatch:
         assert [signal.value for signal in signals] == ["캠핑"]
+        assert guide.exclusions == ("강한 향",)
+        assert guide.preferences == ("가벼운 것",)
         product = CatalogProduct(
             key=ProductKey(platform="coupang", external_id="12345"),
             name="캠핑 머그컵",
@@ -60,6 +64,8 @@ def test_service_returns_composite_key_and_reason_for_both_lists() -> None:
                     "wants": [],
                     "unaffordable": [],
                     "consumables": [],
+                    "dislikes": [{"value": "강한 향"}],
+                    "preferences": [{"value": "가벼운 것"}],
                 }
             }
         )
