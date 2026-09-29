@@ -198,6 +198,15 @@ class ChatUseCases:
         if state.analysis_turn_count != state.turn_count:
             raise AnalysisOutdatedError(state.session_id)
 
+    @staticmethod
+    def _profile_too_sparse(state: ConversationState) -> bool:
+        if state.turn_count < MAX_TURNS:
+            return not state.profile.active_signals()
+        # 최대 턴까지 대화했는데 분석 키워드로 보여줄 취향·관심사가 하나도 없으면 분석하지 않는다.
+        return not ranked_friend_signals(
+            state.profile, (*_TASTE_KEYWORD_FIELDS, *_INTEREST_KEYWORD_FIELDS)
+        )
+
     async def get_close_analysis(self, session_id: int, *, user_id: int) -> ProfileAnalysis:
         async with self._lock(session_id):
             state = await self._states.load(session_id)
@@ -214,8 +223,7 @@ class ChatUseCases:
             if state.status == SessionStatus.CLOSED or state.finalized:
                 raise SessionClosedError(session_id)
 
-            active_signals = state.profile.active_signals()
-            if not active_signals and state.turn_count < MAX_TURNS:
+            if self._profile_too_sparse(state):
                 # 새 대화로 다시 시작하도록 세션을 만료시켜 같은 방 번호로 재생성할 수 있게 한다.
                 await self._states.delete(session_id)
                 raise ProfileTooSparseError(session_id)
