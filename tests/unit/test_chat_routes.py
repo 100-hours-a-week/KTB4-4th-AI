@@ -6,6 +6,17 @@ from fastapi.testclient import TestClient
 
 from app.application.ports.model_gateway import Message
 from app.core.config import Settings
+from app.domain.conversation.models import SessionStatus
+from app.domain.conversation.policy import MAX_TURNS
+from app.domain.profile.models import (
+    EvidenceType,
+    IntentType,
+    LinkRole,
+    ProfileSignal,
+    SignalStatus,
+    TasteField,
+    Visibility,
+)
 from app.infrastructure.persistence import InMemorySessionStore
 from app.main import create_app
 
@@ -506,3 +517,76 @@ def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
     assert message_after_expiry.json()["code"] == "SESSION_NOT_FOUND"
     assert restarted.status_code == 201
     assert restarted.json()["greeting"] == "다시 만나서 반가워요!"
+
+
+def _max_turn_profile_signal(field: TasteField, value: str) -> ProfileSignal:
+    now = datetime(2026, 9, 18)
+    return ProfileSignal(
+        field=field,
+        value=value,
+        normalized_value=value,
+        confidence=0.9,
+        link_role=LinkRole.QUERY,
+        visibility=Visibility.FRIENDS,
+        intent_type=IntentType.BOTH,
+        deferral_reason=None,
+        evidence=value,
+        evidence_type=EvidenceType.EXPLICIT,
+        first_seen_at=now,
+        updated_at=now,
+        status=SignalStatus.ACTIVE,
+    )
+
+
+def _analyze_after_max_turns(signals: list[ProfileSignal]) -> tuple[Any, Any]:
+    gateway = FakeModelGateway(
+        completions=["안녕하세요! 요즘 어떻게 지내세요?", "캠핑을 좋아하는 친구예요."],
+    )
+    app = create_app(
+        Settings(app_env="test", service_token="test-token", redis_url=None),
+        model_gateway=gateway,
+        session_store=InMemorySessionStore(),
+        recommendation_service=FakeRecommendationService(),
+    )
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": 45678},
+        )
+        store = app.state.conversation_state_store
+
+        async def reach_max_turns() -> None:
+            state = await store.load(45678)
+            state.turn_count = MAX_TURNS
+            state.status = SessionStatus.INPUT_LOCKED
+            state.profile.signals = signals
+            await store.save(state)
+
+        client.portal.call(reach_max_turns)
+        analysis = client.post("/v1/chat/sessions/45678/analysis", headers=headers)
+        message_after_analysis = client.post(
+            "/v1/chat/sessions/45678/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "안녕"},
+        )
+    return analysis, message_after_analysis
+
+
+def test_max_turn_analysis_without_taste_or_interest_is_too_sparse() -> None:
+    analysis, message_after_analysis = _analyze_after_max_turns(
+        [_max_turn_profile_signal(TasteField.DISLIKES, "향수")]
+    )
+
+    assert analysis.status_code == 422
+    assert analysis.json()["code"] == "PROFILE_TOO_SPARSE"
+    assert message_after_analysis.status_code == 404
+
+
+def test_max_turn_analysis_with_interest_returns_profile() -> None:
+    analysis, _ = _analyze_after_max_turns([_max_turn_profile_signal(TasteField.INTERESTS, "캠핑")])
+
+    assert analysis.status_code == 200
+    assert analysis.json()["profile"]["keywords"]["interest"][0]["value"] == "캠핑"
