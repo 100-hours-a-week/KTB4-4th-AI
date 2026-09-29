@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -29,13 +29,16 @@ QUERY_FIELDS = {
 WEIGHT_FIELDS = {TasteField.PREFERENCES, TasteField.LIFESTYLE}
 SAFETY_FIELDS = {TasteField.DISLIKES, TasteField.CONSTRAINTS}
 
-MAX_ACTIVE_QUERY_SIGNALS = 6
+# 대화에서 모으는 취향은 최대 5개이고, 이 안에서 taste_rank_score 순으로 순위를 매긴다.
+MAX_ACTIVE_QUERY_SIGNALS = 5
 MAX_ACTIVE_WEIGHT_SIGNALS = 3
+REPETITION_BONUS = 0.05
+HOBBY_BONUS = 0.05
 MAX_ACTIVE_OWNED_SIGNALS = 3
 MAX_AXES = 3
 
 # 일반적인 응답을 걸러내는 1차 책임은 EXTRACTION_SYSTEM 프롬프트와
-# goalAssessment.confirmed_none 경로에 있다. 아래 목록은 그 경로가 실패했을 때
+# noneAnswer 경로에 있다. 아래 목록은 그 경로가 실패했을 때
 # 프로필이 오염되지 않게 막는 최소한의 안전망이므로, 새 사례가 나와도
 # 여기에 단어를 추가하지 말고 프롬프트를 고친다.
 _GENERIC_VALUES = frozenset(
@@ -114,9 +117,32 @@ def _is_grounded(evidence: str, utterance: str) -> bool:
     return bool(normalized_evidence) and normalized_evidence in normalize_text(utterance)
 
 
+def _grounded_turn(
+    evidence: str,
+    utterance: str,
+    source_turn: int,
+    context_utterances: Sequence[tuple[int, str]],
+) -> int | None:
+    """근거가 나온 사용자 턴 번호. 이번 발화를 먼저 보고, 없으면 최근 발화를 최신순으로 본다."""
+    if _is_grounded(evidence, utterance):
+        return source_turn
+    for turn, text in reversed(context_utterances):
+        if _is_grounded(evidence, text):
+            return turn
+    return None
+
+
+def taste_rank_score(signal: ProfileSignal) -> float:
+    """취향 순위 점수(0~1). 신뢰도에 여러 번 언급된 것과 반복 활동(hobbies)을 더 얹는다."""
+    repetition_bonus = min(signal.mention_count - 1, 3) * REPETITION_BONUS
+    hobby_bonus = HOBBY_BONUS if signal.field == TasteField.HOBBIES else 0.0
+    return round(min(signal.confidence + repetition_bonus + hobby_bonus, 1.0), 2)
+
+
 def _signal_sort_key(signal: ProfileSignal) -> tuple[float, ...]:
     specificity = min(len(signal.normalized_value), 20) / 20
     return (
+        taste_rank_score(signal),
         signal.confidence,
         float(_EVIDENCE_PRIORITY[signal.evidence_type]),
         float(signal.mention_count),
@@ -175,6 +201,7 @@ class ProfileMerger:
         utterance: str,
         now: datetime,
         source_turn: int,
+        context_utterances: Sequence[tuple[int, str]] = (),
     ) -> MergeResult:
         merged = copy.deepcopy(profile)
         accepted: list[ProfileSignal] = []
@@ -188,12 +215,18 @@ class ProfileMerger:
 
         for item in delta.items:
             normalized = normalize_text(item.value)
-            if (
-                not normalized
-                or normalized in _GENERIC_VALUES
-                or not _is_grounded(item.evidence, utterance)
-            ):
+            item_turn = _grounded_turn(item.evidence, utterance, source_turn, context_utterances)
+            if not normalized or normalized in _GENERIC_VALUES or item_turn is None:
                 rejected.append(item.value)
+                continue
+            # 이전 턴 근거는 새 항목을 만들 때만 쓴다. 문맥에 다시 보인다는 이유로
+            # 이미 있는 항목의 언급 횟수를 올리면 반복이 부풀려진다.
+            if item_turn != source_turn and any(
+                signal.field == item.field
+                and signal.normalized_value == normalized
+                and signal.status != SignalStatus.SUPERSEDED
+                for signal in merged.signals
+            ):
                 continue
 
             _supersede_previous_state(merged.signals, item)
@@ -224,7 +257,7 @@ class ProfileMerger:
                 existing.intent_type = item.intent_type or existing.intent_type
                 existing.deferral_reason = item.deferral_reason or existing.deferral_reason
                 existing.value = item.value.strip()
-                existing.source_turn = source_turn
+                existing.source_turn = item_turn
                 existing.status = SignalStatus.ACTIVE
                 accepted.append(existing)
                 continue
@@ -242,7 +275,7 @@ class ProfileMerger:
                 evidence_type=item.evidence_type,
                 first_seen_at=now,
                 updated_at=now,
-                source_turn=source_turn,
+                source_turn=item_turn,
             )
             merged.signals.append(signal)
             accepted.append(signal)
@@ -252,7 +285,7 @@ class ProfileMerger:
             normalized = normalize_text(cleaned)
             if (
                 not cleaned
-                or not _is_grounded(cleaned, utterance)
+                or _grounded_turn(cleaned, utterance, source_turn, context_utterances) is None
                 or normalized in {normalize_text(value) for value in merged.axes}
             ):
                 continue

@@ -107,6 +107,11 @@ class ConversationState:
     def session_id(self) -> int:
         return self.conversation_room_id
 
+    def user_turns(self) -> list[tuple[int, str]]:
+        """history의 사용자 발화를 턴 번호(1부터)와 함께 돌려준다."""
+        turns = [turn.content for turn in self.history if turn.role == "user"]
+        return list(enumerate(turns, start=1))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "user_id": self.user_id,

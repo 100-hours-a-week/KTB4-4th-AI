@@ -23,6 +23,7 @@ LinkRole = Literal["query", "filter", "weight"]
 class ProfileItem(ApiModel):
     value: str = Field(min_length=1, max_length=20)
     confidence: float = Field(ge=0.0, le=1.0)
+    rank_score: float = Field(ge=0.0, le=1.0)
     link_role: LinkRole
     visibility: Literal["private", "friends", "public"]
     intent_type: Literal["need", "want", "both"] | None
@@ -71,8 +72,8 @@ class TasteProfile(ApiModel):
             )
         )
         weight_count = len(self.preferences) + len(self.lifestyle)
-        if query_count > 6:
-            raise ValueError("TasteProfile can contain at most 6 active query items")
+        if query_count > 5:
+            raise ValueError("TasteProfile can contain at most 5 active query items")
         if weight_count > 3:
             raise ValueError("TasteProfile can contain at most 3 active weight items")
         if len(self.owned) > 3:

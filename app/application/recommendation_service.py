@@ -8,6 +8,7 @@ from app.application.recommendation_engine import RecommendationEngine
 from app.domain.profile.models import DeferralReason, TasteField, Visibility
 from app.domain.recommendation import (
     RankedRecommendation,
+    RecommendationGuide,
     RecommendationSignal,
 )
 
@@ -50,9 +51,34 @@ def _recommendation_signals(payload: Mapping[str, Any]) -> tuple[RecommendationS
                     visibility=Visibility(str(item["visibility"])),
                     updated_at=_parse_datetime(item["updatedAt"]),
                     deferral_reason=DeferralReason(str(reason)) if reason else None,
+                    rank_score=(
+                        float(item["rankScore"]) if item.get("rankScore") is not None else None
+                    ),
                 )
             )
     return tuple(signals)
+
+
+def _values(profile: Mapping[str, Any], fields: Sequence[TasteField]) -> tuple[str, ...]:
+    values: list[str] = []
+    for field in fields:
+        items = profile.get(field.value, [])
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            continue
+        values.extend(
+            str(item["value"]) for item in items if isinstance(item, Mapping) and item.get("value")
+        )
+    return tuple(values)
+
+
+def _recommendation_guide(payload: Mapping[str, Any]) -> RecommendationGuide:
+    profile = payload.get("profile")
+    if not isinstance(profile, Mapping):
+        return RecommendationGuide()
+    return RecommendationGuide(
+        exclusions=_values(profile, (TasteField.DISLIKES, TasteField.CONSTRAINTS)),
+        preferences=_values(profile, (TasteField.PREFERENCES,)),
+    )
 
 
 def _items(recommendations: Sequence[RankedRecommendation]) -> list[dict[str, object]]:
@@ -73,7 +99,7 @@ class V1RecommendationService:
 
     async def recommend_lists(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         signals = _recommendation_signals(payload)
-        batch = await self._engine.recommend(signals)
+        batch = await self._engine.recommend(signals, guide=_recommendation_guide(payload))
         return {
             "generatedAt": datetime.now(UTC).isoformat(),
             "self": {"items": _items(batch.self)},

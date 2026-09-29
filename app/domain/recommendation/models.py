@@ -56,6 +56,8 @@ class RecommendationSignal:
     visibility: Visibility
     updated_at: datetime
     deferral_reason: DeferralReason | None = None
+    # 대화에서 매긴 취향 순위 점수. 없으면 신뢰도를 그대로 가중치로 쓴다.
+    rank_score: float | None = None
 
     def __post_init__(self) -> None:
         value = self.value.strip()
@@ -63,7 +65,21 @@ class RecommendationSignal:
             raise ValueError("recommendation signal value must not be empty")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("recommendation signal confidence must be between 0 and 1")
+        if self.rank_score is not None and not 0.0 <= self.rank_score <= 1.0:
+            raise ValueError("recommendation signal rank_score must be between 0 and 1")
         object.__setattr__(self, "value", value)
+
+    @property
+    def weight(self) -> float:
+        return self.confidence if self.rank_score is None else self.rank_score
+
+
+@dataclass(slots=True, frozen=True)
+class RecommendationGuide:
+    """쿼리를 만들지는 않고 후보를 거르거나 가산하는 데만 쓰는 취향 정보."""
+
+    exclusions: tuple[str, ...] = ()
+    preferences: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

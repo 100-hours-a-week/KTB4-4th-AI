@@ -15,16 +15,16 @@ from app.domain.conversation.models import (
     SessionStatus,
 )
 from app.domain.conversation.policy import MAX_TURNS, recommendation_readiness
-from app.domain.profile.merger import friend_summary_values, ranked_friend_signals
-from app.domain.profile.models import ProfileSignal, ProfileState, TasteField
+from app.domain.profile.merger import (
+    friend_summary_values,
+    ranked_friend_signals,
+    taste_rank_score,
+)
+from app.domain.profile.models import ProfileState, TasteField
 
 ANALYSIS_KEYWORD_LIMIT = 3
 _TASTE_KEYWORD_FIELDS = (TasteField.PREFERENCES,)
 _INTEREST_KEYWORD_FIELDS = (TasteField.INTERESTS, TasteField.HOBBIES)
-
-
-def _keyword_score(signal: ProfileSignal) -> float:
-    return round(signal.confidence, 2)
 
 
 class ChatUseCaseError(RuntimeError):
@@ -101,7 +101,7 @@ class ChatUseCases:
         model_gateway: ModelGateway,
         response_model: str,
         response_timeout_seconds: float = 60.0,
-        summary_timeout_seconds: float = 5.0,
+        summary_timeout_seconds: float = 10.0,
     ) -> None:
         self._conversations = conversations
         self._states = states
@@ -216,6 +216,8 @@ class ChatUseCases:
 
             active_signals = state.profile.active_signals()
             if not active_signals and state.turn_count < MAX_TURNS:
+                # 새 대화로 다시 시작하도록 세션을 만료시켜 같은 방 번호로 재생성할 수 있게 한다.
+                await self._states.delete(session_id)
                 raise ProfileTooSparseError(session_id)
 
             if state.analysis_turn_count == state.turn_count:
@@ -245,7 +247,7 @@ class ChatUseCases:
             state.analysis_taste_keywords = [signal.value for signal in taste_signals]
             state.analysis_interest_keywords = [signal.value for signal in interest_signals]
             state.analysis_keyword_scores = {
-                signal.value: _keyword_score(signal)
+                signal.value: taste_rank_score(signal)
                 for signal in (*taste_signals, *interest_signals)
             }
             state.analysis_patch_used = False

@@ -55,7 +55,7 @@ def test_v1_query_mapping_uses_only_positive_conversation_signals() -> None:
                 confidence=0.6,
                 deferral_reason=DeferralReason.PRICE,
             ),
-            _signal(TasteField.CONSUMABLES, "원두", confidence=0.5),
+            _signal(TasteField.CONSUMABLES, "원두", confidence=0.6),
             _signal(TasteField.DISLIKES, "강한 향", confidence=1.0),
         ]
     )
@@ -225,3 +225,59 @@ def test_diversity_pick_does_not_break_descending_score_order() -> None:
     assert scores == sorted(scores, reverse=True)
     assert ranked[-1].product == camping_product
     assert [item.rank for item in ranked] == [0, 1, 2]
+
+
+def test_weak_wish_signals_only_fill_in_when_strong_signals_are_few() -> None:
+    strong = [
+        _signal(TasteField.INTERESTS, "커피", confidence=0.9),
+        _signal(TasteField.HOBBIES, "캠핑", confidence=0.8),
+        _signal(TasteField.INTERESTS, "사진", confidence=0.7),
+    ]
+    wish = _signal(TasteField.INTERESTS, "한강 자전거", confidence=0.5)
+
+    with_enough = build_search_queries([*strong, wish])
+    with_few = build_search_queries([strong[0], wish])
+
+    assert "한강 자전거" not in {query.signal.value for query in with_enough}
+    assert "한강 자전거" in {query.signal.value for query in with_few}
+
+
+def test_queries_are_ordered_and_weighted_by_rank_score() -> None:
+    once = _signal(TasteField.INTERESTS, "커피", confidence=0.9)
+    repeated = RecommendationSignal(
+        field=TasteField.HOBBIES,
+        value="캠핑",
+        confidence=0.8,
+        visibility=Visibility.FRIENDS,
+        updated_at=NOW,
+        rank_score=0.95,
+    )
+
+    first, second = build_search_queries([once, repeated])
+
+    assert first.signal.value == "캠핑"
+    assert repeated.weight == 0.95
+    assert once.weight == 0.9
+
+
+def test_excluded_products_are_dropped_and_boosts_raise_score() -> None:
+    (query,) = build_search_queries([_signal(TasteField.INTERESTS, "향수")])
+    strong = _product("coupang", "1", "머스크 향수")
+    light = _product("coupang", "2", "은은한 향수")
+    matches = [
+        VectorMatch(query=query, product=strong, similarity=0.9),
+        VectorMatch(query=query, product=light, similarity=0.8),
+    ]
+
+    plain = rank_recommendations(matches, mode=RecommendationMode.SELF, now=NOW)
+    guided = rank_recommendations(
+        matches,
+        mode=RecommendationMode.SELF,
+        now=NOW,
+        excluded=frozenset({strong.key}),
+        boosts={light.key: 0.1},
+    )
+
+    assert [item.product.key for item in plain] == [strong.key, light.key]
+    assert [item.product.key for item in guided] == [light.key]
+    assert guided[0].score > plain[1].score

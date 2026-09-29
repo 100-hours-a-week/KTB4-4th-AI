@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 
 from app.domain.profile.models import DeferralReason, TasteField, Visibility
@@ -43,7 +43,7 @@ def _normalized_similarity(similarity: float) -> float:
 def _decayed_confidence(match: VectorMatch, mode: RecommendationMode, now: datetime) -> float:
     age_days = max((now - match.query.signal.updated_at).total_seconds(), 0.0) / 86400.0
     decay = 0.5 ** (age_days / _HALF_LIFE_DAYS[mode])
-    return match.query.signal.confidence * decay
+    return match.query.signal.weight * decay
 
 
 def _match_contribution(
@@ -117,6 +117,8 @@ def rank_recommendations(
     now: datetime | None = None,
     limit: int = DEFAULT_LIMIT,
     min_score: float | None = None,
+    excluded: frozenset[ProductKey] = frozenset(),
+    boosts: Mapping[ProductKey, float] | None = None,
 ) -> tuple[RankedRecommendation, ...]:
     if not 1 <= limit <= DEFAULT_LIMIT:
         raise ValueError(f"limit must be between 1 and {DEFAULT_LIMIT}")
@@ -128,7 +130,7 @@ def rank_recommendations(
     candidates: dict[ProductKey, list[VectorMatch]] = defaultdict(list)
     products = {}
     for match in matches:
-        if mode not in match.query.modes:
+        if mode not in match.query.modes or match.product.key in excluded:
             continue
         candidates[match.product.key].append(match)
         products[match.product.key] = match.product
@@ -150,7 +152,7 @@ def rank_recommendations(
         )
         unique_signal_count = len({scored.match.query.query_id for scored in scored_matches})
         bonus = min(max(unique_signal_count - 1, 0) * _MULTI_SIGNAL_BONUS, 0.10)
-        raw_score = scored_matches[0].contribution + bonus
+        raw_score = scored_matches[0].contribution + bonus + (boosts or {}).get(key, 0.0)
         score = min(max(raw_score / _MAX_RAW_SCORE[mode], 0.0), 1.0)
         if score >= threshold:
             ranked.append((key, score, scored_matches))
