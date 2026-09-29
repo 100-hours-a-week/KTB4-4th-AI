@@ -258,6 +258,8 @@ class ProfileMerger:
                 existing.deferral_reason = item.deferral_reason or existing.deferral_reason
                 existing.value = item.value.strip()
                 existing.source_turn = item_turn
+                existing.aspect = item.aspect or existing.aspect
+                existing.target = item.target or existing.target
                 existing.status = SignalStatus.ACTIVE
                 accepted.append(existing)
                 continue
@@ -273,6 +275,8 @@ class ProfileMerger:
                 deferral_reason=item.deferral_reason,
                 evidence=item.evidence,
                 evidence_type=item.evidence_type,
+                aspect=item.aspect,
+                target=item.target,
                 first_seen_at=now,
                 updated_at=now,
                 source_turn=item_turn,

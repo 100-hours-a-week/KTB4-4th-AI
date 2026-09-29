@@ -49,6 +49,16 @@ class EvidenceType(StrEnum):
     INFERRED = "inferred"
 
 
+class PreferenceAspect(StrEnum):
+    """취향(preferences)이 대상의 어떤 결을 말하는지."""
+
+    ATTRIBUTE = "attribute"  # 속성, 스타일
+    SENSORY = "sensory"  # 맛, 소리, 촉감 같은 감각
+    SITUATION = "situation"  # 선호하는 때와 상황, 분위기
+    CRITERION = "criterion"  # 고를 때 중요하게 보는 기준
+    MOTIVE = "motive"  # 그것을 선택하는 이유
+
+
 class SignalStatus(StrEnum):
     ACTIVE = "active"
     INACTIVE = "inactive"
@@ -70,6 +80,8 @@ class ExtractedItem:
     evidence_type: EvidenceType
     intent_type: IntentType | None = None
     deferral_reason: DeferralReason | None = None
+    aspect: PreferenceAspect | None = None
+    target: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,6 +116,9 @@ class ProfileSignal:
     mention_count: int = 1
     status: SignalStatus = SignalStatus.ACTIVE
     source_turn: int = 0
+    # preferences에만 쓴다. 어떤 결의 취향인지와, 어느 관심사에 붙은 취향인지.
+    aspect: PreferenceAspect | None = None
+    target: str | None = None
 
     @property
     def deferral_signal(self) -> bool:
@@ -126,12 +141,15 @@ class ProfileSignal:
             "mention_count": self.mention_count,
             "status": self.status.value,
             "source_turn": self.source_turn,
+            "aspect": self.aspect.value if self.aspect else None,
+            "target": self.target,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ProfileSignal:
         intent = payload.get("intent_type")
         deferral = payload.get("deferral_reason")
+        aspect = payload.get("aspect")
         return cls(
             field=TasteField(payload["field"]),
             value=payload["value"],
@@ -148,6 +166,8 @@ class ProfileSignal:
             mention_count=int(payload.get("mention_count", 1)),
             status=SignalStatus(payload.get("status", SignalStatus.ACTIVE)),
             source_turn=int(payload.get("source_turn", 0)),
+            aspect=PreferenceAspect(aspect) if aspect else None,
+            target=payload.get("target"),
         )
 
 

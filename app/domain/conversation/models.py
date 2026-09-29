@@ -90,6 +90,7 @@ class ConversationState:
     goal_coverage: dict[GoalArea, CoverageStatus] = field(default_factory=_default_coverage)
     goal_attempts: dict[str, int] = field(default_factory=dict)
     last_goal: ConversationGoal | None = None
+    turns_since_new_interest: int = 0
     completion_reason: CompletionReason | None = None
     created_at: datetime = field(default_factory=utc_now)
     last_active_at: datetime = field(default_factory=utc_now)
@@ -125,6 +126,7 @@ class ConversationState:
             },
             "goal_attempts": dict(self.goal_attempts),
             "last_goal": self.last_goal.value if self.last_goal else None,
+            "turns_since_new_interest": self.turns_since_new_interest,
             "completion_reason": (self.completion_reason.value if self.completion_reason else None),
             "created_at": self.created_at.isoformat(),
             "last_active_at": self.last_active_at.isoformat(),
@@ -162,6 +164,7 @@ class ConversationState:
                 key: int(value) for key, value in payload.get("goal_attempts", {}).items()
             },
             last_goal=ConversationGoal(last_goal) if last_goal else None,
+            turns_since_new_interest=int(payload.get("turns_since_new_interest", 0)),
             completion_reason=(CompletionReason(completion_reason) if completion_reason else None),
             created_at=created_at,
             last_active_at=datetime.fromisoformat(payload["last_active_at"]),
