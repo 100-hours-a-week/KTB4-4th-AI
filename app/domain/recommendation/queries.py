@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.domain.profile.models import TasteField
+from app.domain.profile.models import PreferenceAspect, TasteField
 from app.domain.recommendation.models import (
     RecommendationMode,
     RecommendationSignal,
@@ -42,6 +42,8 @@ MAX_QUERIES = 5
 # 이 가중치 미만(희망·상상 답처럼 약한 신호)은 강한 신호가 모자랄 때만 쿼리로 쓴다.
 MIN_PRIMARY_WEIGHT = 0.55
 MIN_PRIMARY_QUERIES = 3
+# 상황 취향(aspect=situation)으로 만드는 보조 usage 쿼리 수. 상위 취향만 쓴다.
+MAX_SITUATION_QUERIES = 2
 
 
 def _query_text(signal: RecommendationSignal, space: VectorSpace) -> str:
@@ -92,4 +94,35 @@ def build_search_queries(
                 text=_query_text(signal, space),
             )
         )
+    queries.extend(_situation_queries(signals))
     return tuple(queries)
+
+
+def _situation_queries(signals: Iterable[RecommendationSignal]) -> list[SearchQuery]:
+    """상황 취향을 기존 usage 템플릿에 넣어 보조 쿼리를 만든다.
+
+    상품 usage 문서가 활동·장소·상황으로 쓰여 있어서 상황 취향이 걸릴 수 있다.
+    이미 적재한 문서와 틀을 맞추려고 템플릿은 hobbies와 같은 것을 쓴다.
+    관심사 쿼리와 같은 상품에 함께 걸리면 다중 신호 보너스로 올라간다.
+    """
+    situations = sorted(
+        (
+            signal
+            for signal in signals
+            if signal.field == TasteField.PREFERENCES
+            and signal.aspect == PreferenceAspect.SITUATION
+            and signal.confidence > 0.0
+        ),
+        key=lambda signal: (signal.weight, signal.updated_at.timestamp(), signal.value),
+        reverse=True,
+    )
+    return [
+        SearchQuery(
+            query_id=f"s_{index}",
+            signal=signal,
+            modes=frozenset({RecommendationMode.SELF, RecommendationMode.GIFT}),
+            space=VectorSpace.USAGE,
+            text=_query_text(signal, VectorSpace.USAGE),
+        )
+        for index, signal in enumerate(situations[:MAX_SITUATION_QUERIES], start=1)
+    ]

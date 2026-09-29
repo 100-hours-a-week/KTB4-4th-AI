@@ -23,6 +23,7 @@ from app.domain.profile.models import (
     EvidenceType,
     IntentType,
     LinkRole,
+    PreferenceAspect,
     ProfileSignal,
     SignalStatus,
     TasteField,
@@ -474,3 +475,64 @@ def test_summary_prompt_sends_ranked_friend_clues_without_private_fields() -> No
     values = [clue["value"] for clue in content["clues"]]
     assert set(values) == {"조용한 카페", "핸드드립"}
     assert [clue["rank"] for clue in content["clues"]] == [1, 2]
+
+
+def test_parse_extraction_keeps_aspect_and_target_only_on_preferences() -> None:
+    delta, dropped = parse_extraction(
+        {
+            "items": [
+                _raw_item(
+                    field="preferences",
+                    value="고소한 커피",
+                    evidence="고소한 게 좋더라고요",
+                    aspect="sensory",
+                    target="커피",
+                ),
+                _raw_item(value="커피", aspect="sensory", target="커피"),
+                _raw_item(field="preferences", value="잔잔한 음악", aspect="unknown"),
+            ],
+        }
+    )
+
+    preference, interest = delta.items
+    assert preference.aspect == PreferenceAspect.SENSORY
+    assert preference.target == "커피"
+    assert interest.aspect is None and interest.target is None
+    assert len(dropped) == 1
+
+
+def test_preference_aspect_and_target_survive_merge_and_session_round_trip() -> None:
+    gateway = FakeModelGateway(
+        [
+            {
+                "items": [
+                    _raw_item(
+                        field="preferences",
+                        value="조용한 구석 자리",
+                        evidence="구석 자리가 조용해서",
+                        evidenceType="inferred",
+                        confidence=0.6,
+                        aspect="situation",
+                        target="카페",
+                    )
+                ]
+            }
+        ]
+    )
+    service = ConversationService(model_gateway=gateway, extraction_model="extractor")
+    state = ConversationState(user_id=1, conversation_room_id=101)
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="구석 자리가 조용해서 두 시간이나 있었어요",
+            raw_reply="그 카페는 자주 가요?",
+            goal=ConversationGoal.INTEREST,
+        )
+    )
+
+    restored = ConversationState.from_dict(completed.state.to_dict())
+    [signal] = restored.profile.active_signals()
+    assert signal.aspect == PreferenceAspect.SITUATION
+    assert signal.target == "카페"
+

@@ -136,6 +136,8 @@ def _profile_response(result: ProfileAnalysis) -> TasteProfile:
                 deferral_signal=signal.deferral_signal,
                 deferral_reason=(signal.deferral_reason.value if signal.deferral_reason else None),
                 evidence=signal.evidence,
+                aspect=signal.aspect.value if signal.aspect else None,
+                target=signal.target,
                 taxonomy_path=None,
                 first_seen_at=signal.first_seen_at,
                 updated_at=signal.updated_at,

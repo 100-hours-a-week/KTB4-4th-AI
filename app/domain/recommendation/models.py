@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from app.domain.profile.models import DeferralReason, TasteField, Visibility
+from app.domain.profile.models import DeferralReason, PreferenceAspect, TasteField, Visibility
 
 
 class RecommendationMode(StrEnum):
@@ -58,6 +58,8 @@ class RecommendationSignal:
     deferral_reason: DeferralReason | None = None
     # 대화에서 매긴 취향 순위 점수. 없으면 신뢰도를 그대로 가중치로 쓴다.
     rank_score: float | None = None
+    # preferences 신호에만 쓴다. situation 취향은 보조 usage 쿼리가 된다.
+    aspect: PreferenceAspect | None = None
 
     def __post_init__(self) -> None:
         value = self.value.strip()

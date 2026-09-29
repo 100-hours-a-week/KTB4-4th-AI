@@ -30,6 +30,8 @@ class ProfileItem(ApiModel):
     deferral_signal: bool
     deferral_reason: Literal["justification", "price", "timing"] | None = None
     evidence: str = Field(min_length=1, max_length=40)
+    aspect: Literal["attribute", "sensory", "situation", "criterion", "motive"] | None = None
+    target: str | None = None
     taxonomy_path: list[str] | None
     first_seen_at: datetime
     updated_at: datetime
