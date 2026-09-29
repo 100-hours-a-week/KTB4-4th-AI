@@ -37,8 +37,10 @@ from app.domain.conversation.policy import (
     apply_goal_assessment,
     decide_goal,
     fields_for_goal,
+    known_query_values,
     recommendation_readiness,
     record_goal_attempt,
+    record_interest_progress,
 )
 from app.domain.profile.merger import MergeResult, ProfileMerger
 from app.domain.profile.models import (
@@ -338,6 +340,7 @@ class ConversationService:
             resolved_completion_reason = decide_goal(state, utterance).completion_reason
         reply = self.guard_reply(raw_reply, goal)
         delta, extraction_failed = await self._extract(state, utterance)
+        known_values = known_query_values(state)
         merge_result = self._merger.merge(
             state.profile,
             delta,
@@ -347,6 +350,7 @@ class ConversationService:
             context_utterances=state.user_turns()[-EXTRACTION_CONTEXT_USER_TURNS:],
         )
         state.profile = merge_result.profile
+        record_interest_progress(state, known_values, merge_result.accepted)
         record_goal_attempt(state, goal)
         apply_goal_assessment(state, goal, _assess_goal(goal, delta, merge_result))
 

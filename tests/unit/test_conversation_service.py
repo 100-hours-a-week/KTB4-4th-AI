@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.application.conversation_prompts import (
+    BROADEN_INSTRUCTION,
     build_extraction_messages,
     build_friend_summary_messages,
+    build_reply_messages,
 )
 from app.application.conversation_service import ConversationService, parse_extraction
 from app.application.ports.model_gateway import Message
@@ -536,3 +538,87 @@ def test_preference_aspect_and_target_survive_merge_and_session_round_trip() -> 
     assert signal.aspect == PreferenceAspect.SITUATION
     assert signal.target == "카페"
 
+
+def _extraction(*items: dict[str, Any]) -> dict[str, Any]:
+    return {"items": list(items), "axes": [], "drop": [], "noneAnswer": False}
+
+
+def test_turns_without_new_interest_broaden_the_next_question() -> None:
+    hiking = {
+        "field": "hobbies",
+        "value": "등산",
+        "confidence": 0.9,
+        "evidence": "주말마다 산에 가요",
+        "evidenceType": "explicit",
+        "intentType": "both",
+    }
+    quiet_trail = {
+        "field": "preferences",
+        "value": "사람 적은 등산로",
+        "confidence": 0.8,
+        "evidence": "사람 없는 길이 좋아요",
+        "evidenceType": "explicit",
+        "intentType": "both",
+        "aspect": "situation",
+        "target": "등산",
+    }
+    hiking_again = {**hiking, "evidence": "산은 매주 가요"}
+    gateway = FakeModelGateway(
+        [_extraction(hiking), _extraction(quiet_trail), _extraction(hiking_again)]
+    )
+    service = ConversationService(model_gateway=gateway, extraction_model="extractor")
+    state = ConversationState(user_id=1, conversation_room_id=101)
+    utterances = ["주말마다 산에 가요", "사람 없는 길이 좋아요", "산은 매주 가요"]
+
+    counts = []
+    for utterance in utterances:
+        asyncio.run(
+            service.complete_turn(
+                state,
+                utterance=utterance,
+                raw_reply="그렇군요?",
+                goal=ConversationGoal.INTEREST,
+            )
+        )
+        counts.append(state.turns_since_new_interest)
+
+    assert counts == [0, 1, 2]
+    interest_prompt = build_reply_messages(state, ConversationGoal.INTEREST, "정상에서 쉬어요")
+    assert BROADEN_INSTRUCTION in interest_prompt[-2]["content"]
+    gear_prompt = build_reply_messages(state, ConversationGoal.GEAR, "정상에서 쉬어요")
+    assert BROADEN_INSTRUCTION not in gear_prompt[-2]["content"]
+    assert ConversationState.from_dict(state.to_dict()).turns_since_new_interest == 2
+
+
+def test_new_interest_resets_topic_counter() -> None:
+    gateway = FakeModelGateway(
+        [
+            _extraction(
+                {
+                    "field": "interests",
+                    "value": "평양냉면",
+                    "confidence": 0.8,
+                    "evidence": "산 다녀오면 냉면 먹어요",
+                    "evidenceType": "explicit",
+                    "intentType": "both",
+                }
+            )
+        ]
+    )
+    service = ConversationService(model_gateway=gateway, extraction_model="extractor")
+    state = ConversationState(user_id=1, conversation_room_id=101)
+    state.profile.signals.append(profile_signal(TasteField.HOBBIES, "등산"))
+    state.turns_since_new_interest = 2
+
+    asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="산 다녀오면 냉면 먹어요",
+            raw_reply="어디 냉면 좋아해요?",
+            goal=ConversationGoal.INTEREST,
+        )
+    )
+
+    assert state.turns_since_new_interest == 0
+    prompt = build_reply_messages(state, ConversationGoal.INTEREST, "을밀대요")
+    assert BROADEN_INSTRUCTION not in prompt[-2]["content"]
