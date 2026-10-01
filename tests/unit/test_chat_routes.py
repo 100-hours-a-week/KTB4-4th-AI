@@ -145,7 +145,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
         "reply": "캠핑 좋죠. 주로 어디로 다니세요?",
         "turn": 1,
         "maxTurns": 20,
-        "progress": 21,
+        "progress": 18,
         "canClose": False,
         "inputLocked": False,
     }
@@ -590,3 +590,56 @@ def test_max_turn_analysis_with_interest_returns_profile() -> None:
 
     assert analysis.status_code == 200
     assert analysis.json()["profile"]["keywords"]["interest"][0]["value"] == "캠핑"
+
+
+def test_recommendation_profile_carries_every_stored_item_beyond_exposure_limits() -> None:
+    from app.api.routes.v1_chat import _profile_response, recommendation_profile
+    from app.application.chat_use_cases import ProfileAnalysis
+    from app.domain.conversation.models import ConversationState
+    from app.domain.conversation.policy import recommendation_readiness
+    from app.domain.profile.merger import ProfileMerger
+    from app.domain.profile.models import (
+        EvidenceType,
+        ExtractedItem,
+        ExtractionDelta,
+        ProfileState,
+        TasteField,
+    )
+
+    tastes = ["무채색 옷", "혼자 가는 여행", "조용한 카페", "고소한 커피", "미니멀한 디자인"]
+    utterance = ", ".join(tastes)
+    profile = (
+        ProfileMerger()
+        .merge(
+            ProfileState(),
+            ExtractionDelta(
+                items=tuple(
+                    ExtractedItem(
+                        field=TasteField.PREFERENCES,
+                        value=value,
+                        confidence=0.9,
+                        evidence=value,
+                        evidence_type=EvidenceType.EXPLICIT,
+                    )
+                    for value in tastes
+                )
+            ),
+            utterance=utterance,
+            now=datetime(2026, 9, 30),
+            source_turn=1,
+        )
+        .profile
+    )
+    state = ConversationState(user_id=1, conversation_room_id=1, profile=profile)
+    analysis = ProfileAnalysis(
+        state=state,
+        profile=profile,
+        summary=None,
+        taste_keywords=(),
+        interest_keywords=(),
+        keyword_scores={},
+        readiness=recommendation_readiness(state),
+    )
+
+    assert len(_profile_response(analysis).preferences) == 3
+    assert [item["value"] for item in recommendation_profile(analysis)["preferences"]] == tastes

@@ -164,16 +164,24 @@ class ChatUseCases:
                 state,
                 message,
             )
-            raw_reply = await self._complete(
-                prepared.messages,
-                timeout_seconds=self._response_timeout_seconds,
-            )
+            # 추출은 응답 결과를 쓰지 않으므로 응답 생성과 동시에 시작한다.
+            # 한 턴의 시간은 둘의 합이 아니라 더 오래 걸리는 쪽이 된다.
+            extraction = asyncio.create_task(self._conversations.extract(state, message))
+            try:
+                raw_reply = await self._complete(
+                    prepared.messages,
+                    timeout_seconds=self._response_timeout_seconds,
+                )
+            except BaseException:
+                extraction.cancel()
+                raise
             completed = await self._conversations.complete_turn(
                 state,
                 utterance=message,
                 raw_reply=raw_reply,
                 goal=prepared.decision.goal,
                 completion_reason=prepared.decision.completion_reason,
+                extraction=await extraction,
             )
             await self._states.save(completed.state)
             return completed

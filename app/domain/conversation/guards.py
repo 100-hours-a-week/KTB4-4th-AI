@@ -12,15 +12,22 @@ _FALLBACK_QUESTIONS = {
     ConversationGoal.OPENING: "요즘 어떻게 지내세요?",
     ConversationGoal.INTEREST: "최근에는 뭐 하면서 시간을 보내셨어요?",
     ConversationGoal.INTEREST_VIA_ROUTINE: "어제 저녁에는 뭐 하셨어요?",
+    ConversationGoal.TASTE: "그건 주로 혼자 하세요, 누구랑 같이 하세요?",
     ConversationGoal.DISLIKE: "요즘 하면서 좀 별로였던 일도 있었어요?",
     ConversationGoal.GEAR: "그거 할 때 늘 챙기는 게 있으세요?",
     ConversationGoal.DEEPEN: "그중에 제일 기억에 남는 순간은 언제였어요?",
-    ConversationGoal.CORRECT: "말씀해 주신 내용으로 취향 분석을 바로잡아 둘게요.",
+    ConversationGoal.BRIDGE: "그런 시간은 평소에 또 어디서 만들어요?",
+    ConversationGoal.REFLECT: "얘기 들어 보니 좋아하는 게 조금 보이는데, 제가 이해한 게 맞아요?",
     ConversationGoal.WRAP: "이야기해 주신 내용으로 취향을 정리해 둘게요.",
 }
 
 
-def sanitize_response(text: str, goal: ConversationGoal) -> str:
+# reflective 대화의 응답 길이 상한. 질문 40자에 짧은 반응 하나가 들어가는 정도다.
+# 넘으면 앞의 반응 문장을 떼고 질문만 남긴다.
+CONCISE_REPLY_CHARS = 60
+
+
+def sanitize_response(text: str, goal: ConversationGoal, *, concise: bool = False) -> str:
     cleaned = text.strip()
     cut_positions = [cleaned.find(marker) for marker in _LEAK_MARKERS]
     cut_positions = [position for position in cut_positions if position >= 0]
@@ -30,6 +37,10 @@ def sanitize_response(text: str, goal: ConversationGoal) -> str:
     first_question = cleaned.find("?")
     if first_question >= 0:
         cleaned = cleaned[: first_question + 1].strip()
+    if concise and len(cleaned) > CONCISE_REPLY_CHARS and cleaned.endswith("?"):
+        cut = max(cleaned.rfind(mark, 0, len(cleaned) - 1) for mark in (".", "!", "~"))
+        if cut >= 0 and cleaned[cut + 1 :].strip():
+            cleaned = cleaned[cut + 1 :].strip()
     return cleaned or _FALLBACK_QUESTIONS[goal]
 
 

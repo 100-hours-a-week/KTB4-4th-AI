@@ -4,5 +4,6 @@ from app.infrastructure.model_gateway.openai_compatible import (
     ModelGatewayError,
     OpenAICompatibleModelGateway,
 )
+from app.infrastructure.model_gateway.systemone import SystemOneJudgmentGateway
 
-__all__ = ["ModelGatewayError", "OpenAICompatibleModelGateway"]
+__all__ = ["ModelGatewayError", "OpenAICompatibleModelGateway", "SystemOneJudgmentGateway"]
