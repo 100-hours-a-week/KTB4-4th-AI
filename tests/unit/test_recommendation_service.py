@@ -119,6 +119,14 @@ def test_recommendation_inputs_route_preferences_by_aspect() -> None:
         }
     )
 
-    assert [signal.value for signal in signals] == ["조용한 시골 여행"]
+    # 취향은 모두 쿼리 재료로 넘어가고, 측면에 따라 어떤 쿼리가 될지는 쿼리 빌더가 정한다.
+    assert {
+        (signal.value, signal.aspect.value if signal.aspect else None) for signal in signals
+    } == {
+        ("조용한 시골 여행", "situation"),
+        ("고소한 커피", "sensory"),
+        ("머리 비우는 시간", "motive"),
+        ("가벼운 것", None),
+    }
     assert guide.preferences == ("고소한 커피", "가벼운 것")
     assert guide.exclusions == ("강한 향",)

@@ -1,4 +1,5 @@
-from typing import Annotated
+from collections.abc import Iterable
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, status
 
@@ -13,7 +14,7 @@ from app.api.schemas.chat import (
     CreateChatSessionResponse,
     UpdateChatAnalysisRequest,
 )
-from app.api.schemas.common import JAVA_LONG_MAX
+from app.api.schemas.common import JAVA_LONG_MAX, to_camel
 from app.api.schemas.profile import ProfileItem, ScoredProfileKeywords, TasteProfile
 from app.api.schemas.recommendation import RecommendationLists
 from app.application.chat_use_cases import (
@@ -37,7 +38,7 @@ from app.core.errors import ApiError
 from app.domain.conversation.models import SessionStatus
 from app.domain.conversation.policy import MAX_TURNS, conversation_progress
 from app.domain.profile.merger import taste_rank_score
-from app.domain.profile.models import TasteField
+from app.domain.profile.models import ProfileSignal, TasteField
 
 router = APIRouter()
 
@@ -122,9 +123,9 @@ def _raise_chat_error(error: Exception) -> None:
     raise error
 
 
-def _profile_response(result: ProfileAnalysis) -> TasteProfile:
+def _grouped_items(signals: Iterable[ProfileSignal]) -> dict[TasteField, list[ProfileItem]]:
     grouped: dict[TasteField, list[ProfileItem]] = {field: [] for field in TasteField}
-    for signal in result.profile.active_signals():
+    for signal in signals:
         grouped[signal.field].append(
             ProfileItem(
                 value=signal.value,
@@ -138,11 +139,16 @@ def _profile_response(result: ProfileAnalysis) -> TasteProfile:
                 evidence=signal.evidence,
                 aspect=signal.aspect.value if signal.aspect else None,
                 target=signal.target,
-                taxonomy_path=None,
+                taxonomy_path=list(signal.taxonomy_path) if signal.taxonomy_path else None,
                 first_seen_at=signal.first_seen_at,
                 updated_at=signal.updated_at,
             )
         )
+    return grouped
+
+
+def _profile_response(result: ProfileAnalysis) -> TasteProfile:
+    grouped = _grouped_items(result.profile.active_signals())
     return TasteProfile(
         schema_version="3.0",
         user_id=result.state.user_id,
@@ -159,6 +165,24 @@ def _profile_response(result: ProfileAnalysis) -> TasteProfile:
         constraints=grouped[TasteField.CONSTRAINTS],
         axes=result.profile.axes,
     )
+
+
+def recommendation_profile(result: ProfileAnalysis) -> dict[str, Any]:
+    """추천 엔진에 넘기는 프로필. 백엔드로 보내는 프로필과 모양은 같지만 노출 한도 없이
+    저장된 항목 전체를 담는다. 추천 쿼리는 뽑은 것 전체를 조합해야 목록이 다양해진다."""
+    grouped = _grouped_items(result.profile.stored_signals())
+    return {
+        "schemaVersion": "3.0",
+        "userId": result.state.user_id,
+        "summary": result.summary,
+        **{
+            to_camel(field.value): [
+                item.model_dump(mode="json", by_alias=True) for item in grouped[field]
+            ]
+            for field in TasteField
+        },
+        "axes": list(result.profile.axes),
+    }
 
 
 def _scored_keywords(analysis: ProfileAnalysis) -> ScoredProfileKeywords:
@@ -298,11 +322,10 @@ async def close_chat_session(
             conversation_room_id,
             user_id=body.user_id,
         )
-        profile = _profile_response(closable)
         recommendation_result = await recommendation_service.recommend_lists(
             {
                 "userId": closable.state.user_id,
-                "profile": profile.model_dump(mode="json", by_alias=True),
+                "profile": recommendation_profile(closable),
             }
         )
         recommendations = RecommendationLists.model_validate(recommendation_result)

@@ -60,6 +60,10 @@ class RecommendationSignal:
     rank_score: float | None = None
     # preferences 신호에만 쓴다. situation 취향은 보조 usage 쿼리가 된다.
     aspect: PreferenceAspect | None = None
+    # 취향이 붙은 관심사(커피, 캠핑). 없으면 여러 관심사를 가로지르는 취향이다.
+    target: str | None = None
+    # 취향 축이나 관심사 분야. 같은 분류에 쿼리가 몰리지 않게 하는 데 쓴다.
+    taxonomy_path: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         value = self.value.strip()

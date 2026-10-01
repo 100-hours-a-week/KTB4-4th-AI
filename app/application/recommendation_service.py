@@ -45,7 +45,15 @@ def _aspect(item: Mapping[str, Any]) -> PreferenceAspect | None:
         return None
 
 
-def _situation_signals(profile: Mapping[str, Any]) -> list[RecommendationSignal]:
+def _taxonomy_path(item: Mapping[str, Any]) -> tuple[str, ...] | None:
+    value = item.get("taxonomyPath")
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and value:
+        return tuple(str(part) for part in value)
+    return None
+
+
+def _preference_signals(profile: Mapping[str, Any]) -> list[RecommendationSignal]:
+    """취향은 관심사와 조합한 쿼리와 상황 쿼리의 재료가 된다."""
     items = profile.get(TasteField.PREFERENCES.value, [])
     if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
         return []
@@ -57,10 +65,16 @@ def _situation_signals(profile: Mapping[str, Any]) -> list[RecommendationSignal]
             visibility=Visibility(str(item.get("visibility", Visibility.FRIENDS))),
             updated_at=_parse_datetime(item["updatedAt"]),
             rank_score=(float(item["rankScore"]) if item.get("rankScore") is not None else None),
-            aspect=PreferenceAspect.SITUATION,
+            aspect=_aspect(item),
+            target=str(item["target"]) if item.get("target") else None,
+            taxonomy_path=_taxonomy_path(item),
         )
         for item in items
-        if isinstance(item, Mapping) and _aspect(item) == PreferenceAspect.SITUATION
+        # 신뢰도나 갱신 시각이 없는 항목은 쿼리 재료로 쓰지 않고 가산에만 쓴다.
+        if isinstance(item, Mapping)
+        and item.get("value")
+        and item.get("confidence") is not None
+        and item.get("updatedAt")
     ]
 
 
@@ -76,7 +90,7 @@ def _recommendation_signals(payload: Mapping[str, Any]) -> tuple[RecommendationS
     if not isinstance(profile, Mapping):
         raise ValueError("profile must be an object")
 
-    signals: list[RecommendationSignal] = _situation_signals(profile)
+    signals: list[RecommendationSignal] = _preference_signals(profile)
     for field in _PROFILE_FIELDS:
         items = profile.get(field.value, [])
         if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
@@ -96,6 +110,7 @@ def _recommendation_signals(payload: Mapping[str, Any]) -> tuple[RecommendationS
                     rank_score=(
                         float(item["rankScore"]) if item.get("rankScore") is not None else None
                     ),
+                    taxonomy_path=_taxonomy_path(item),
                 )
             )
     return tuple(signals)

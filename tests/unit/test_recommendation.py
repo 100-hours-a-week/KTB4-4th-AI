@@ -283,31 +283,94 @@ def test_excluded_products_are_dropped_and_boosts_raise_score() -> None:
     assert guided[0].score > plain[1].score
 
 
-def test_situation_preferences_become_extra_usage_queries_with_the_usage_template() -> None:
-    def preference(value: str, aspect: PreferenceAspect, confidence: float) -> RecommendationSignal:
-        return RecommendationSignal(
-            field=TasteField.PREFERENCES,
-            value=value,
-            confidence=confidence,
-            visibility=Visibility.FRIENDS,
-            updated_at=NOW,
-            aspect=aspect,
-        )
+def _preference(
+    value: str,
+    aspect: PreferenceAspect,
+    confidence: float,
+    *,
+    target: str | None = None,
+    path: tuple[str, ...] | None = None,
+) -> RecommendationSignal:
+    return RecommendationSignal(
+        field=TasteField.PREFERENCES,
+        value=value,
+        confidence=confidence,
+        visibility=Visibility.FRIENDS,
+        updated_at=NOW,
+        aspect=aspect,
+        target=target,
+        taxonomy_path=path,
+    )
 
+
+def test_situation_preferences_become_extra_usage_queries_with_the_usage_template() -> None:
     queries = build_search_queries(
         [
             _signal(TasteField.HOBBIES, "여행", confidence=0.9),
-            preference("조용한 시골 여행", PreferenceAspect.SITUATION, 0.9),
-            preference("사람 적은 평일 오전", PreferenceAspect.SITUATION, 0.8),
-            preference("새벽 드라이브", PreferenceAspect.SITUATION, 0.7),
-            preference("고소한 커피", PreferenceAspect.SENSORY, 0.9),
+            _preference("조용한 시골 여행", PreferenceAspect.SITUATION, 0.9),
+            _preference("사람 적은 평일 오전", PreferenceAspect.SITUATION, 0.8),
+            _preference("새벽 드라이브", PreferenceAspect.SITUATION, 0.7),
+            _preference("혼자 가는", PreferenceAspect.SITUATION, 0.6, target="캠핑"),
         ]
     )
 
     extra = [query for query in queries if query.query_id.startswith("s_")]
+    # 대상 없는 상황 취향은 가장 강한 관심사와 합치고, 이미 들어 있으면 그대로 쓴다.
     assert [query.text for query in extra] == [
         "조용한 시골 여행 활동에서 사용하는 제품",
-        "사람 적은 평일 오전 활동에서 사용하는 제품",
+        "사람 적은 평일 오전 여행 활동에서 사용하는 제품",
+        "새벽 드라이브 여행 활동에서 사용하는 제품",
     ]
     assert all(query.space == VectorSpace.USAGE for query in extra)
-    assert "고소한 커피" not in {query.signal.value for query in queries}
+
+
+def test_tastes_are_combined_with_interests_into_extra_content_queries() -> None:
+    queries = build_search_queries(
+        [
+            _signal(TasteField.HOBBIES, "캠핑", confidence=0.9),
+            _signal(TasteField.INTERESTS, "커피", confidence=0.8),
+            _preference("고소한 커피", PreferenceAspect.SENSORY, 0.9, target="커피"),
+            _preference("무채색", PreferenceAspect.ATTRIBUTE, 0.8, target="캠핑 장비"),
+            _preference("미니멀한 디자인", PreferenceAspect.ATTRIBUTE, 0.7),
+            _preference("머리 비우는 시간", PreferenceAspect.MOTIVE, 0.9),
+        ]
+    )
+
+    tastes = [query.text for query in queries if query.query_id.startswith("t_")]
+    assert tastes == [
+        "고소한 커피 관련 제품",
+        "무채색 캠핑 장비 관련 제품",
+        "캠핑 관련 제품 중 미니멀한 디자인",
+        "커피 관련 제품 중 미니멀한 디자인",
+    ]
+    assert all(query.space == VectorSpace.CONTENT for query in queries if query.query_id[0] == "t")
+
+
+def test_interest_queries_use_every_stored_interest_spread_across_fields() -> None:
+    outdoor = ("관심사", "아웃도어")
+    food = ("관심사", "음식·미식")
+
+    def interest(value: str, confidence: float, path: tuple[str, ...]) -> RecommendationSignal:
+        return RecommendationSignal(
+            field=TasteField.INTERESTS,
+            value=value,
+            confidence=confidence,
+            visibility=Visibility.FRIENDS,
+            updated_at=NOW,
+            taxonomy_path=path,
+        )
+
+    queries = build_search_queries(
+        [
+            interest("캠핑", 0.95, outdoor),
+            interest("등산", 0.94, outdoor),
+            interest("낚시", 0.93, outdoor),
+            interest("커피", 0.8, food),
+            interest("베이킹", 0.7, food),
+            interest("와인", 0.65, food),
+        ]
+    )
+
+    values = [query.signal.value for query in queries if query.query_id.startswith("q_")]
+    # 노출 한도(5개)와 상관없이 모두 쓰고, 같은 분야가 앞자리를 몰아 차지하지 않는다.
+    assert values == ["캠핑", "커피", "등산", "베이킹", "낚시", "와인"]
