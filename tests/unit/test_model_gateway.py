@@ -3,7 +3,10 @@ import json
 
 import httpx
 
-from app.infrastructure.model_gateway import OpenAICompatibleModelGateway
+from app.infrastructure.model_gateway import (
+    OpenAICompatibleModelGateway,
+    SystemOneJudgmentGateway,
+)
 
 
 def test_openai_compatible_gateway_supports_completion_and_structured_output() -> None:
@@ -124,3 +127,43 @@ def test_sends_configured_temperature_and_stop_sequences_per_model() -> None:
     assert payloads[0]["stop"] == ["<|eot_id|>"]
     assert "temperature" not in payloads[1]
     assert "stop" not in payloads[1]
+
+
+def test_judgment_gateway_posts_state_and_questions_to_systemone() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "model": "typesafe/jev-1.13",
+                "answers": {"q": {"type": "noul", "noul": 0.9}},
+            },
+        )
+
+    async def exercise() -> dict[str, object]:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            gateway = SystemOneJudgmentGateway(
+                client=client,
+                base_url="https://openrouter.ai/api/v1/",
+                api_key="test-key",
+            )
+            return dict(
+                await gateway.decide(
+                    {"user_message": "러닝은 싫어요"},
+                    {"q": {"type": "noul", "instructions": "Is this negative?"}},
+                    model="~typesafe/jev-latest",
+                )
+            )
+
+    body = asyncio.run(exercise())
+
+    assert body["answers"] == {"q": {"type": "noul", "noul": 0.9}}
+    assert str(requests[0].url) == "https://openrouter.ai/api/v1/systemone"
+    assert requests[0].headers["Authorization"] == "Bearer test-key"
+    assert json.loads(requests[0].content) == {
+        "model": "~typesafe/jev-latest",
+        "state": {"user_message": "러닝은 싫어요"},
+        "questions": {"q": {"type": "noul", "instructions": "Is this negative?"}},
+    }

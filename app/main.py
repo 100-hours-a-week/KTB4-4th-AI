@@ -14,6 +14,7 @@ from app.application.conversation_service import ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.ports.catalog_repository import CatalogRepository
 from app.application.ports.embedder import Embedder
+from app.application.ports.judgment_gateway import JudgmentGateway
 from app.application.ports.model_gateway import ModelGateway
 from app.application.ports.recommendation_service import RecommendationService
 from app.application.ports.session_store import SessionStore
@@ -22,8 +23,12 @@ from app.application.recommendation_service import V1RecommendationService
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.middleware import RequestIdMiddleware
+from app.domain.conversation.models import ConversationStyle
 from app.infrastructure.embedding import OpenAICompatibleEmbedder
-from app.infrastructure.model_gateway import OpenAICompatibleModelGateway
+from app.infrastructure.model_gateway import (
+    OpenAICompatibleModelGateway,
+    SystemOneJudgmentGateway,
+)
 from app.infrastructure.persistence import InMemorySessionStore, RedisSessionStore
 
 
@@ -31,6 +36,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     model_gateway: ModelGateway | None = None,
+    judgment_gateway: JudgmentGateway | None = None,
     session_store: SessionStore | None = None,
     recommendation_service: RecommendationService | None = None,
     embedder: Embedder | None = None,
@@ -45,6 +51,8 @@ def create_app(
         catalog_pool: Any | None = None
 
         resolved_gateway = model_gateway
+        secret = resolved_settings.model_api_key or resolved_settings.openrouter_api_key
+        api_key = secret.get_secret_value() if secret is not None else None
         if resolved_gateway is None:
             http_client = httpx.AsyncClient(timeout=None)
             model_base_urls = {}
@@ -60,7 +68,6 @@ def create_app(
                 model_base_urls[resolved_settings.document_model_name] = str(
                     resolved_settings.document_model_base_url
                 )
-            secret = resolved_settings.model_api_key or resolved_settings.openrouter_api_key
             resolved_gateway = OpenAICompatibleModelGateway(
                 client=http_client,
                 model_base_urls=model_base_urls,
@@ -75,7 +82,22 @@ def create_app(
                         resolved_settings.document_model_max_tokens
                     ),
                 },
-                api_key=secret.get_secret_value() if secret is not None else None,
+                api_key=api_key,
+            )
+
+        # 모델 게이트웨이를 주입받았으면 판단 게이트웨이도 주입받은 것만 쓴다.
+        resolved_judgment_gateway = judgment_gateway
+        if (
+            resolved_judgment_gateway is None
+            and model_gateway is None
+            and resolved_settings.judgment_model_base_url is not None
+        ):
+            if http_client is None:
+                http_client = httpx.AsyncClient(timeout=None)
+            resolved_judgment_gateway = SystemOneJudgmentGateway(
+                client=http_client,
+                base_url=str(resolved_settings.judgment_model_base_url),
+                api_key=api_key,
             )
 
         resolved_session_store = session_store
@@ -98,6 +120,10 @@ def create_app(
             model_gateway=resolved_gateway,
             extraction_model=resolved_settings.extraction_model_name,
             extraction_timeout_seconds=resolved_settings.extraction_model_timeout_seconds,
+            judgment_gateway=resolved_judgment_gateway,
+            judgment_model=resolved_settings.judgment_model_name,
+            judgment_timeout_seconds=resolved_settings.judgment_model_timeout_seconds,
+            conversation_style=ConversationStyle(resolved_settings.conversation_style),
         )
         application.state.conversation_state_store = state_store
         application.state.chat_use_cases = ChatUseCases(

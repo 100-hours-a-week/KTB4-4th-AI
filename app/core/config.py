@@ -54,8 +54,17 @@ class Settings(BaseSettings):
     response_model_name: str = "response-model"
     extraction_model_name: str = "extraction-model"
 
+    # 취향 판단 모델(TypeSafe Jev). OpenRouter의 /systemone 으로 호출하고 키는 위와 같은 것을 쓴다.
+    # base url이 없으면 판단 단계 없이 추출 모델 혼자 취향을 뽑는 기존 방식으로 돈다.
+    judgment_model_base_url: AnyHttpUrl | None = None
+    judgment_model_name: str = "~typesafe/jev-latest"
+    # explore: 부족한 정보를 차례로 묻는 기존 대화. reflective: 한 이야기를 무엇 → 어떻게 → 왜로
+    # 따라가며 곰곰이 생각하게 하는 대화. 새 세션부터 적용된다.
+    conversation_style: Literal["explore", "reflective"] = "explore"
+
     response_model_timeout_seconds: float = Field(default=60.0, gt=0)
     extraction_model_timeout_seconds: float = Field(default=30.0, gt=0)
+    judgment_model_timeout_seconds: float = Field(default=10.0, gt=0)
     # 취향 요약이 3~4문장으로 길어져서 5초로는 잘릴 수 있다.
     summary_model_timeout_seconds: float = Field(default=10.0, gt=0)
     # 카탈로그 문서 생성용 로컬 LLM. LM Studio 기본값은 http://127.0.0.1:1234/v1 이다.

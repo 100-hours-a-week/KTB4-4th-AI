@@ -63,6 +63,11 @@ def _match_contribution(
 
 def _reason(best: ScoredMatch, mode: RecommendationMode) -> str:
     signal = best.match.query.signal
+    if signal.field == TasteField.PREFERENCES:
+        # 취향 쿼리로 찾은 상품. 취향은 친구 공개 항목이라 선물 목록에서도 그대로 보여 준다.
+        if mode == RecommendationMode.SELF:
+            return f"{signal.value} 취향과 잘 맞는 상품이에요."
+        return f"{signal.value} 취향에 맞춰 선물하기 좋은 상품이에요."
     if mode == RecommendationMode.SELF:
         return f"{signal.value}에 대한 관심과 잘 맞는 상품이에요."
     if signal.field in {TasteField.INTERESTS, TasteField.HOBBIES} and signal.visibility in {

@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from app.domain.profile.merger import ProfileMerger, friend_summary_values
 from app.domain.profile.models import (
     DeferralReason,
+    DropRef,
     EvidenceType,
     ExtractedItem,
     ExtractionDelta,
@@ -214,3 +215,206 @@ def test_evidence_absent_from_all_user_turns_is_rejected() -> None:
     )
 
     assert result.rejected_values == ("등산",)
+
+
+def test_dislike_supersedes_same_value_liked_before() -> None:
+    merger = ProfileMerger()
+    first = merger.merge(
+        ProfileState(),
+        delta(item(TasteField.INTERESTS, "러닝", "러닝 해 봤어요")),
+        utterance="러닝 해 봤어요",
+        now=NOW,
+        source_turn=1,
+    )
+    second = merger.merge(
+        first.profile,
+        delta(item(TasteField.DISLIKES, "러닝", "러닝은 진짜 싫어요")),
+        utterance="러닝은 진짜 싫어요",
+        now=NOW,
+        source_turn=2,
+    )
+
+    active = {(signal.field, signal.value) for signal in second.profile.active_signals()}
+    assert active == {(TasteField.DISLIKES, "러닝")}
+
+
+def test_disliked_value_is_not_counted_as_repeated_interest() -> None:
+    merger = ProfileMerger()
+    first = merger.merge(
+        ProfileState(),
+        delta(item(TasteField.DISLIKES, "러닝", "러닝은 싫어요")),
+        utterance="러닝은 싫어요",
+        now=NOW,
+        source_turn=1,
+    )
+    second = merger.merge(
+        first.profile,
+        delta(
+            item(
+                TasteField.INTERESTS,
+                "러닝",
+                "러닝 싫다니까요",
+                evidence_type=EvidenceType.INFERRED,
+            )
+        ),
+        utterance="러닝 싫다니까요",
+        now=NOW,
+        source_turn=2,
+    )
+
+    assert second.rejected_values == ("러닝",)
+    active = {(signal.field, signal.value) for signal in second.profile.active_signals()}
+    assert active == {(TasteField.DISLIKES, "러닝")}
+
+
+def test_explicit_like_in_current_turn_replaces_old_dislike() -> None:
+    merger = ProfileMerger()
+    first = merger.merge(
+        ProfileState(),
+        delta(item(TasteField.DISLIKES, "러닝", "러닝은 싫어요")),
+        utterance="러닝은 싫어요",
+        now=NOW,
+        source_turn=1,
+    )
+    second = merger.merge(
+        first.profile,
+        delta(item(TasteField.HOBBIES, "러닝", "요즘은 러닝이 좋아졌어요")),
+        utterance="요즘은 러닝이 좋아졌어요",
+        now=NOW,
+        source_turn=5,
+    )
+
+    active = {(signal.field, signal.value) for signal in second.profile.active_signals()}
+    assert active == {(TasteField.HOBBIES, "러닝")}
+
+
+def test_same_turn_conflict_keeps_dislike() -> None:
+    result = ProfileMerger().merge(
+        ProfileState(),
+        delta(
+            item(TasteField.INTERESTS, "러닝", "러닝은 진짜 싫어요"),
+            item(TasteField.DISLIKES, "러닝", "러닝은 진짜 싫어요"),
+        ),
+        utterance="러닝은 진짜 싫어요",
+        now=NOW,
+        source_turn=1,
+    )
+
+    assert result.rejected_values == ("러닝",)
+    active = {(signal.field, signal.value) for signal in result.profile.active_signals()}
+    assert active == {(TasteField.DISLIKES, "러닝")}
+
+
+def test_working_set_spreads_tastes_across_axes() -> None:
+    def taste(value: str, path: tuple[str, ...], confidence: float) -> ExtractedItem:
+        return ExtractedItem(
+            field=TasteField.PREFERENCES,
+            value=value,
+            confidence=confidence,
+            evidence=value,
+            evidence_type=EvidenceType.EXPLICIT,
+            taxonomy_path=path,
+        )
+
+    color = ("취향", "시각", "색상")
+    utterance = "무채색 옷, 검은 신발, 회색 가방, 혼자 가는 여행, 조용한 카페"
+    result = ProfileMerger().merge(
+        ProfileState(),
+        delta(
+            taste("무채색 옷", color, 0.95),
+            taste("검은 신발", color, 0.94),
+            taste("회색 가방", color, 0.93),
+            taste("혼자 가는 여행", ("취향", "사회", "인원"), 0.8),
+            taste("조용한 카페", ("취향", "분위기", "공간"), 0.7),
+        ),
+        utterance=utterance,
+        now=NOW,
+        source_turn=1,
+    )
+
+    active = [signal.value for signal in result.profile.active_signals()]
+    assert active == ["무채색 옷", "혼자 가는 여행", "조용한 카페"]
+    stored = next(signal for signal in result.profile.signals if signal.value == "무채색 옷")
+    assert stored.taxonomy_path == color
+    assert ProfileState.from_dict(result.profile.to_dict()).signals[0].taxonomy_path == color
+
+
+def test_value_dropped_this_turn_is_not_readded_on_the_same_side() -> None:
+    merger = ProfileMerger()
+    first = merger.merge(
+        ProfileState(),
+        delta(item(TasteField.HOBBIES, "캠핑", "캠핑 자주 가요")),
+        utterance="캠핑 자주 가요",
+        now=NOW,
+        source_turn=1,
+    )
+    second = merger.merge(
+        first.profile,
+        ExtractionDelta(
+            items=(
+                item(TasteField.INTERESTS, "캠핑", "캠핑은 그냥 해본 말이고"),
+                item(TasteField.HOBBIES, "등산", "사실 등산 다녀요"),
+            ),
+            drop=(DropRef(field=TasteField.HOBBIES, value="캠핑"),),
+        ),
+        utterance="캠핑은 그냥 해본 말이고 사실 등산 다녀요",
+        now=NOW,
+        source_turn=2,
+    )
+
+    active = {(signal.field, signal.value) for signal in second.profile.active_signals()}
+    assert active == {(TasteField.HOBBIES, "등산")}
+    assert second.rejected_values == ("캠핑",)
+
+
+def test_dropping_a_dislike_still_allows_the_opposite_side_in_same_turn() -> None:
+    merger = ProfileMerger()
+    first = merger.merge(
+        ProfileState(),
+        delta(item(TasteField.DISLIKES, "러닝", "러닝 싫어요")),
+        utterance="러닝 싫어요",
+        now=NOW,
+        source_turn=1,
+    )
+    second = merger.merge(
+        first.profile,
+        ExtractionDelta(
+            items=(item(TasteField.HOBBIES, "러닝", "사실 러닝 좋아해요"),),
+            drop=(DropRef(field=TasteField.DISLIKES, value="러닝"),),
+        ),
+        utterance="아까 싫다고 한 건 취소요 사실 러닝 좋아해요",
+        now=NOW,
+        source_turn=2,
+    )
+
+    active = {(signal.field, signal.value) for signal in second.profile.active_signals()}
+    assert active == {(TasteField.HOBBIES, "러닝")}
+
+
+def test_superseded_value_is_not_revived_from_previous_turn_context() -> None:
+    merger = ProfileMerger()
+    first = merger.merge(
+        ProfileState(),
+        delta(item(TasteField.HOBBIES, "캠핑", "캠핑 자주 가요")),
+        utterance="캠핑 자주 가요",
+        now=NOW,
+        source_turn=1,
+    )
+    dropped = merger.merge(
+        first.profile,
+        ExtractionDelta(drop=(DropRef(field=TasteField.HOBBIES, value="캠핑"),)),
+        utterance="캠핑은 취소요",
+        now=NOW,
+        source_turn=2,
+    )
+    revived = merger.merge(
+        dropped.profile,
+        delta(item(TasteField.HOBBIES, "캠핑", "캠핑 자주 가요")),
+        utterance="요즘 날씨 좋네요",
+        now=NOW,
+        source_turn=3,
+        context_utterances=[(1, "캠핑 자주 가요"), (2, "캠핑은 취소요")],
+    )
+
+    assert revived.profile.active_signals() == []
+    assert revived.rejected_values == ("캠핑",)
