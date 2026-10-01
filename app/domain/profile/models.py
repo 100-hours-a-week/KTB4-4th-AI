@@ -82,6 +82,9 @@ class ExtractedItem:
     deferral_reason: DeferralReason | None = None
     aspect: PreferenceAspect | None = None
     target: str | None = None
+    # 어느 축의 취향인지, 어느 분야의 관심사인지.
+    # 예: ("취향", "사회", "인원"), ("관심사", "아웃도어")
+    taxonomy_path: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -97,6 +100,8 @@ class ExtractionDelta:
     drop: tuple[DropRef, ...] = ()
     # 사용자가 직전 AI 질문에 해당하는 게 없다고 명확히 답했는지. 목표 판정은 코드가 한다.
     none_answer: bool = False
+    # 판단 모델이 본 이번 답의 깊이(0 짧게 넘김 ~ 2 이유나 느낌을 담음). 판단하지 않았으면 None.
+    answer_depth: float | None = None
 
 
 @dataclass(slots=True)
@@ -119,6 +124,7 @@ class ProfileSignal:
     # preferences에만 쓴다. 어떤 결의 취향인지와, 어느 관심사에 붙은 취향인지.
     aspect: PreferenceAspect | None = None
     target: str | None = None
+    taxonomy_path: tuple[str, ...] | None = None
 
     @property
     def deferral_signal(self) -> bool:
@@ -143,6 +149,7 @@ class ProfileSignal:
             "source_turn": self.source_turn,
             "aspect": self.aspect.value if self.aspect else None,
             "target": self.target,
+            "taxonomy_path": list(self.taxonomy_path) if self.taxonomy_path else None,
         }
 
     @classmethod
@@ -150,6 +157,7 @@ class ProfileSignal:
         intent = payload.get("intent_type")
         deferral = payload.get("deferral_reason")
         aspect = payload.get("aspect")
+        taxonomy_path = payload.get("taxonomy_path")
         return cls(
             field=TasteField(payload["field"]),
             value=payload["value"],
@@ -168,6 +176,7 @@ class ProfileSignal:
             source_turn=int(payload.get("source_turn", 0)),
             aspect=PreferenceAspect(aspect) if aspect else None,
             target=payload.get("target"),
+            taxonomy_path=tuple(taxonomy_path) if taxonomy_path else None,
         )
 
 
@@ -178,6 +187,10 @@ class ProfileState:
 
     def active_signals(self) -> list[ProfileSignal]:
         return [signal for signal in self.signals if signal.status == SignalStatus.ACTIVE]
+
+    def stored_signals(self) -> list[ProfileSignal]:
+        """대체되지 않은 저장 항목 전체. 활성 한도 밖으로 밀린 항목도 포함한다."""
+        return [signal for signal in self.signals if signal.status != SignalStatus.SUPERSEDED]
 
     def to_dict(self) -> dict[str, Any]:
         return {
