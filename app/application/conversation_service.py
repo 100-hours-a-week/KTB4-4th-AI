@@ -17,16 +17,29 @@ from pydantic import (
 )
 
 from app.application.conversation_prompts import (
+    build_candidate_messages,
     build_extraction_messages,
     build_opening_messages,
     build_reply_messages,
 )
+from app.application.ports.judgment_gateway import JudgmentGateway
 from app.application.ports.model_gateway import Message, ModelGateway
+from app.application.taste_judgment import (
+    Candidate,
+    CandidateDeltaPayload,
+    build_judgment_request,
+    correction_targets,
+    judgment_delta,
+    parse_candidates,
+    remention_candidates,
+    without_frequency_variants,
+)
 from app.domain.conversation.guards import closing_reply, sanitize_response
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
     ConversationState,
+    ConversationStyle,
     ConversationTurn,
     GoalDecision,
     ReadinessResult,
@@ -34,6 +47,7 @@ from app.domain.conversation.models import (
 )
 from app.domain.conversation.policy import (
     MAX_TURNS,
+    advance_thread,
     apply_goal_assessment,
     decide_goal,
     fields_for_goal,
@@ -41,8 +55,9 @@ from app.domain.conversation.policy import (
     recommendation_readiness,
     record_goal_attempt,
     record_interest_progress,
+    reflection_clues,
 )
-from app.domain.profile.merger import MergeResult, ProfileMerger
+from app.domain.profile.merger import MergeResult, ProfileMerger, normalize_text
 from app.domain.profile.models import (
     AssessmentStatus,
     DeferralReason,
@@ -51,6 +66,7 @@ from app.domain.profile.models import (
     ExtractedItem,
     ExtractionDelta,
     IntentType,
+    LinkRole,
     PreferenceAspect,
     TasteField,
     utc_now,
@@ -58,7 +74,7 @@ from app.domain.profile.models import (
 
 logger = logging.getLogger(__name__)
 
-MAX_EXTRACTED_ITEMS = 3
+MAX_EXTRACTED_ITEMS = 5
 MAX_VALUE_LENGTH = 20
 MAX_EVIDENCE_LENGTH = 40
 EXTRACTION_CONTEXT_USER_TURNS = 4
@@ -237,12 +253,20 @@ class ConversationService:
         merger: ProfileMerger | None = None,
         extraction_retries: int = 2,
         extraction_timeout_seconds: float = 30.0,
+        judgment_gateway: JudgmentGateway | None = None,
+        judgment_model: str | None = None,
+        judgment_timeout_seconds: float = 10.0,
+        conversation_style: ConversationStyle = ConversationStyle.EXPLORE,
     ) -> None:
         self._model_gateway = model_gateway
         self._extraction_model = extraction_model
         self._merger = merger or ProfileMerger()
         self._extraction_retries = extraction_retries
         self._extraction_timeout_seconds = extraction_timeout_seconds
+        self._judgment_gateway = judgment_gateway
+        self._judgment_model = judgment_model
+        self._judgment_timeout_seconds = judgment_timeout_seconds
+        self._conversation_style = conversation_style
 
     def prepare_session(
         self,
@@ -261,10 +285,13 @@ class ConversationService:
             conversation_room_id=conversation_room_id,
             created_at=resolved_now,
             last_active_at=resolved_now,
+            conversation_style=self._conversation_style,
         )
         return PreparedSession(
             state=state,
-            messages=tuple(build_opening_messages(now=resolved_now)),
+            messages=tuple(
+                build_opening_messages(now=resolved_now, style=self._conversation_style)
+            ),
         )
 
     def record_opening(
@@ -274,7 +301,9 @@ class ConversationService:
         *,
         now: datetime | None = None,
     ) -> str:
-        greeting = self.guard_reply(raw_greeting, ConversationGoal.OPENING)
+        greeting = self.guard_reply(
+            raw_greeting, ConversationGoal.OPENING, style=state.conversation_style
+        )
         resolved_now = now or utc_now()
         state.history.append(
             ConversationTurn(role="assistant", content=greeting, created_at=resolved_now)
@@ -293,14 +322,35 @@ class ConversationService:
         messages = build_reply_messages(state, decision.goal, utterance)
         return PreparedTurn(decision=decision, messages=tuple(messages))
 
-    def guard_reply(self, reply: str, goal: ConversationGoal) -> str:
-        return sanitize_response(reply, goal)
+    def guard_reply(
+        self,
+        reply: str,
+        goal: ConversationGoal,
+        *,
+        style: ConversationStyle = ConversationStyle.EXPLORE,
+    ) -> str:
+        return sanitize_response(reply, goal, concise=style == ConversationStyle.REFLECTIVE)
+
+    async def extract(
+        self,
+        state: ConversationState,
+        utterance: str,
+    ) -> tuple[ExtractionDelta, bool]:
+        """이번 발화에서 취향을 추출한다. 응답 결과를 쓰지 않아 응답 생성과 동시에 돌릴 수 있다."""
+        return await self._extract(state, utterance)
 
     async def _extract(
         self,
         state: ConversationState,
         utterance: str,
     ) -> tuple[ExtractionDelta, bool]:
+        if self._judgment_gateway is not None and self._judgment_model is not None:
+            return await self._extract_with_judgment(
+                state,
+                utterance,
+                judgment_gateway=self._judgment_gateway,
+                judgment_model=self._judgment_model,
+            )
         messages = build_extraction_messages(state, utterance)
         schema = ExtractionDeltaPayload.model_json_schema(by_alias=True)
         try:
@@ -324,6 +374,97 @@ class ConversationService:
             pass
         return ExtractionDelta(), True
 
+    async def _extract_candidates(
+        self,
+        state: ConversationState,
+        utterance: str,
+    ) -> tuple[list[Candidate], list[str]] | None:
+        messages = build_candidate_messages(state, utterance)
+        schema = CandidateDeltaPayload.model_json_schema()
+        try:
+            async with asyncio.timeout(self._extraction_timeout_seconds):
+                for _ in range(self._extraction_retries + 1):
+                    try:
+                        raw = await self._model_gateway.structured(
+                            messages,
+                            model=self._extraction_model,
+                            json_schema=schema,
+                        )
+                        candidates, axes, dropped = parse_candidates(raw)
+                        if dropped:
+                            logger.info("candidates dropped: %s", dropped)
+                        return candidates, axes
+                    except Exception:
+                        continue
+        except TimeoutError:
+            pass
+        return None
+
+    async def _extract_with_judgment(
+        self,
+        state: ConversationState,
+        utterance: str,
+        *,
+        judgment_gateway: JudgmentGateway,
+        judgment_model: str,
+    ) -> tuple[ExtractionDelta, bool]:
+        """추출 모델로 언급된 대상을 찾고, 대상마다 사용자의 태도는 판단 모델이 정한다."""
+        extracted = await self._extract_candidates(state, utterance)
+        if extracted is None:
+            return ExtractionDelta(), True
+        candidates, axes = extracted
+        candidates = without_frequency_variants(
+            candidates,
+            known={signal.normalized_value for signal in state.profile.stored_signals()},
+        )
+        candidates.extend(remention_candidates(state.profile, utterance, candidates))
+        request = build_judgment_request(
+            state,
+            utterance,
+            candidates,
+            correction_targets(state, utterance),
+        )
+        if not request.questions:
+            return ExtractionDelta(axes=tuple(axes)), False
+        body = None
+        try:
+            async with asyncio.timeout(self._judgment_timeout_seconds):
+                for _ in range(self._extraction_retries + 1):
+                    try:
+                        body = await judgment_gateway.decide(
+                            request.state,
+                            request.questions,
+                            model=judgment_model,
+                        )
+                        break
+                    except Exception:
+                        continue
+        except TimeoutError:
+            pass
+        if body is None:
+            return ExtractionDelta(), True
+        delta, judgments = judgment_delta(
+            candidates,
+            body["answers"],
+            request.sentences,
+            axes=axes,
+            targets=request.targets,
+        )
+        logger.info("taste judgment (%s):", body.get("model"))
+        for drop in delta.drop:
+            logger.info("  정정: %s (%s) 내림", drop.value, drop.field.value)
+        for judgment in judgments:
+            logger.info(
+                "  %s | %s %.2f | %s | %s → %s",
+                judgment.candidate.subject,
+                judgment.stance.value,
+                judgment.confidence,
+                judgment.material.value if judgment.material else "-",
+                "/".join(judgment.taxonomy_path) if judgment.taxonomy_path else "-",
+                judgment.field.value if judgment.field else "저장 안 함",
+            )
+        return delta, False
+
     async def complete_turn(
         self,
         state: ConversationState,
@@ -333,13 +474,18 @@ class ConversationService:
         goal: ConversationGoal,
         completion_reason: CompletionReason | None = None,
         now: datetime | None = None,
+        extraction: tuple[ExtractionDelta, bool] | None = None,
     ) -> CompletedTurn:
         resolved_now = now or utc_now()
         resolved_completion_reason = completion_reason
         if goal == ConversationGoal.WRAP and resolved_completion_reason is None:
             resolved_completion_reason = decide_goal(state, utterance).completion_reason
-        reply = self.guard_reply(raw_reply, goal)
-        delta, extraction_failed = await self._extract(state, utterance)
+        reply = self.guard_reply(raw_reply, goal, style=state.conversation_style)
+        # 되비추기에 쓴 단서. 이번 턴 병합 전 상태로 프롬프트와 같은 것을 고른다.
+        clues = reflection_clues(state) if goal == ConversationGoal.REFLECT else []
+        if extraction is None:
+            extraction = await self._extract(state, utterance)
+        delta, extraction_failed = extraction
         known_values = known_query_values(state)
         merge_result = self._merger.merge(
             state.profile,
@@ -353,6 +499,19 @@ class ConversationService:
         record_interest_progress(state, known_values, merge_result.accepted)
         record_goal_attempt(state, goal)
         apply_goal_assessment(state, goal, _assess_goal(goal, delta, merge_result))
+        advance_thread(
+            state,
+            goal,
+            new_interests=[
+                signal.value
+                for signal in merge_result.accepted
+                if signal.link_role == LinkRole.QUERY
+                and normalize_text(signal.value) not in known_values
+            ],
+            answer_depth=delta.answer_depth,
+        )
+        if goal == ConversationGoal.REFLECT:
+            state.reflection_values = [signal.value for signal in clues]
 
         state.history.append(
             ConversationTurn(role="user", content=utterance, created_at=resolved_now)
@@ -372,7 +531,14 @@ class ConversationService:
         else:
             next_decision = decide_goal(state, "")
 
-        if next_decision.goal == ConversationGoal.WRAP:
+        # 마무리 차례인데 모델이 질문으로 끝냈으면 질문을 떼고 종료 멘트를 붙인다.
+        if goal == ConversationGoal.WRAP and reply.endswith("?"):
+            reply = closing_reply(reply)
+            state.history[-1] = ConversationTurn(
+                role="assistant", content=reply, created_at=resolved_now
+            )
+        # 되비추기 질문을 방금 했으면 답을 들어야 하므로 이번 턴에는 잠그지 않는다.
+        if next_decision.goal == ConversationGoal.WRAP and goal != ConversationGoal.REFLECT:
             state.status = SessionStatus.INPUT_LOCKED
             state.completion_reason = next_decision.completion_reason
             # 최대 턴 전에 종료가 판정되면 방금 만든 질문 대신 종료 멘트를 보낸다.

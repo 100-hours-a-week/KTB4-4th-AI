@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from app.application.conversation_prompts import build_reply_messages
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
@@ -14,6 +15,7 @@ from app.domain.conversation.policy import (
     conversation_progress,
     decide_goal,
     recommendation_readiness,
+    uncovered_taste_axes,
 )
 from app.domain.profile.models import (
     AssessmentStatus,
@@ -61,6 +63,19 @@ def state() -> ConversationState:
     return ConversationState(user_id=1, conversation_room_id=101)
 
 
+def taste(value: str, path: tuple[str, ...]) -> ProfileSignal:
+    preference = signal(TasteField.PREFERENCES, value)
+    preference.taxonomy_path = path
+    return preference
+
+
+def two_taste_axes() -> list[ProfileSignal]:
+    return [
+        taste("혼자 가는 캠핑", ("취향", "사회", "인원")),
+        taste("무채색 장비", ("취향", "시각", "색상")),
+    ]
+
+
 def test_interest_is_first_goal_when_query_signals_are_missing() -> None:
     decision = decide_goal(state(), "주말에는 뭘 할까요")
 
@@ -92,6 +107,7 @@ def test_ready_profile_wraps_before_eight_turns() -> None:
             signal(TasteField.WANTS, "가벼운 컵"),
             signal(TasteField.INTERESTS, "사진"),
             signal(TasteField.HOBBIES, "러닝"),
+            *two_taste_axes(),
         ]
     )
     conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
@@ -115,6 +131,7 @@ def test_exclusion_is_asked_early_when_five_query_signals_are_already_known() ->
             signal(TasteField.WANTS, "가벼운 컵"),
             signal(TasteField.INTERESTS, "사진"),
             signal(TasteField.HOBBIES, "러닝"),
+            *two_taste_axes(),
         ]
     )
 
@@ -190,6 +207,7 @@ def test_readiness_is_recomputed_when_last_active_signal_is_removed() -> None:
             signal(TasteField.WANTS, "가벼운 컵"),
             signal(TasteField.INTERESTS, "사진"),
             signal(TasteField.HOBBIES, "러닝"),
+            *two_taste_axes(),
         ]
     )
     exclusion = signal(TasteField.DISLIKES, "강한 향")
@@ -217,7 +235,8 @@ def test_progress_uses_extracted_signals_and_resolved_goals() -> None:
     )
     conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
 
-    assert conversation_progress(conversation) == 47
+    # 관심사 2/5 * 25 + 확신 높은 관심사 1/2 * 25 + 취향 축 0 + 소지품 확인 15
+    assert conversation_progress(conversation) == 38
 
 
 def test_progress_is_complete_when_input_is_locked_or_under_review() -> None:
@@ -233,11 +252,16 @@ def test_goals_running_out_below_five_tastes_keeps_exploring_instead_of_wrapping
     conversation = state()
     conversation.turn_count = 10
     conversation.profile.signals.extend(
-        [signal(TasteField.INTERESTS, "캠핑"), signal(TasteField.HOBBIES, "핸드드립")]
+        [
+            signal(TasteField.INTERESTS, "캠핑"),
+            signal(TasteField.HOBBIES, "핸드드립"),
+            *two_taste_axes(),
+        ]
     )
     for goal in (
         ConversationGoal.INTEREST,
         ConversationGoal.INTEREST_VIA_ROUTINE,
+        ConversationGoal.TASTE,
         ConversationGoal.DISLIKE,
         ConversationGoal.GEAR,
         ConversationGoal.DEEPEN,
@@ -273,6 +297,7 @@ def test_missing_exclusion_is_asked_again_after_default_order_runs_out() -> None
             signal(TasteField.WANTS, "가벼운 컵"),
             signal(TasteField.INTERESTS, "사진"),
             signal(TasteField.HOBBIES, "러닝"),
+            *two_taste_axes(),
         ]
     )
     for goal in (ConversationGoal.DISLIKE, ConversationGoal.GEAR, ConversationGoal.DEEPEN):
@@ -286,3 +311,35 @@ def test_missing_exclusion_is_asked_again_after_default_order_runs_out() -> None
     decision = decide_goal(conversation, "음")
     assert decision.goal == ConversationGoal.WRAP
     assert decision.completion_reason == CompletionReason.MAX_CYCLES
+
+
+def test_taste_is_asked_after_interests_until_two_axes_are_found() -> None:
+    conversation = state()
+    conversation.profile.signals.append(signal(TasteField.HOBBIES, "캠핑"))
+    conversation.goal_attempts[ConversationGoal.INTEREST.value] = 2
+    conversation.goal_attempts[ConversationGoal.INTEREST_VIA_ROUTINE.value] = 1
+
+    assert decide_goal(conversation, "캠핑 좋아요").goal == ConversationGoal.TASTE
+    assert "taste_axes" in recommendation_readiness(conversation).missing_signals
+
+    conversation.profile.signals.extend(two_taste_axes())
+
+    assert "taste_axes" not in recommendation_readiness(conversation).missing_signals
+    assert decide_goal(conversation, "캠핑 좋아요").goal != ConversationGoal.TASTE
+
+
+def test_taste_prompt_hints_only_axes_not_yet_covered() -> None:
+    conversation = state()
+    conversation.profile.signals.append(signal(TasteField.HOBBIES, "캠핑"))
+    conversation.profile.signals.append(taste("혼자 가는 캠핑", ("취향", "사회", "인원")))
+
+    uncovered = [axis.key for axis in uncovered_taste_axes(conversation)]
+    messages = build_reply_messages(conversation, ConversationGoal.TASTE, "캠핑 좋아요")
+    direction = messages[-2]["content"]
+
+    assert "social.size" not in uncovered
+    assert "visual.color" in uncovered
+    assert "혼자 하는지 여럿이 하는지" not in direction
+    # 누구와 하는지는 이미 나왔으니, 다음으로 묻기 쉬운 장소 분위기가 앞에 온다.
+    assert uncovered[0] == "place.crowd"
+    assert "한적한 곳을 찾는지 북적이는 곳이 좋은지" in direction

@@ -61,6 +61,13 @@ class FakeModelGateway:
         return result
 
 
+def taste_signal(value: str, path: tuple[str, ...]) -> ProfileSignal:
+    signal = profile_signal(TasteField.PREFERENCES, value)
+    signal.link_role = LinkRole.WEIGHT
+    signal.taxonomy_path = path
+    return signal
+
+
 def profile_signal(field: TasteField, value: str) -> ProfileSignal:
     now = datetime(2026, 9, 18, tzinfo=UTC)
     return ProfileSignal(
@@ -273,6 +280,8 @@ def test_extraction_that_completes_readiness_closes_before_eight_turns() -> None
             profile_signal(TasteField.HOBBIES, "핸드드립"),
             profile_signal(TasteField.INTERESTS, "독서"),
             profile_signal(TasteField.HOBBIES, "러닝"),
+            taste_signal("혼자 가는 캠핑", ("취향", "사회", "인원")),
+            taste_signal("조용한 카페", ("취향", "분위기", "공간")),
         ]
     )
     state.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
@@ -333,12 +342,14 @@ def test_parse_extraction_repairs_evidence_and_deferral_and_caps_items() -> None
                 _raw_item(field="unaffordable", value="카메라"),
                 _raw_item(value="요리", deferralReason="price"),
                 _raw_item(value="넷째"),
+                _raw_item(value="다섯째"),
+                _raw_item(value="여섯째"),
             ],
             "noneAnswer": True,
         }
     )
 
-    assert [item.value for item in delta.items] == ["캠핑", "카메라", "요리"]
+    assert [item.value for item in delta.items] == ["캠핑", "카메라", "요리", "넷째", "다섯째"]
     assert len(delta.items[0].evidence) == 40
     assert delta.items[1].field == TasteField.WANTS
     assert delta.items[2].deferral_reason is None
@@ -441,6 +452,8 @@ def test_turn_that_completes_readiness_ends_with_closing_message() -> None:
             profile_signal(TasteField.HOBBIES, "핸드드립"),
             profile_signal(TasteField.INTERESTS, "독서"),
             profile_signal(TasteField.HOBBIES, "러닝"),
+            taste_signal("혼자 가는 캠핑", ("취향", "사회", "인원")),
+            taste_signal("조용한 카페", ("취향", "분위기", "공간")),
         ]
     )
     state.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
@@ -474,9 +487,45 @@ def test_summary_prompt_sends_ranked_friend_clues_without_private_fields() -> No
 
     content = json.loads(build_friend_summary_messages(state.profile)[1]["content"])
 
-    values = [clue["value"] for clue in content["clues"]]
+    values = [item["value"] for group in content["interests"] for item in group["items"]]
     assert set(values) == {"조용한 카페", "핸드드립"}
-    assert [clue["rank"] for clue in content["clues"]] == [1, 2]
+    assert content["tastes"] == []
+
+
+def test_summary_includes_stored_tastes_beyond_exposure_limit_grouped_by_axis() -> None:
+    import json
+
+    from app.domain.profile.models import SignalStatus
+
+    state = ConversationState(user_id=1, conversation_room_id=101)
+    alone_camping = taste_signal("혼자 가는 캠핑", ("취향", "사회", "인원"))
+    alone_camping.target = "캠핑"
+    alone_movie = taste_signal("혼자 보는 영화", ("취향", "사회", "인원"))
+    alone_movie.target = "영화"
+    alone_movie.status = SignalStatus.INACTIVE
+    quiet = taste_signal("사람 없는 계곡", ("취향", "장소", "밀집도"))
+    replaced = taste_signal("붐비는 캠핑장", ("취향", "장소", "밀집도"))
+    replaced.status = SignalStatus.SUPERSEDED
+    state.profile.signals.extend([quiet, alone_camping, alone_movie, replaced])
+
+    content = json.loads(build_friend_summary_messages(state.profile)[1]["content"])
+
+    # 서로 다른 관심사에 걸쳐 나온 축이 앞에 오고, 활성 한도 밖 항목도 들어간다.
+    assert content["tastes"][0]["axis"] == "사회/인원"
+    assert [item["value"] for item in content["tastes"][0]["items"]] == [
+        "혼자 가는 캠핑",
+        "혼자 보는 영화",
+    ]
+    assert content["tastes"][1] == {
+        "axis": "장소/밀집도",
+        "items": [
+            {
+                "kind": "좋아하는 방식과 스타일",
+                "value": "사람 없는 계곡",
+                "context": "사람 없는 계곡",
+            }
+        ],
+    }
 
 
 def test_parse_extraction_keeps_aspect_and_target_only_on_preferences() -> None:
@@ -622,3 +671,127 @@ def test_new_interest_resets_topic_counter() -> None:
     assert state.turns_since_new_interest == 0
     prompt = build_reply_messages(state, ConversationGoal.INTEREST, "을밀대요")
     assert BROADEN_INSTRUCTION not in prompt[-2]["content"]
+
+
+class FakeJudgmentGateway:
+    def __init__(self, answers: Mapping[str, Any]) -> None:
+        self.answers = answers
+        self.questions: Mapping[str, Any] = {}
+
+    async def decide(
+        self,
+        state: Mapping[str, Any],
+        questions: Mapping[str, Mapping[str, Any]],
+        *,
+        model: str,
+    ) -> Mapping[str, Any]:
+        self.questions = questions
+        return {"model": model, "answers": self.answers}
+
+
+def test_judgment_path_stores_disliked_subject_only_as_dislike() -> None:
+    gateway = FakeModelGateway(
+        [
+            {
+                "candidates": [
+                    {"subject": "러닝", "kind": "activity"},
+                    {"subject": "걷기", "kind": "activity"},
+                ]
+            }
+        ]
+    )
+    judge = FakeJudgmentGateway(
+        {
+            "stance_0": {"type": "choice", "choice": "dislike", "confidence": 1.0},
+            "explicit_0": {"type": "noul", "noul": 0.95},
+            "evidence_0": {"type": "choice", "choice": "s0", "confidence": 0.9},
+            "stance_1": {"type": "choice", "choice": "like", "confidence": 0.9},
+            "habitual_1": {"type": "noul", "noul": 0.1},
+            "explicit_1": {"type": "noul", "noul": 0.8},
+            "evidence_1": {"type": "choice", "choice": "s2", "confidence": 0.9},
+        }
+    )
+    service = ConversationService(
+        model_gateway=gateway,
+        extraction_model="extractor",
+        judgment_gateway=judge,
+        judgment_model="~typesafe/jev-latest",
+    )
+    state = ConversationState(user_id=1, conversation_room_id=101)
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="러닝은 진짜 싫어요. 숨차서요. 그냥 걷는 건 괜찮아요",
+            raw_reply="걷는 건 주로 언제 하세요?",
+            goal=ConversationGoal.INTEREST,
+        )
+    )
+
+    active = {(signal.field, signal.value) for signal in completed.state.profile.active_signals()}
+    assert active == {(TasteField.DISLIKES, "러닝"), (TasteField.INTERESTS, "걷기")}
+    assert completed.extraction_failed is False
+    assert "habitual_0" in judge.questions
+
+
+def test_judgment_failure_marks_extraction_failed_without_breaking_turn() -> None:
+    class BrokenJudgmentGateway:
+        async def decide(self, state, questions, *, model):
+            raise RuntimeError("down")
+
+    gateway = FakeModelGateway([{"candidates": [{"subject": "러닝", "kind": "activity"}]}])
+    service = ConversationService(
+        model_gateway=gateway,
+        extraction_model="extractor",
+        judgment_gateway=BrokenJudgmentGateway(),
+        judgment_model="~typesafe/jev-latest",
+    )
+    state = ConversationState(user_id=1, conversation_room_id=101)
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="러닝 좋아해요",
+            raw_reply="언제 뛰세요?",
+            goal=ConversationGoal.INTEREST,
+        )
+    )
+
+    assert completed.extraction_failed is True
+    assert completed.state.profile.active_signals() == []
+    assert completed.reply == "언제 뛰세요?"
+
+
+def test_judgment_path_replaces_corrected_item_with_the_new_one() -> None:
+    gateway = FakeModelGateway([{"candidates": [{"subject": "등산", "kind": "activity"}]}])
+    judge = FakeJudgmentGateway(
+        {
+            "stance_0": {"type": "choice", "choice": "like", "confidence": 0.95},
+            "habitual_0": {"type": "noul", "noul": 0.8},
+            "explicit_0": {"type": "noul", "noul": 0.9},
+            "correction_intent": {"type": "noul", "noul": 0.93},
+            "retract_0": {"type": "noul", "noul": 0.9},
+        }
+    )
+    service = ConversationService(
+        model_gateway=gateway,
+        extraction_model="extractor",
+        judgment_gateway=judge,
+        judgment_model="~typesafe/jev-latest",
+    )
+    state = ConversationState(user_id=1, conversation_room_id=101)
+    state.profile.signals.append(profile_signal(TasteField.HOBBIES, "캠핑"))
+    state.turn_count = 1
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="아 캠핑이 아니라 등산이요",
+            raw_reply="등산은 주로 어디로 가세요?",
+            goal=ConversationGoal.INTEREST,
+        )
+    )
+
+    active = {(signal.field, signal.value) for signal in completed.state.profile.active_signals()}
+    assert active == {(TasteField.HOBBIES, "등산")}
+    assert "retract_0" in judge.questions

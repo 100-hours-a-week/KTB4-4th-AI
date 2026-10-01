@@ -12,15 +12,36 @@ class ConversationGoal(StrEnum):
     OPENING = "OPENING"
     INTEREST = "INTEREST"
     INTEREST_VIA_ROUTINE = "INTEREST_VIA_ROUTINE"
+    TASTE = "TASTE"
     DISLIKE = "DISLIKE"
     GEAR = "GEAR"
     DEEPEN = "DEEPEN"
-    CORRECT = "CORRECT"
+    # 곰곰이 생각하게 하는 대화(reflective)에서만 쓴다.
+    BRIDGE = "BRIDGE"
+    REFLECT = "REFLECT"
     WRAP = "WRAP"
+
+
+class ConversationStyle(StrEnum):
+    # 부족한 정보를 차례로 묻는 기존 방식
+    EXPLORE = "explore"
+    # 한 이야기를 무엇 → 어떻게 → 왜 → 반대편으로 따라가며 곰곰이 생각하게 하는 방식
+    REFLECTIVE = "reflective"
+
+
+class ThreadStage(StrEnum):
+    """reflective 대화에서 지금 이야기 줄기가 어디까지 왔는지."""
+
+    WHAT = "what"
+    HOW = "how"
+    WHY = "why"
+    CONTRAST = "contrast"
+    BRIDGE = "bridge"
 
 
 class GoalArea(StrEnum):
     INTEREST = "interest"
+    TASTE = "taste"
     GEAR = "gear"
     EXCLUSION = "exclusion"
     DEEPEN = "deepen"
@@ -103,6 +124,19 @@ class ConversationState:
     analysis_interest_keywords: list[str] = field(default_factory=list)
     analysis_keyword_scores: dict[str, float] = field(default_factory=dict)
     analysis_patch_used: bool = False
+    conversation_style: ConversationStyle = ConversationStyle.EXPLORE
+    # reflective 대화의 이야기 줄기. 줄기 관심사와 단계, 줄기 안에서 주고받은 턴 수.
+    thread_topic: str | None = None
+    thread_stage: ThreadStage = ThreadStage.WHAT
+    thread_turns: int = 0
+    # "왜" 질문을 한 횟수. 대화가 무거워지지 않게 제한한다.
+    why_count: int = 0
+    # 직전 사용자 답의 깊이(0 짧게 넘김 ~ 2 이유나 느낌을 담음)와 짧은 답이 이어진 횟수.
+    last_answer_depth: float | None = None
+    shallow_streak: int = 0
+    # 되비추기를 했는지, 되비추기에 쓴 항목 값. 다음 답에서 정정 대상 후보가 된다.
+    reflected: bool = False
+    reflection_values: list[str] = field(default_factory=list)
 
     @property
     def session_id(self) -> int:
@@ -139,6 +173,15 @@ class ConversationState:
             "analysis_interest_keywords": list(self.analysis_interest_keywords),
             "analysis_keyword_scores": dict(self.analysis_keyword_scores),
             "analysis_patch_used": self.analysis_patch_used,
+            "conversation_style": self.conversation_style.value,
+            "thread_topic": self.thread_topic,
+            "thread_stage": self.thread_stage.value,
+            "thread_turns": self.thread_turns,
+            "why_count": self.why_count,
+            "last_answer_depth": self.last_answer_depth,
+            "shallow_streak": self.shallow_streak,
+            "reflected": self.reflected,
+            "reflection_values": list(self.reflection_values),
         }
 
     @classmethod
@@ -188,6 +231,21 @@ class ConversationState:
                 for key, value in payload.get("analysis_keyword_scores", {}).items()
             },
             analysis_patch_used=bool(payload.get("analysis_patch_used", False)),
+            conversation_style=ConversationStyle(
+                payload.get("conversation_style", ConversationStyle.EXPLORE)
+            ),
+            thread_topic=payload.get("thread_topic"),
+            thread_stage=ThreadStage(payload.get("thread_stage", ThreadStage.WHAT)),
+            thread_turns=int(payload.get("thread_turns", 0)),
+            why_count=int(payload.get("why_count", 0)),
+            last_answer_depth=(
+                float(payload["last_answer_depth"])
+                if payload.get("last_answer_depth") is not None
+                else None
+            ),
+            shallow_streak=int(payload.get("shallow_streak", 0)),
+            reflected=bool(payload.get("reflected", False)),
+            reflection_values=list(payload.get("reflection_values", [])),
         )
 
 
