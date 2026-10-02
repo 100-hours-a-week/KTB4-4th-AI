@@ -182,6 +182,8 @@ class ChatUseCases:
                 goal=prepared.decision.goal,
                 completion_reason=prepared.decision.completion_reason,
                 extraction=await extraction,
+                move=prepared.decision.move,
+                scene=prepared.decision.scene,
             )
             await self._states.save(completed.state)
             return completed
