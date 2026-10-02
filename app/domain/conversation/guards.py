@@ -18,6 +18,7 @@ _FALLBACK_QUESTIONS = {
     ConversationGoal.DEEPEN: "그중에 제일 기억에 남는 순간은 언제였어요?",
     ConversationGoal.BRIDGE: "그런 시간은 평소에 또 어디서 만들어요?",
     ConversationGoal.REFLECT: "얘기 들어 보니 좋아하는 게 조금 보이는데, 제가 이해한 게 맞아요?",
+    ConversationGoal.CHAT: "그 얘기 조금 더 들려줄래요?",
     ConversationGoal.WRAP: "이야기해 주신 내용으로 취향을 정리해 둘게요.",
 }
 
@@ -25,18 +26,34 @@ _FALLBACK_QUESTIONS = {
 # reflective 대화의 응답 길이 상한. 질문 40자에 짧은 반응 하나가 들어가는 정도다.
 # 넘으면 앞의 반응 문장을 떼고 질문만 남긴다.
 CONCISE_REPLY_CHARS = 60
+# companion 응답에서 질문 뒤에 남겨 두는 말의 최대 길이. 니쥬가 고른 답 한 마디 정도다.
+COMPANION_TAIL_CHARS = 30
 
 
-def sanitize_response(text: str, goal: ConversationGoal, *, concise: bool = False) -> str:
+def sanitize_response(
+    text: str,
+    goal: ConversationGoal,
+    *,
+    concise: bool = False,
+    companion: bool = False,
+) -> str:
     cleaned = text.strip()
     cut_positions = [cleaned.find(marker) for marker in _LEAK_MARKERS]
     cut_positions = [position for position in cut_positions if position >= 0]
     if cut_positions:
         cleaned = cleaned[: min(cut_positions)].rstrip()
 
-    first_question = cleaned.find("?")
-    if first_question >= 0:
-        cleaned = cleaned[: first_question + 1].strip()
+    if companion:
+        # companion은 질문 없이 끝나는 응답도 있고, "뭐 골라요? 저는 빔프요."처럼 질문 뒤에
+        # 니쥬의 답이 짧게 붙기도 한다. 질문 뒤에 길게 늘어놓은 말만 뗀다.
+        question_end = cleaned.rfind("?")
+        if question_end >= 0 and len(cleaned[question_end + 1 :].strip()) > COMPANION_TAIL_CHARS:
+            cleaned = cleaned[: question_end + 1].strip()
+    else:
+        # 질문 뒤에 붙은 말은 뗀다.
+        question_end = cleaned.find("?")
+        if question_end >= 0:
+            cleaned = cleaned[: question_end + 1].strip()
     if concise and len(cleaned) > CONCISE_REPLY_CHARS and cleaned.endswith("?"):
         cut = max(cleaned.rfind(mark, 0, len(cleaned) - 1) for mark in (".", "!", "~"))
         if cut >= 0 and cleaned[cut + 1 :].strip():

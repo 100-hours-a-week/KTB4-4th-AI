@@ -552,8 +552,12 @@ def build_judgment_request(
                 },
                 "criteria": {f"s{position}": text for position, text in enumerate(sentences)},
             }
-    if previous_ai and state.conversation_style == ConversationStyle.REFLECTIVE:
-        # 대화 속도 조절용. 짧게 넘기는 답이면 깊이 파고들지 않고 가볍게 돌아온다.
+    if previous_ai and state.conversation_style in {
+        ConversationStyle.REFLECTIVE,
+        ConversationStyle.COMPANION,
+    }:
+        # 대화 속도 조절용. reflective는 짧게 넘기는 답이면 가볍게 돌아오고,
+        # companion은 사용자 에너지 추정에 더한다.
         questions["answer_depth"] = {
             "type": "score",
             "instructions": (
