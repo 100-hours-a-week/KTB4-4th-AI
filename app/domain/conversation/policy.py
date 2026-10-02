@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from app.domain.conversation.energy import (
+    LOW_ENERGY,
+    asks_back,
+    blended_energy,
+    record_energy,
+    turn_energy,
+    wants_to_exit,
+)
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
+    ConversationMove,
     ConversationState,
     ConversationStyle,
     CoverageStatus,
@@ -46,6 +55,41 @@ GEAR_PROGRESS_WEIGHT = 15
 EXCLUSION_PROGRESS_WEIGHT = 15
 # 새 관심사 없이 같은 이야기로 이만큼 주고받으면 옆 화제로 넓힌다.
 TOPIC_BROADEN_AFTER_TURNS = 2
+
+# companion 대화의 move 선택 기준.
+# 질문으로 끝난 응답이 이만큼 이어지면 다음 턴은 질문 없이 보태거나 되비춘다.
+COMPANION_MAX_QUESTION_STREAK = 2
+# 에너지가 낮은 턴이 이만큼 이어지면 놀이나 되돌아가기로 가볍게 바꾸고,
+# 바꿔도 계속 낮으면 그만하고 싶은 것으로 본다.
+COMPANION_LIGHTEN_STREAK = 2
+COMPANION_WRAP_STREAK = 4
+# 같은 화제에 이만큼 머물렀고 에너지가 떨어지고 있으면 건너간다. 에너지가 높으면 계속 머문다.
+COMPANION_STAY_TURNS = 3
+# 최고치보다 이만큼 떨어졌거나 이 값 아래면 에너지가 떨어지는 중으로 본다.
+ENERGY_FALLING_DROP = 0.15
+ENERGY_FALLING_LEVEL = 0.5
+# 되비추기는 에너지가 이 이상일 때, 대화 전체에서 이 횟수까지만 한다.
+REFLECT_BACK_MIN_ENERGY = 0.45
+MAX_REFLECT_BACK = 2
+REFLECT_BACK_FROM_TURN = 3
+# 준비가 된 뒤 니쥬가 먼저 끝내는 때: 이 턴을 넘겼거나, 최고 에너지에서 이만큼 떨어졌을 때.
+COMPANION_CLOSE_AFTER_TURN = 14
+COMPANION_CLOSE_ENERGY_DROP = 0.2
+MOVE_HISTORY_LIMIT = 8
+
+# 건너가기와 놀이에서 쓰는 일상 장면. 장면마다 채워 줄 수 있는 추천 공백을 붙인다.
+COMPANION_SCENES: tuple[tuple[str, frozenset[str]], ...] = (
+    ("퇴근하고 집에 와서 제일 먼저 하는 것", frozenset({"query_signals"})),
+    ("이번 주말에 하고 싶은 것", frozenset({"query_signals"})),
+    ("요즘 꽂혀 있는 것", frozenset({"query_signals", "high_confidence_query_signals"})),
+    ("나한테 주는 작은 보상", frozenset({"query_signals", "gear"})),
+    ("요즘 장바구니에 담아 둔 것", frozenset({"query_signals", "high_confidence_query_signals"})),
+    ("최근에 받고 기분 좋았던 것", frozenset({"gear", "query_signals"})),
+    ("요즘 제일 손이 자주 가는 물건", frozenset({"gear"})),
+    ("이 계절에 꼭 하고 싶은 것", frozenset({"query_signals"})),
+    ("휴가가 생기면 하고 싶은 것", frozenset({"query_signals"})),
+    ("요즘 은근히 귀찮거나 번거로운 일", frozenset({"exclusion"})),
+)
 
 # reflective 대화: 한 이야기 줄기에서 주고받는 최대 턴 수와 "왜" 질문 최대 횟수.
 MAX_THREAD_TURNS = 4
@@ -191,7 +235,10 @@ def recommendation_readiness(state: ConversationState) -> ReadinessResult:
         CoverageStatus.CONFIRMED_NONE,
     }:
         missing.append("gear")
-    if state.goal_coverage[GoalArea.EXCLUSION] not in {
+    # companion은 싫어하는 것을 준비 조건에서 뺀다. 필수로 두면 별로였던 경험을 캐묻게 된다.
+    if state.conversation_style != ConversationStyle.COMPANION and state.goal_coverage[
+        GoalArea.EXCLUSION
+    ] not in {
         CoverageStatus.FOUND,
         CoverageStatus.CONFIRMED_NONE,
     }:
@@ -223,6 +270,10 @@ def conversation_progress(state: ConversationState) -> int:
         CoverageStatus.CONFIRMED_NONE,
     }:
         progress += GEAR_PROGRESS_WEIGHT
+    if state.conversation_style == ConversationStyle.COMPANION:
+        # 싫어하는 것을 빼고 100으로 맞추고, 한 번 오른 진행률은 내리지 않는다.
+        progress = progress * 100 / (100 - EXCLUSION_PROGRESS_WEIGHT)
+        return max(round(progress), state.progress_floor)
     if state.goal_coverage[GoalArea.EXCLUSION] in {
         CoverageStatus.FOUND,
         CoverageStatus.CONFIRMED_NONE,
@@ -260,6 +311,8 @@ def _area_available(state: ConversationState, area: GoalArea) -> bool:
 def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     if state.conversation_style == ConversationStyle.REFLECTIVE:
         return _decide_reflective(state)
+    if state.conversation_style == ConversationStyle.COMPANION:
+        return _decide_companion(state, utterance)
     if state.status != SessionStatus.ACTIVE:
         return GoalDecision(
             ConversationGoal.WRAP,
@@ -353,6 +406,165 @@ def _goal_for_missing(
     if len(candidates) > 1 and state.last_goal in candidates:
         candidates.remove(state.last_goal)
     return min(candidates, key=lambda goal: state.goal_attempts.get(goal.value, 0))
+
+
+def _decide_companion(state: ConversationState, utterance: str) -> GoalDecision:
+    """사용자 에너지와 최근 흐름을 보고 이번 턴의 반응 방식(move)을 고른다.
+
+    위에서부터 차례로 보고 처음 맞는 move를 고른다. 정보 공백은 move를 정하지 않고,
+    건너가기나 놀이에서 어느 화제로 갈지에만 가중치를 준다.
+    utterance가 비어 있으면(턴을 기록한 뒤 다음 차례를 볼 때) 기록된 에너지로 판단한다.
+    """
+    if state.status != SessionStatus.ACTIVE:
+        return GoalDecision(
+            ConversationGoal.WRAP,
+            state.completion_reason or CompletionReason.USER_EXIT,
+        )
+    if state.turn_count >= MAX_TURNS:
+        return GoalDecision(ConversationGoal.WRAP, CompletionReason.MAX_CYCLES)
+    if utterance and wants_to_exit(utterance):
+        return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
+
+    if utterance:
+        current = turn_energy(state, utterance)
+        energy: float | None = blended_energy(state, current)
+        low_streak = state.low_energy_streak + 1 if current < LOW_ENERGY else 0
+    else:
+        energy = state.energy
+        low_streak = state.low_energy_streak
+    if low_streak >= COMPANION_WRAP_STREAK:
+        return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
+
+    readiness = recommendation_readiness(state)
+    if readiness.sufficient and _good_moment_to_close(state, energy):
+        return GoalDecision(ConversationGoal.WRAP, CompletionReason.SUFFICIENT)
+
+    def chat(move: ConversationMove, scene: str | None = None) -> GoalDecision:
+        return GoalDecision(ConversationGoal.CHAT, move=move, scene=scene)
+
+    # 사용자가 되물었으면 먼저 답하고 그 이야기를 따라간다.
+    if utterance and asks_back(utterance):
+        return chat(ConversationMove.FOLLOW)
+    last_move = state.last_move
+    if low_streak >= COMPANION_LIGHTEN_STREAK:
+        topic = _return_topic(state, utterance)
+        if topic is not None and last_move != ConversationMove.RETURN:
+            return chat(ConversationMove.RETURN, topic)
+        if last_move != ConversationMove.PLAY:
+            return chat(ConversationMove.PLAY, _pick_scene(state, readiness.missing_signals))
+        return chat(ConversationMove.ADD)
+    if state.question_streak >= COMPANION_MAX_QUESTION_STREAK:
+        if _can_reflect_back(state, energy):
+            return chat(ConversationMove.REFLECT_BACK)
+        return chat(ConversationMove.ADD)
+    if state.turns_since_new_interest >= COMPANION_STAY_TURNS and _energy_falling(state, energy):
+        return chat(ConversationMove.BRIDGE, _pick_scene(state, readiness.missing_signals))
+    if _can_reflect_back(state, energy):
+        return chat(ConversationMove.REFLECT_BACK)
+    return chat(ConversationMove.FOLLOW)
+
+
+def _good_moment_to_close(state: ConversationState, energy: float | None) -> bool:
+    """준비가 됐어도 즐겁게 이어지면 끝내지 않는다.
+
+    오래 했거나 에너지가 꺾이기 시작할 때 끝낸다.
+    """
+    if state.turn_count >= COMPANION_CLOSE_AFTER_TURN:
+        return True
+    return energy is not None and state.peak_energy - energy >= COMPANION_CLOSE_ENERGY_DROP
+
+
+def _energy_falling(state: ConversationState, energy: float | None) -> bool:
+    if energy is None:
+        return False
+    return energy < ENERGY_FALLING_LEVEL or energy <= state.peak_energy - ENERGY_FALLING_DROP
+
+
+def _can_reflect_back(state: ConversationState, energy: float | None) -> bool:
+    if (
+        energy is None
+        or energy < REFLECT_BACK_MIN_ENERGY
+        or state.reflect_back_count >= MAX_REFLECT_BACK
+        or state.turn_count < REFLECT_BACK_FROM_TURN
+        or ConversationMove.REFLECT_BACK.value in state.move_history[-4:]
+    ):
+        return False
+    clues = reflection_clues(state)
+    # 같은 단서로 두 번 되비추지 않는다.
+    fresh = [signal for signal in clues if signal.value not in state.reflection_values]
+    return len(clues) >= 2 and bool(fresh)
+
+
+def _return_topic(state: ConversationState, utterance: str) -> str | None:
+    """앞에서 가장 신나게 이야기한 관심사.
+
+    최근에 다시 나왔거나 이미 돌아간 적 있으면 쓰지 않는다.
+    """
+    topic = state.best_topic
+    if topic is None or topic in state.returned_topics:
+        return None
+    recent = [utterance, *_recent_user_messages(state)[-2:]]
+    normalized = normalize_text(topic)
+    if any(normalized and normalized in normalize_text(message) for message in recent):
+        return None
+    return topic
+
+
+def _info_gap_weight(turn_count: int) -> float:
+    """정보 공백을 화제 선택에 얼마나 세게 반영할지(λ). 초반에는 0이고 후반으로 갈수록 키운다."""
+    if turn_count < 7:
+        return 0.0
+    if turn_count < 13:
+        return 0.5
+    return 1.0
+
+
+def _pick_scene(state: ConversationState, missing: tuple[str, ...]) -> str | None:
+    """아직 쓰지 않은 일상 장면 중 하나를 고른다.
+
+    후반일수록 추천 공백을 채우는 장면을 앞세운다.
+    """
+    weight = _info_gap_weight(state.turn_count)
+    offset = state.conversation_room_id % len(COMPANION_SCENES)
+    rotated = COMPANION_SCENES[offset:] + COMPANION_SCENES[:offset]
+    unused = [(scene, gaps) for scene, gaps in rotated if scene not in state.used_scenes]
+    if not unused:
+        return None
+    # 같은 점수면 회전 순서를 따른다. 방마다 시작 장면이 달라서 대화가 매번 같아지지 않는다.
+    best = max(unused, key=lambda item: weight * bool(item[1] & set(missing)))
+    return best[0]
+
+
+def record_companion_turn(
+    state: ConversationState,
+    *,
+    utterance: str,
+    reply: str,
+    move: ConversationMove | None,
+    scene: str | None,
+    answer_depth: float | None,
+    new_interests: list[str],
+) -> None:
+    """턴이 끝난 뒤 에너지와 move 흐름을 기록한다. companion 대화에서만 쓴다.
+
+    history에 이번 발화를 넣기 전에 불러야 평균 길이가 이번 발화 없이 비교된다.
+    """
+    if state.conversation_style != ConversationStyle.COMPANION:
+        return
+    current = record_energy(state, utterance, answer_depth=answer_depth)
+    if new_interests and current >= state.best_topic_energy:
+        state.best_topic = new_interests[0]
+        state.best_topic_energy = current
+    state.question_streak = state.question_streak + 1 if "?" in reply else 0
+    if move is None:
+        return
+    state.move_history = [*state.move_history, move.value][-MOVE_HISTORY_LIMIT:]
+    if move == ConversationMove.RETURN and scene:
+        state.returned_topics.append(scene)
+    if move in {ConversationMove.BRIDGE, ConversationMove.PLAY} and scene:
+        state.used_scenes.append(scene)
+    if move == ConversationMove.REFLECT_BACK:
+        state.reflect_back_count += 1
 
 
 def known_query_values(state: ConversationState) -> set[str]:

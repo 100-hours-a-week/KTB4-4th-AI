@@ -473,6 +473,57 @@ def test_turn_that_completes_readiness_ends_with_closing_message() -> None:
     assert completed.state.status == SessionStatus.INPUT_LOCKED
 
 
+def test_last_turn_at_max_turns_ends_with_closing_message() -> None:
+    from app.domain.conversation.guards import CLOSING_MESSAGE
+    from app.domain.conversation.policy import MAX_TURNS
+
+    gateway = FakeModelGateway([{"items": []}])
+    service = ConversationService(model_gateway=gateway, extraction_model="extractor")
+    state = ConversationState(user_id=1, conversation_room_id=101, turn_count=MAX_TURNS - 1)
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="주말엔 그냥 쉬어요",
+            raw_reply="쉬는 것도 중요하죠. 쉴 때는 주로 뭐 해요?",
+            goal=ConversationGoal.INTEREST,
+        )
+    )
+
+    assert completed.state.turn_count == MAX_TURNS
+    assert completed.reply == f"쉬는 것도 중요하죠. {CLOSING_MESSAGE}"
+    assert completed.state.history[-1].content == completed.reply
+    assert completed.state.status == SessionStatus.INPUT_LOCKED
+    assert completed.state.completion_reason == CompletionReason.MAX_CYCLES
+
+
+def test_reflect_turn_at_max_turns_still_locks_with_closing_message() -> None:
+    from app.domain.conversation.guards import CLOSING_MESSAGE
+    from app.domain.conversation.models import ConversationStyle
+    from app.domain.conversation.policy import MAX_TURNS
+
+    gateway = FakeModelGateway([{"items": []}])
+    service = ConversationService(model_gateway=gateway, extraction_model="extractor")
+    state = ConversationState(
+        user_id=1,
+        conversation_room_id=101,
+        turn_count=MAX_TURNS - 1,
+        conversation_style=ConversationStyle.REFLECTIVE,
+    )
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="네 그런 것 같아요",
+            raw_reply="혼자만의 시간을 좋아하시는 거죠?",
+            goal=ConversationGoal.REFLECT,
+        )
+    )
+
+    assert completed.reply == CLOSING_MESSAGE
+    assert completed.state.status == SessionStatus.INPUT_LOCKED
+
+
 def test_summary_prompt_sends_ranked_friend_clues_without_private_fields() -> None:
     import json
 

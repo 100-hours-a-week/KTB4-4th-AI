@@ -3,7 +3,13 @@ import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.domain.conversation.models import ConversationGoal, ConversationState, ConversationStyle
+from app.domain.conversation.energy import asks_back
+from app.domain.conversation.models import (
+    ConversationGoal,
+    ConversationMove,
+    ConversationState,
+    ConversationStyle,
+)
 from app.domain.conversation.policy import (
     latest_motive,
     reflection_clues,
@@ -28,19 +34,77 @@ TASTE_HINT_AXES = 6
 LOCAL_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 # 첫인사가 매번 "요즘 어떻게 지내세요?"로 굳지 않도록 세션마다 소재 하나를 고른다.
-# 부담 없이 답할 수 있고, 답에서 관심사가 드러나기 쉬운 것만 둔다.
-OPENING_TOPICS = (
-    "오늘 하루 중 제일 괜찮았던 순간",
-    "이번 주에 있었던 소소한 일",
-    "최근에 먹은 것 중 또 먹고 싶은 것",
-    "요즘 자주 듣는 노래나 자주 보는 영상",
-    "최근에 처음 해 본 것",
-    "요즘 하루 일과가 끝나면 하는 것",
-    "최근에 웃겼던 일",
-    "요즘 날씨나 계절에 하고 싶은 것",
-    "요즘 자기 전에 하는 것",
-    "지난 주말이나 쉬는 날에 한 것",
-)
+# 첫 질문이 대화 방향을 정하므로 생활 영역을 고르게 섞는다. 영역을 먼저 고르고 그 안에서 소재를
+# 고르기 때문에 소재가 많은 영역으로 쏠리지 않는다. 부담 없이 답할 수 있고, 답에서 평소 사는
+# 모습이 드러나기 쉬운 것만 둔다. 건강, 돈 사정처럼 민감한 쪽은 넣지 않는다.
+OPENING_TOPIC_AREAS: dict[str, tuple[str, ...]] = {
+    "소소한 하루": (
+        "오늘 하루 중 제일 괜찮았던 순간",
+        "이번 주에 있었던 소소한 일",
+        "최근에 웃겼던 일",
+    ),
+    "쉬는 날": (
+        "지난 주말이나 쉬는 날에 한 것",
+        "아무 일정 없는 하루가 생기면 하고 싶은 것",
+    ),
+    "하루의 끝": (
+        "요즘 하루 일과가 끝나면 하는 것",
+        "요즘 자기 전에 하는 것",
+    ),
+    "오가는 길": (
+        "출근길이나 등굣길에 꼭 하는 것",
+        "요즘 자주 걷는 길이나 동네 산책 코스",
+    ),
+    "집과 공간": (
+        "요즘 집에서 제일 오래 머무는 자리",
+        "방에서 제일 아끼는 물건이나 구석",
+        "요즘 자주 가는 동네 단골집",
+    ),
+    "폰 속 일상": (
+        "최근 사진첩에 제일 많이 찍힌 것",
+        "요즘 폰에서 제일 자주 여는 앱",
+        "최근에 캡처해 둔 것",
+    ),
+    "물건과 소비": (
+        "최근에 산 것 중 제일 만족스러운 것",
+        "요즘 장바구니에 담아만 둔 것",
+        "요즘 가방에 늘 들고 다니는 것",
+    ),
+    "먹고 마시는 것": (
+        "요즘 꽂힌 간식이나 음료",
+        "최근에 먹은 것 중 또 먹고 싶은 것",
+        "요즘 자주 시켜 먹거나 사 먹는 것",
+    ),
+    "보고 듣는 것": (
+        "요즘 자주 듣는 노래",
+        "요즘 챙겨 보는 드라마나 유튜브",
+        "최근에 끝까지 본 영화나 책",
+    ),
+    "사람들": (
+        "최근에 누구랑 제일 많이 웃었는지",
+        "요즘 친구들이랑 만나면 주로 하는 것",
+        "최근에 누군가에게 받은 작은 친절",
+    ),
+    "몸 움직이기": (
+        "요즘 몸 움직이는 것(운동, 산책, 스트레칭 같은 것)",
+        "요즘 날씨에 밖에서 하고 싶은 것",
+    ),
+    "기분 전환": (
+        "기분이 꿀꿀할 때 꼭 하는 것",
+        "요즘 나한테 주는 작은 보상",
+        "스트레스가 풀리는 의외의 것",
+    ),
+    "새로운 시도": (
+        "최근에 처음 해 본 것",
+        "요즘 배워 보고 싶은 것",
+        "올해가 가기 전에 해 보고 싶은 것",
+    ),
+    "계절": (
+        "이 계절에 꼭 하고 싶은 것",
+        "요즘 날씨에 제일 생각나는 것",
+    ),
+}
+OPENING_TOPICS = tuple(topic for topics in OPENING_TOPIC_AREAS.values() for topic in topics)
 _SUMMARY_FIELD_LABELS = {
     TasteField.HOBBIES: "자주 하는 활동",
     TasteField.INTERESTS: "관심을 보인 것",
@@ -283,6 +347,87 @@ REFLECTIVE_INSTRUCTIONS = {
 }
 
 
+# 니쥬 수다(companion)의 시스템 프롬프트.
+# 규칙 목록 대신 니쥬가 어떤 친구인지를 풀어 쓴다. 작은 응답 모델이 지시를 맞추느라
+# 대화 흐름을 놓치지 않도록, 금지 규칙은 꼭 필요한 것만 말투 안에 녹인다.
+# 이번 턴에 어떻게 반응할지는 매 턴 끝에 붙는 짧은 메모(move)가 정한다.
+SYSTEM_COMPANION = (
+    """당신은 "니쥬"예요. 사용자랑 편하게 수다 떠는 친구 같은 존재예요.
+
+니쥬는 이 사람이 어떤 사람인지가 제일 궁금해요.
+대단한 인생관보다는 평소 사는 모습이요. 아침은 챙겨 먹는지, 퇴근하고 뭘 하면 하루가 풀리는지,
+쉬는 날엔 나가는 쪽인지 집에 있는 쪽인지, 사소한 데서 뭘 꼭 챙기는 사람인지 같은 것들이요.
+얘기를 듣다가 "아 이 사람은 이런 거 좋아하는구나" 하고 그려지는 순간을 좋아해요.
+그래서 질문도 정보를 모으려는 게 아니라, 들은 얘기 때문에 진짜 궁금해져서 하는 거예요.
+
+니쥬는 트렌디하고 감성 있고 말에 재치가 있어요.
+상대 말에서 제일 생생한 부분을 집어서 반응하고, 자기 생각이나 요즘 얘기도 한마디씩 보태요.
+니쥬도 좋아하는 게 있고 의견도 있어요. 다만 직접 겪은 일을 지어내지는 않아요.
+매번 질문으로 끝낼 필요는 없고, 물을 땐 친구한테 묻듯 하나만 가볍게 물어요.
+같은 걸 꼬치꼬치 캐묻거나 "취미가 뭐예요" 같은 면접 질문은 니쥬답지 않아요.
+
+말은 존댓말이지만 친구처럼 가볍고 짧게 해요. 목록이나 이모지는 쓰지 않아요.
+선물이나 상품 얘기는 먼저 꺼내지 않아요. 왜 이런 얘기를 하냐고 물으면 솔직하게 답해요.
+
+예를 들면 이런 느낌이에요.
+사용자: 점심에 회사 근처 새로 생긴 국숫집 가 봤어요
+니쥬: 새로 생긴 데 바로 가 보는 거 완전 탐험가 기질인데요? 점심 메뉴는 원래 모험하는 편이에요?
+사용자: 요즘 자기 전에 게임 한 판씩 해요
+니쥬: 한 판만이 제일 지키기 어려운 약속이죠. 자기 전 그 시간이 하루 중 제일 내 시간이에요?
+
+"""
+    + SAFETY_RULES
+)
+
+# 이번 턴에 어떻게 반응할지 니쥬에게 건네는 짧은 메모. move마다 한두 문장이다.
+# {scene}은 건너가거나 돌아갈 화제, {clues}는 되비출 때 묶을 단서로 채운다.
+COMPANION_MOVES = {
+    ConversationMove.FOLLOW: (
+        "방금 얘기에 반응하고, 그 얘기를 듣고 이 사람이 평소 어떻게 지내는지 "
+        "궁금해진 걸 하나 물어봐요."
+    ),
+    ConversationMove.ADD: (
+        "이번엔 묻지 말고 반응이랑 니쥬 생각만 말해요. "
+        "상대가 맞장구치거나 한마디 덧붙이고 싶어지게요."
+    ),
+    ConversationMove.REFLECT_BACK: (
+        "지금까지 들은 걸로 이 사람이 어떤 사람인지 살짝 그려져요({clues}). "
+        "그 인상을 가볍게 짐작해서 말하고 맞는지 물어봐요."
+    ),
+    ConversationMove.BRIDGE: (
+        "이 얘기는 충분히 한 것 같아요. 방금 얘기에서 자연스럽게 이어지는 다른 일상으로 "
+        "넘어가 봐요. 예를 들면 '{scene}' 쪽이요. 어색하면 다른 데로 가도 돼요."
+    ),
+    ConversationMove.PLAY: (
+        "상대가 좀 심드렁해 보여요. 방금 얘기나 '{scene}'에서 소재를 찾아 "
+        "가볍게 둘 중 하나 고르기를 내고, 니쥬도 하나 골라요."
+    ),
+    ConversationMove.RETURN: (
+        "아까 '{scene}' 얘기할 때 제일 신나 보였어요. 그 얘기로 돌아가서 다른 쪽으로 물어봐요."
+    ),
+}
+
+# 응답 길이 예산. 사용자가 짧게 쓰면 니쥬도 짧게, 길게 쓰면 조금 길게 답한다.
+COMPANION_SHORT_USER_CHARS = 20
+COMPANION_LONG_USER_CHARS = 60
+COMPANION_MIN_REPLY_CHARS = 60
+COMPANION_MAX_REPLY_CHARS = 110
+# 자연어 메모에 넣는 들은 이야기 수.
+COMPANION_MEMO_ITEMS = 12
+_MEMO_FIELD_LABELS = {
+    TasteField.INTERESTS: "관심",
+    TasteField.HOBBIES: "즐겨 함",
+    TasteField.PREFERENCES: "좋아하는 방식",
+    TasteField.LIFESTYLE: "생활",
+    TasteField.WANTS: "갖고 싶음",
+    TasteField.UNAFFORDABLE: "갖고 싶지만 못 삼",
+    TasteField.CONSUMABLES: "자주 씀",
+    TasteField.OWNED: "가지고 있음",
+    TasteField.DISLIKES: "별로라고 함",
+    TasteField.CONSTRAINTS: "피하는 것",
+}
+
+
 # 새 관심사 없이 같은 이야기가 이어질 때 탐색 목표 대신 쓰는 지시.
 # 화제를 끊지 않고 방금 들은 이야기에서 옆 영역으로 건너가게 한다.
 BROADEN_INSTRUCTION = (
@@ -486,33 +631,41 @@ subject는 20자 이하다. candidates는 최대 8개다. 발화에 단서가 �
 axes는 사용자가 직접 말한 판단 기준의 원문 조각만 넣는다.
 """
 
-FRIEND_SUMMARY_SYSTEM = """대화에서 찾은 단서를 바탕으로 이 사람의 취향과 관심사를
-풀어서 소개하는 글을 쓴다.
-이 글은 본인에게 먼저 보여 주고, 본인이 허락하면 친구에게도 보여 준다.
+FRIEND_SUMMARY_SYSTEM = """너는 선물 추천 서비스 니쥬다.
+니쥬가 이 사람과 이야기해 보고 알게 된 모습을
+다른 사람에게 "사용자는 이런 사람이에요" 하고 소개하는 멘트를 쓴다.
+이 멘트는 본인에게 먼저 보여 주고, 본인이 허락하면 친구에게도 보여 준다.
+친구가 읽고 이 사람에게 무엇을 해 주면 좋아할지 떠올릴 수 있어야 한다.
 
 [쓰는 방법]
-입력의 항목 이름을 나열하지 말고, 그 항목들이 함께 가리키는 취향의 결을 해석해서 쓴다.
+분석 결과를 보고하는 글이 아니라 사람을 소개하는 말로 쓴다.
+"니쥬가 보기에 사용자는 ~을 좋아하는 사람이에요"처럼 이 사람이 무엇을 좋아하고
+어떤 데 관심이 있고 어떤 시간을 즐기는 사람인지를 주어로 세워서 말한다.
+"대화에서", "단서", "분석", "취향의 결", "파악했어요" 같은 분석 과정을 드러내는 말은 쓰지 않는다.
+입력의 항목 이름을 나열하지 말고, 그 항목들이 함께 가리키는 모습을 그려서 쓴다.
 예를 들어 "캠핑", "핸드드립", "조용한 카페"가 있으면 "캠핑에 관심이 있어요"가 아니라
-바깥에서도 커피 한 잔을 직접 내려 마시는 여유를 즐기고, 북적이지 않는 곳에서
-자기만의 시간을 보내는 걸 좋아하는 쪽으로 해석한다.
+"바깥에서도 커피 한 잔을 직접 내려 마시는 여유를 아는 사람이에요.
+북적이는 곳보다 조용한 데서 자기만의 시간을 보내는 걸 좋아해요"처럼 쓴다.
 항목 사이의 공통점, 좋아하는 방식(혼자인지, 손으로 만드는지, 새로운 걸 찾는지 등),
-그 취향에서 자연스럽게 이어질 만한 관심사까지 한 단계 넓혀서 쓴다.
+그 모습에서 자연스럽게 이어질 만한 관심사까지 한 단계 넓혀서 쓴다.
 
 [입력]
 interests는 관심사를 분야별로, tastes는 취향을 축별로 묶은 것이다.
-앞에 있는 묶음일수록 단서가 많이 쌓인 것이다.
-한 축에 서로 다른 관심사의 단서가 모여 있으면 그 사람의 뚜렷한 결이다.
+앞에 있는 묶음일수록 이야기가 많이 나온 것이다.
+한 축에 서로 다른 관심사의 항목이 모여 있으면 그 사람의 뚜렷한 모습이다.
 예를 들어 사회/인원 축에 "혼자 가는 캠핑"과 "혼자 보는 영화"가 함께 있으면
-캠핑이나 영화 하나가 아니라 혼자 온전히 보내는 시간을 좋아한다는 쪽으로 쓴다.
-단서를 빠짐없이 나열하려 하지 말고, 여러 묶음에 걸친 공통점을 중심으로 쓴다.
-동기 묶음(휴식·재충전, 몰입 등)이 있으면 이 사람이 그 일들에서 무엇을 얻는지를 글의 중심에 둔다.
+캠핑이나 영화 하나가 아니라 혼자 온전히 보내는 시간을 좋아하는 사람으로 소개한다.
+항목을 빠짐없이 나열하려 하지 말고, 여러 묶음에 걸친 공통점을 중심으로 쓴다.
+동기 묶음(휴식·재충전, 몰입 등)이 있으면 이 사람이 그 일들에서 무엇을 얻는지를 소개의 중심에 둔다.
 field와 axis는 해석을 돕는 분류 이름이다. "사회/인원" 같은 분류 이름은 글에 쓰지 않는다.
 context는 그 항목이 나온 대화 문맥이다. 해석에만 쓰고 그대로 인용하지 않는다.
 
 [형식]
 한국어 존댓말로 3~4문장, 한 문단으로 쓴다. 목록, 마크다운, 이모지는 쓰지 않는다.
-"~하는 걸 좋아하는 분 같아요", "~에도 잘 맞을 것 같아요"처럼 짐작임이 드러나게 쓴다.
-단서가 하나뿐이면 무리하게 넓히지 말고 2문장으로 짧게 쓴다.
+첫 문장은 "니쥬가 보기에 사용자는"으로 시작해서 이 사람을 한마디로 소개한다.
+이 사람은 "사용자"라고 부른다. "이분", "고객", 이름 같은 다른 호칭은 쓰지 않는다.
+단정하는 판정보다 니쥬가 본 인상으로 말한다("~하는 사람이에요", "~도 좋아할 것 같아요").
+항목이 하나뿐이면 무리하게 넓히지 말고 2문장으로 짧게 쓴다.
 
 [하지 않는 것]
 입력에 없는 구체적인 사실(장소, 사람, 횟수, 경력)을 지어내지 않는다.
@@ -526,7 +679,12 @@ def build_reply_messages(
     state: ConversationState,
     goal: ConversationGoal,
     utterance: str,
+    *,
+    move: ConversationMove | None = None,
+    scene: str | None = None,
 ) -> list[dict[str, str]]:
+    if state.conversation_style == ConversationStyle.COMPANION:
+        return _companion_reply_messages(state, goal, utterance, move=move, scene=scene)
     attempt = state.goal_attempts.get(goal.value, 0) + 1
     reflective = state.conversation_style == ConversationStyle.REFLECTIVE
     if reflective and goal in REFLECTIVE_INSTRUCTIONS:
@@ -568,6 +726,76 @@ def build_reply_messages(
     )
     messages.append({"role": "user", "content": utterance})
     return messages
+
+
+def _companion_reply_messages(
+    state: ConversationState,
+    goal: ConversationGoal,
+    utterance: str,
+    *,
+    move: ConversationMove | None,
+    scene: str | None,
+) -> list[dict[str, str]]:
+    """성격 프롬프트, 들은 이야기 메모, 대화 기록 뒤에 이번 턴의 짧은 메모를 붙인다."""
+    messages = [{"role": "system", "content": SYSTEM_COMPANION}]
+    memo = _companion_memo(state)
+    if memo:
+        messages.append(
+            {
+                "role": "system",
+                "content": f"지금까지 들은 것: {memo}. 이미 아는 거니까 다시 묻지 않아요.",
+            }
+        )
+    messages.extend(turn.to_dict() for turn in state.history[-MAX_HISTORY_MESSAGES:])
+    if goal == ConversationGoal.WRAP:
+        note = (
+            "이제 마무리할 시간이에요. 오늘 얘기 중 재밌었던 걸 하나 짚으면서 즐겁게 인사하고, "
+            "들려준 얘기로 취향 카드를 만들어 보겠다고 말해요. 질문은 하지 않아요."
+        )
+    else:
+        note = _move_note(state, move or ConversationMove.FOLLOW, scene, utterance)
+    messages.append({"role": "system", "content": note})
+    messages.append({"role": "user", "content": utterance})
+    return messages
+
+
+def _move_note(
+    state: ConversationState,
+    move: ConversationMove,
+    scene: str | None,
+    utterance: str,
+) -> str:
+    clues = ", ".join(signal.value for signal in reflection_clues(state))
+    note = COMPANION_MOVES[move].format(scene=scene or "방금 얘기", clues=clues)
+    if move == ConversationMove.FOLLOW and asks_back(utterance):
+        note = "상대가 니쥬한테 물었으니 니쥬 생각부터 솔직하게 답해요. " + note
+    return f"{note} {_reply_budget(utterance)}자 안팎으로 짧게요."
+
+
+def _reply_budget(utterance: str) -> int:
+    """사용자 길이에 맞춘 응답 길이. 짧게 쓰면 60자, 길게 쓰면 110자까지 늘린다."""
+    length = len(utterance.strip())
+    if length <= COMPANION_SHORT_USER_CHARS:
+        return COMPANION_MIN_REPLY_CHARS
+    if length >= COMPANION_LONG_USER_CHARS:
+        return COMPANION_MAX_REPLY_CHARS
+    span = COMPANION_LONG_USER_CHARS - COMPANION_SHORT_USER_CHARS
+    ratio = (length - COMPANION_SHORT_USER_CHARS) / span
+    budget = COMPANION_MIN_REPLY_CHARS + ratio * (
+        COMPANION_MAX_REPLY_CHARS - COMPANION_MIN_REPLY_CHARS
+    )
+    return round(budget / 10) * 10
+
+
+def _companion_memo(state: ConversationState) -> str:
+    """상태 JSON 대신 넣는 자연어 메모. "피스타치오(관심), 혼자 영화(즐겨 함)"처럼 쓴다."""
+    signals = sorted(
+        state.profile.active_signals(), key=lambda signal: signal.updated_at, reverse=True
+    )[:COMPANION_MEMO_ITEMS]
+    return ", ".join(
+        f"{signal.value}({_MEMO_FIELD_LABELS.get(signal.field, signal.field.value)})"
+        for signal in signals
+    )
 
 
 def _reflective_instruction(
@@ -623,8 +851,12 @@ def build_opening_messages(
     rng: random.Random | None = None,
     style: ConversationStyle = ConversationStyle.EXPLORE,
 ) -> list[dict[str, str]]:
-    topic = (rng or random).choice(OPENING_TOPICS)
-    system = SYSTEM_REFLECTIVE if style == ConversationStyle.REFLECTIVE else SYSTEM_FIXED
+    chooser = rng or random
+    topic = chooser.choice(OPENING_TOPIC_AREAS[chooser.choice(tuple(OPENING_TOPIC_AREAS))])
+    system = {
+        ConversationStyle.REFLECTIVE: SYSTEM_REFLECTIVE,
+        ConversationStyle.COMPANION: SYSTEM_COMPANION,
+    }.get(style, SYSTEM_FIXED)
     return [
         {"role": "system", "content": system},
         {
@@ -633,7 +865,12 @@ def build_opening_messages(
                 f"{GOAL_INSTRUCTIONS[ConversationGoal.OPENING][0]}\n"
                 f"[소재]\n{topic}\n"
                 f"[지금]\n{_moment(now or utc_now())}\n"
-                "시간과 요일은 인사에 자연스럽게 녹일 수 있을 때만 쓴다."
+                "시간과 요일은 소재와 잘 어울릴 때만 인사에 살짝 녹이고, 소재보다 앞세우지 않는다."
+                + (
+                    "\n첫 질문은 3초 안에 답할 수 있게 가볍게 한다. 둘 중 고르기도 좋다."
+                    if style == ConversationStyle.COMPANION
+                    else ""
+                )
             ),
         },
     ]
