@@ -62,7 +62,9 @@ class RecommendationEngine:
         now: datetime | None = None,
         limit: int = 20,
         guide: RecommendationGuide | None = None,
+        categories: Sequence[str] | None = None,
     ) -> RecommendationBatch:
+        """categories 를 주면 그 카테고리 안에서만 찾는다(v2 카테고리 탭)."""
         queries = build_search_queries(signals)
         if not queries:
             return RecommendationBatch(self=(), gift=())
@@ -84,19 +86,35 @@ class RecommendationEngine:
         searches, exclusion_searches, preference_searches = await asyncio.gather(
             asyncio.gather(
                 *(
-                    self._search(vector, query.space, self._top_k_per_query)
+                    self._search(
+                        vector,
+                        query.space,
+                        self._top_k_per_query,
+                        categories=categories,
+                        # 선물 전용 쿼리는 처음부터 gift_available 상품 안에서 찾아야
+                        # top_k 를 선물 목록 밖 상품에 쓰지 않는다. gift 문서는 gift_available
+                        # 상품에만 만들지만, false 로 바뀐 상품의 예전 문서가 남아 있을 수 있다.
+                        gift_available_only=query.modes == {RecommendationMode.GIFT},
+                    )
                     for query, vector in zip(queries, query_vectors, strict=True)
                 )
             ),
             asyncio.gather(
                 *(
-                    self._search(vector, VectorSpace.CONTENT, EXCLUSION_TOP_K)
+                    self._search(
+                        vector, VectorSpace.CONTENT, EXCLUSION_TOP_K, categories=categories
+                    )
                     for vector in exclusion_vectors
                 )
             ),
             asyncio.gather(
                 *(
-                    self._search(vector, VectorSpace.CONTENT, self._top_k_per_query)
+                    self._search(
+                        vector,
+                        VectorSpace.CONTENT,
+                        self._top_k_per_query,
+                        categories=categories,
+                    )
                     for vector in preference_vectors
                 )
             ),
@@ -136,12 +154,17 @@ class RecommendationEngine:
         vector: Sequence[float],
         space: VectorSpace,
         limit: int,
+        *,
+        categories: Sequence[str] | None = None,
+        gift_available_only: bool = False,
     ) -> Sequence[CatalogSearchResult]:
         return await self._catalog.search(
             vector=vector,
             space=space,
             embedding_space_id=self._embedder.space_id,
             limit=limit,
+            categories=categories,
+            gift_available_only=gift_available_only,
         )
 
 

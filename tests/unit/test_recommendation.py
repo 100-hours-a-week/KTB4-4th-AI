@@ -7,6 +7,7 @@ from app.domain.recommendation import (
     ProductKey,
     RecommendationMode,
     RecommendationSignal,
+    SearchQuery,
     VectorMatch,
     VectorSpace,
     build_search_queries,
@@ -14,6 +15,13 @@ from app.domain.recommendation import (
 )
 
 NOW = datetime(2026, 9, 22, tzinfo=UTC)
+
+
+def _queries(signals: list[RecommendationSignal]) -> tuple[SearchQuery, ...]:
+    """선물 전용 gift 공간 쿼리(g_)를 뺀 쿼리. 기존 content·usage 쿼리 순서를 보는 테스트용."""
+    return tuple(
+        query for query in build_search_queries(signals) if not query.query_id.startswith("g_")
+    )
 
 
 def _signal(
@@ -35,16 +43,23 @@ def _signal(
     )
 
 
-def _product(platform: str, external_id: str, name: str) -> CatalogProduct:
+def _product(
+    platform: str,
+    external_id: str,
+    name: str,
+    *,
+    gift_available: bool = True,
+) -> CatalogProduct:
     return CatalogProduct(
         key=ProductKey(platform=platform, external_id=external_id),
         name=name,
         price=Decimal("10000.00"),
+        gift_available=gift_available,
     )
 
 
 def test_v1_query_mapping_uses_only_positive_conversation_signals() -> None:
-    queries = build_search_queries(
+    queries = _queries(
         [
             _signal(TasteField.INTERESTS, "커피", confidence=0.9),
             _signal(TasteField.HOBBIES, "캠핑", confidence=0.8),
@@ -73,7 +88,7 @@ def test_v1_query_mapping_uses_only_positive_conversation_signals() -> None:
 
 
 def test_multi_signal_bonus_can_promote_a_broadly_matching_product() -> None:
-    coffee, camping = build_search_queries(
+    coffee, camping = _queries(
         [
             _signal(TasteField.INTERESTS, "커피"),
             _signal(TasteField.HOBBIES, "캠핑"),
@@ -98,7 +113,7 @@ def test_multi_signal_bonus_can_promote_a_broadly_matching_product() -> None:
 
 
 def test_gift_deferral_boost_and_private_reason_are_applied() -> None:
-    ordinary, deferred = build_search_queries(
+    ordinary, deferred = _queries(
         [
             _signal(TasteField.WANTS, "머그컵", confidence=0.8, visibility=Visibility.PRIVATE),
             _signal(
@@ -128,7 +143,7 @@ def test_gift_deferral_boost_and_private_reason_are_applied() -> None:
 
 
 def test_recency_decay_prefers_a_recent_signal() -> None:
-    recent, old = build_search_queries(
+    recent, old = _queries(
         [
             _signal(TasteField.INTERESTS, "최근 취향", age_days=0),
             _signal(TasteField.INTERESTS, "오래된 취향", age_days=28),
@@ -150,7 +165,7 @@ def test_recency_decay_prefers_a_recent_signal() -> None:
 
 
 def test_composite_product_key_deduplicates_only_within_the_same_platform() -> None:
-    (query,) = build_search_queries([_signal(TasteField.INTERESTS, "커피")])
+    (query,) = _queries([_signal(TasteField.INTERESTS, "커피")])
     coupang = _product("coupang", "123", "쿠팡 상품")
     other = _product("other", "123", "다른 플랫폼 상품")
 
@@ -169,7 +184,7 @@ def test_composite_product_key_deduplicates_only_within_the_same_platform() -> N
 
 
 def test_results_are_capped_at_twenty_without_padding() -> None:
-    (query,) = build_search_queries([_signal(TasteField.INTERESTS, "커피")])
+    (query,) = _queries([_signal(TasteField.INTERESTS, "커피")])
     matches = [
         VectorMatch(
             query=query,
@@ -196,7 +211,7 @@ def test_results_are_capped_at_twenty_without_padding() -> None:
 
 
 def test_diversity_pick_does_not_break_descending_score_order() -> None:
-    coffee_query, camping_query = build_search_queries(
+    coffee_query, camping_query = _queries(
         [
             _signal(TasteField.INTERESTS, "커피", confidence=1.0),
             _signal(TasteField.HOBBIES, "캠핑", confidence=0.5),
@@ -235,8 +250,8 @@ def test_weak_wish_signals_only_fill_in_when_strong_signals_are_few() -> None:
     ]
     wish = _signal(TasteField.INTERESTS, "한강 자전거", confidence=0.5)
 
-    with_enough = build_search_queries([*strong, wish])
-    with_few = build_search_queries([strong[0], wish])
+    with_enough = _queries([*strong, wish])
+    with_few = _queries([strong[0], wish])
 
     assert "한강 자전거" not in {query.signal.value for query in with_enough}
     assert "한강 자전거" in {query.signal.value for query in with_few}
@@ -253,7 +268,7 @@ def test_queries_are_ordered_and_weighted_by_rank_score() -> None:
         rank_score=0.95,
     )
 
-    first, second = build_search_queries([once, repeated])
+    first, second = _queries([once, repeated])
 
     assert first.signal.value == "캠핑"
     assert repeated.weight == 0.95
@@ -261,7 +276,7 @@ def test_queries_are_ordered_and_weighted_by_rank_score() -> None:
 
 
 def test_excluded_products_are_dropped_and_boosts_raise_score() -> None:
-    (query,) = build_search_queries([_signal(TasteField.INTERESTS, "향수")])
+    (query,) = _queries([_signal(TasteField.INTERESTS, "향수")])
     strong = _product("coupang", "1", "머스크 향수")
     light = _product("coupang", "2", "은은한 향수")
     matches = [
@@ -304,7 +319,7 @@ def _preference(
 
 
 def test_situation_preferences_become_extra_usage_queries_with_the_usage_template() -> None:
-    queries = build_search_queries(
+    queries = _queries(
         [
             _signal(TasteField.HOBBIES, "여행", confidence=0.9),
             _preference("조용한 시골 여행", PreferenceAspect.SITUATION, 0.9),
@@ -325,7 +340,7 @@ def test_situation_preferences_become_extra_usage_queries_with_the_usage_templat
 
 
 def test_tastes_are_combined_with_interests_into_extra_content_queries() -> None:
-    queries = build_search_queries(
+    queries = _queries(
         [
             _signal(TasteField.HOBBIES, "캠핑", confidence=0.9),
             _signal(TasteField.INTERESTS, "커피", confidence=0.8),
@@ -360,7 +375,7 @@ def test_interest_queries_use_every_stored_interest_spread_across_fields() -> No
             taxonomy_path=path,
         )
 
-    queries = build_search_queries(
+    queries = _queries(
         [
             interest("캠핑", 0.95, outdoor),
             interest("등산", 0.94, outdoor),
@@ -374,3 +389,36 @@ def test_interest_queries_use_every_stored_interest_spread_across_fields() -> No
     values = [query.signal.value for query in queries if query.query_id.startswith("q_")]
     # 노출 한도(5개)와 상관없이 모두 쓰고, 같은 분야가 앞자리를 몰아 차지하지 않는다.
     assert values == ["캠핑", "커피", "등산", "베이킹", "낚시", "와인"]
+
+
+def test_interests_hobbies_and_wants_get_gift_only_persona_queries() -> None:
+    queries = build_search_queries(
+        [
+            _signal(TasteField.INTERESTS, "커피", confidence=0.9),
+            _signal(TasteField.HOBBIES, "캠핑", confidence=0.8),
+            _signal(TasteField.WANTS, "휴대용 그라인더", confidence=0.7),
+            _signal(TasteField.CONSUMABLES, "원두", confidence=0.6),
+        ]
+    )
+
+    gift = {query.signal.value: query for query in queries if query.query_id.startswith("g_")}
+    assert set(gift) == {"커피", "캠핑", "휴대용 그라인더"}
+    assert gift["커피"].space == VectorSpace.GIFT
+    assert gift["커피"].modes == frozenset({RecommendationMode.GIFT})
+    assert gift["커피"].text == "커피에 관심 있는 사람이 받으면 좋은 선물"
+
+
+def test_gift_mode_only_shows_gift_available_products() -> None:
+    (query,) = _queries([_signal(TasteField.INTERESTS, "커피")])
+    pooled = _product("shop", "1", "드립 세트")
+    outside = _product("shop", "2", "원두 1kg", gift_available=False)
+    matches = [
+        VectorMatch(query=query, product=outside, similarity=0.9),
+        VectorMatch(query=query, product=pooled, similarity=0.8),
+    ]
+
+    gift = rank_recommendations(matches, mode=RecommendationMode.GIFT, now=NOW)
+    self_ = rank_recommendations(matches, mode=RecommendationMode.SELF, now=NOW)
+
+    assert [item.product.key for item in gift] == [pooled.key]
+    assert [item.product.key for item in self_] == [outside.key, pooled.key]

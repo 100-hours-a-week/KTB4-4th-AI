@@ -14,4 +14,11 @@ class CatalogRepository(Protocol):
         space: VectorSpace,
         embedding_space_id: str,
         limit: int,
-    ) -> Sequence[CatalogSearchResult]: ...
+        categories: Sequence[str] | None = None,
+        gift_available_only: bool = False,
+    ) -> Sequence[CatalogSearchResult]:
+        """categories 가 있으면 그 카테고리 상품만 찾는다.
+
+        gift_available_only 면 선물 목록에 나올 수 있는 상품만 찾는다.
+        """
+        ...

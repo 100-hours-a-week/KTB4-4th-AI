@@ -44,6 +44,8 @@ def _row(external_id: str, similarity: float) -> dict[str, Any]:
         "external_id": external_id,
         "name": f"캠핑 용품 {external_id}",
         "price": Decimal(30000),
+        "category": "sports",
+        "gift_available": True,
         "similarity": similarity,
     }
 
@@ -64,6 +66,8 @@ def test_search_maps_rows_to_results() -> None:
     assert [result.product.key.external_id for result in results] == ["1", "2"]
     assert results[0].similarity == pytest.approx(0.82)
     assert results[0].product.price == Decimal(30000)
+    assert results[0].product.category == "sports"
+    assert results[0].product.gift_available is True
 
 
 def test_search_passes_vector_as_pgvector_literal() -> None:
@@ -79,11 +83,37 @@ def test_search_passes_vector_as_pgvector_literal() -> None:
         )
     )
 
-    vector_arg, space_arg, model_arg, limit_arg = pool.connection.args
+    vector_arg, space_arg, model_arg, limit_arg, categories_arg, gift_only_arg = (
+        pool.connection.args
+    )
     assert json.loads(vector_arg) == [0.1, 0.2]
     assert space_arg == "gift"
     assert model_arg == "solar-embedding-2"
     assert limit_arg == 10
+    assert categories_arg is None
+    assert gift_only_arg is False
+
+
+def test_search_passes_category_and_gift_available_filters() -> None:
+    pool = FakePool([])
+    repository = PostgresCatalogRepository(pool=pool)
+
+    asyncio.run(
+        repository.search(
+            vector=[0.1, 0.2],
+            space=VectorSpace.CONTENT,
+            embedding_space_id="solar-embedding-2",
+            limit=10,
+            categories=("beauty", "living"),
+            gift_available_only=True,
+        )
+    )
+
+    *_, categories_arg, gift_only_arg = pool.connection.args
+    assert categories_arg == ["beauty", "living"]
+    assert gift_only_arg is True
+    assert "p.category = ANY($5::text[])" in module._SEARCH_SQL
+    assert "(NOT $6::boolean OR p.gift_available)" in module._SEARCH_SQL
 
 
 def test_search_converts_distance_to_similarity() -> None:
@@ -163,5 +193,7 @@ def test_engine_ranks_recommendations_through_the_repository() -> None:
     assert [item.product.key.external_id for item in batch.self] == ["1", "2"]
     assert batch.self[0].score > batch.self[1].score
     assert batch.gift
-    # hobbies 는 usage 공간으로 검색한다.
-    assert pool.connection.args[1] == "usage"
+    # hobbies 는 usage 공간으로 찾고, 선물 목록용 gift 공간 쿼리가 하나 더 붙는다.
+    # FakeConnection 은 마지막 호출 인자만 남기므로 마지막 검색이 gift 다.
+    assert pool.connection.args[1] == "gift"
+    assert pool.connection.args[5] is True
