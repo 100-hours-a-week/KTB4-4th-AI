@@ -38,6 +38,11 @@ class CatalogProduct:
     key: ProductKey
     name: str
     price: Decimal | None
+    # 카탈로그 카테고리 코드(app.domain.catalog.labels.ProductCategory 값).
+    # catalog 도메인이 이 모듈을 import 하므로 순환을 피하려고 문자열로 둔다.
+    category: str | None = None
+    # 선물 목록(gift) 후보인지. 테마가 붙었거나 교환권·명품·패션인 상품이다.
+    gift_available: bool = False
 
     def __post_init__(self) -> None:
         name = self.name.strip()
