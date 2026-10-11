@@ -9,7 +9,15 @@ from app.application.catalog_document_service import (
     ProductEnrichment,
 )
 from app.application.catalog_enrichment_service import CatalogEnrichmentService
-from app.domain.catalog import DocumentEvidence, ProductDocument, ProductDocumentSet
+from app.domain.catalog import (
+    CategorySource,
+    DocumentEvidence,
+    DocumentSourceProduct,
+    GiftTheme,
+    ProductCategory,
+    ProductDocument,
+    ProductDocumentSet,
+)
 from app.domain.catalog.sync import SourceProduct
 from app.domain.recommendation import ProductKey, VectorSpace
 
@@ -34,8 +42,11 @@ def _enrichment(key: ProductKey) -> ProductEnrichment:
             ),
             evidence=DocumentEvidence.NAME_ONLY,
         ),
-        category_code="hobby",
-        category_confidence=0.9,
+        category=ProductCategory.SPORTS,
+        category_source=CategorySource.SOURCE,
+        category_confidence=None,
+        themes=(GiftTheme.FRIEND,),
+        gift_available=True,
         price_band=None,
         attributes={},
     )
@@ -109,8 +120,9 @@ class FakeRepository:
         self.released = 0
         self.requeued = 0
 
-    async def claim_pending(self, *, limit: int) -> Sequence[SourceProduct]:
-        return self.pages.pop(0) if self.pages else []
+    async def claim_pending(self, *, limit: int) -> Sequence[DocumentSourceProduct]:
+        page = self.pages.pop(0) if self.pages else []
+        return [product.to_document_input() for product in page]
 
     async def save_documents(
         self,

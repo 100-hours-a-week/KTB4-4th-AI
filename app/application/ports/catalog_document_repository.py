@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from app.application.catalog_document_service import ProductEnrichment
-from app.domain.catalog.sync import SourceProduct
+from app.domain.catalog.models import DocumentSourceProduct
 from app.domain.recommendation.models import ProductKey
 
 
@@ -13,8 +13,10 @@ class CatalogDocumentRepository(Protocol):
     release_stale 이 처리 중으로 남은 상품을 다시 대기 상태로 돌린다.
     """
 
-    async def claim_pending(self, *, limit: int) -> Sequence[SourceProduct]:
-        """pending 상품을 processing 으로 바꾸고 가져온다.
+    async def claim_pending(self, *, limit: int) -> Sequence[DocumentSourceProduct]:
+        """pending 상품을 processing 으로 바꾸고 문서 생성 입력으로 가져온다.
+
+        세부 카테고리는 확신이 SUBCATEGORY_MIN_CONFIDENCE 이상일 때만 넘긴다.
 
         여러 워커가 동시에 돌아도 같은 상품을 가져가지 않아야 한다.
         """

@@ -70,6 +70,8 @@ async def build_service(settings: Settings) -> AsyncIterator[CatalogSyncService]
             source=MySQLProductSource(
                 pool=mysql_pool,
                 table=settings.source_mysql_table,
+                category_column=settings.source_mysql_category_column,
+                themes_column=settings.source_mysql_themes_column,
             ),
             repository=PostgresCatalogSyncRepository(pool=postgres_pool),
             batch_size=settings.catalog_sync_batch_size,

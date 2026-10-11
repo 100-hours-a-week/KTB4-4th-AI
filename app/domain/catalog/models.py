@@ -6,10 +6,20 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 
+from app.domain.catalog.labels import (
+    CategorySource,
+    GiftTheme,
+    ProductCategory,
+    is_gift_available,
+)
+from app.domain.catalog.subcategories import subcategory_label
 from app.domain.recommendation.models import ProductKey, VectorSpace
 
 # 문서 생성 규칙 버전. 프롬프트나 아래 검증 규칙을 바꾸면 반드시 올린다.
-DOCUMENT_VERSION = "catalog-doc-v2-name-price-strict"
+DOCUMENT_VERSION = "catalog-doc-v4-subcategory"
+
+# 모든 상품이 갖는 공간. gift 는 gift_available 상품에만 만든다.
+REQUIRED_SPACES = frozenset({VectorSpace.CONTENT, VectorSpace.USAGE})
 
 MAX_DOCUMENT_LENGTH = 200
 MIN_DOCUMENT_LENGTH = 10
@@ -38,11 +48,19 @@ class DocumentValidationError(ValueError):
 
 @dataclass(slots=True, frozen=True)
 class DocumentSourceProduct:
-    """문서 생성 입력. 지금은 MySQL 원본에서 오는 상품명과 가격만 쓴다."""
+    """문서 생성 입력. 상품명·가격과 원본 product_category 의 카테고리·선물 테마를 쓴다.
+
+    category 가 None 이면 원본에 카테고리가 없는 상품이라 문서 생성 모델이 11개 중에서 고른다.
+    subcategory 는 판단 모델이 고른 세부 카테고리다. 확신이 낮거나 아직 분류 전이면 None 이다.
+    """
 
     key: ProductKey
     name: str
     price: Decimal | None = None
+    category: ProductCategory | None = None
+    category_source: CategorySource | None = None
+    themes: tuple[GiftTheme, ...] = ()
+    subcategory: str | None = None
 
     def __post_init__(self) -> None:
         name = " ".join(self.name.split())
@@ -50,7 +68,28 @@ class DocumentSourceProduct:
             raise ValueError("product name must not be empty")
         if self.price is not None and self.price < 0:
             raise ValueError("product price must not be negative")
+        if (self.category is None) != (self.category_source is None):
+            raise ValueError("category and category_source must be set together")
+        if self.category_source is CategorySource.INFERRED:
+            raise ValueError("an inferred category comes from document generation, not the input")
+        if self.subcategory is not None:
+            if self.category is None:
+                raise ValueError("subcategory needs a category")
+            subcategory_label(self.category, self.subcategory)
         object.__setattr__(self, "name", name)
+        object.__setattr__(
+            self, "themes", tuple(theme for theme in GiftTheme if theme in self.themes)
+        )
+
+    @property
+    def gift_available(self) -> bool:
+        return is_gift_available(self.category, self.themes)
+
+    @property
+    def subcategory_label(self) -> str | None:
+        if self.category is None or self.subcategory is None:
+            return None
+        return subcategory_label(self.category, self.subcategory)
 
 
 @dataclass(slots=True, frozen=True)
@@ -77,10 +116,10 @@ class ProductDocumentSet:
 
     def __post_init__(self) -> None:
         spaces = [document.space for document in self.documents]
-        if set(spaces) != set(VectorSpace):
-            raise DocumentValidationError(
-                "document set must cover content, usage, and gift exactly once"
-            )
+        if len(set(spaces)) != len(spaces):
+            raise DocumentValidationError("each space may appear only once in a document set")
+        if not REQUIRED_SPACES <= set(spaces):
+            raise DocumentValidationError("document set must include content and usage")
         texts = [document.text for document in self.documents]
         if len(set(texts)) != len(texts):
             raise DocumentValidationError("content, usage, and gift documents must differ")
@@ -89,6 +128,10 @@ class ProductDocumentSet:
             "documents",
             tuple(sorted(self.documents, key=lambda document: document.space.value)),
         )
+
+    @property
+    def spaces(self) -> tuple[VectorSpace, ...]:
+        return tuple(document.space for document in self.documents)
 
     def text_for(self, space: VectorSpace) -> str:
         return next(document.text for document in self.documents if document.space == space)
