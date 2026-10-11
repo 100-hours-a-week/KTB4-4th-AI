@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from app.infrastructure.model_gateway.openai_compatible import ModelGatewayError
+from app.infrastructure.model_gateway.openai_compatible import ModelGatewayError, request_error
 
 
 class SystemOneJudgmentGateway:
@@ -39,7 +39,9 @@ class SystemOneJudgmentGateway:
             response.raise_for_status()
             body = response.json()
         except (httpx.HTTPError, ValueError) as error:
-            raise ModelGatewayError("Judgment endpoint request failed") from error
+            raise request_error(error, "Judgment endpoint request failed") from error
         if not isinstance(body, Mapping) or not isinstance(body.get("answers"), Mapping):
-            raise ModelGatewayError("Judgment endpoint response has no answers")
+            raise ModelGatewayError(
+                "Judgment endpoint response has no answers", reason="no_content"
+            )
         return body

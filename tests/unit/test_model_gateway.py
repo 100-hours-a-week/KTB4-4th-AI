@@ -4,6 +4,7 @@ import json
 import httpx
 
 from app.infrastructure.model_gateway import (
+    ModelGatewayError,
     OpenAICompatibleModelGateway,
     SystemOneJudgmentGateway,
 )
@@ -167,3 +168,76 @@ def test_judgment_gateway_posts_state_and_questions_to_systemone() -> None:
         "state": {"user_message": "러닝은 싫어요"},
         "questions": {"q": {"type": "noul", "instructions": "Is this negative?"}},
     }
+
+
+def _failure(handler) -> ModelGatewayError:
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            gateway = OpenAICompatibleModelGateway(
+                client=client, model_base_urls={"m": "http://localhost/v1"}
+            )
+            await gateway.complete([{"role": "user", "content": "hi"}], model="m")
+
+    try:
+        asyncio.run(exercise())
+    except ModelGatewayError as error:
+        return error
+    raise AssertionError("expected ModelGatewayError")
+
+
+def test_http_error_keeps_status_provider_and_upstream_message() -> None:
+    error = _failure(
+        lambda request: httpx.Response(
+            429,
+            json={
+                "error": {
+                    "code": 429,
+                    "message": "Provider returned error",
+                    "metadata": {"provider_name": "Google", "raw": "RESOURCE_EXHAUSTED"},
+                }
+            },
+        )
+    )
+
+    assert error.reason == "http_status"
+    assert error.status_code == 429
+    assert error.provider == "Google"
+    assert "RESOURCE_EXHAUSTED" in error.describe()
+
+
+def test_error_body_with_200_is_upstream_error() -> None:
+    error = _failure(
+        lambda request: httpx.Response(
+            200,
+            json={"error": {"message": "Internal error", "metadata": {"provider_name": "Google"}}},
+        )
+    )
+
+    assert error.reason == "upstream_error"
+    assert error.provider == "Google"
+
+
+def test_empty_content_reports_finish_reason() -> None:
+    error = _failure(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "provider": "Google",
+                "choices": [{"finish_reason": "length", "message": {"content": ""}}],
+            },
+        )
+    )
+
+    assert error.reason == "empty_content"
+    assert error.detail == "finish_reason=length"
+
+
+def test_transport_failures_are_timeout_or_network() -> None:
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    def refused(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    assert _failure(timeout).reason == "timeout"
+    assert _failure(refused).reason == "network"

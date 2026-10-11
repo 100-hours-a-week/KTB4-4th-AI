@@ -78,6 +78,17 @@ from app.domain.profile.models import (
 logger = logging.getLogger(__name__)
 
 MAX_EXTRACTED_ITEMS = 5
+
+
+def _describe_failure(error: BaseException) -> str:
+    """게이트웨이 오류는 reason, 상태 코드, 공급자, 상위 메시지로 쓴다.
+
+    그 밖의 오류는 예외 이름으로 쓴다.
+    """
+    describe = getattr(error, "describe", None)
+    return describe() if callable(describe) else f"reason=unexpected {error!r}"
+
+
 MAX_VALUE_LENGTH = 20
 MAX_EVIDENCE_LENGTH = 40
 EXTRACTION_CONTEXT_USER_TURNS = 4
@@ -376,12 +387,21 @@ class ConversationService:
                         if dropped:
                             logger.info("extraction items dropped: %s", dropped)
                         return delta, False
-                    except Exception:
+                    except Exception as error:
                         # The user-facing reply has already completed. Extraction failures are
                         # retried and then downgraded to an empty delta so they never break chat.
+                        logger.warning(
+                            "extraction attempt failed: model=%s %s",
+                            self._extraction_model,
+                            _describe_failure(error),
+                        )
                         continue
         except TimeoutError:
-            pass
+            logger.warning(
+                "extraction timed out: model=%s limit_s=%s",
+                self._extraction_model,
+                self._extraction_timeout_seconds,
+            )
         return ExtractionDelta(), True
 
     async def _extract_candidates(
@@ -404,10 +424,19 @@ class ConversationService:
                         if dropped:
                             logger.info("candidates dropped: %s", dropped)
                         return candidates, axes
-                    except Exception:
+                    except Exception as error:
+                        logger.warning(
+                            "candidate extraction attempt failed: model=%s %s",
+                            self._extraction_model,
+                            _describe_failure(error),
+                        )
                         continue
         except TimeoutError:
-            pass
+            logger.warning(
+                "candidate extraction timed out: model=%s limit_s=%s",
+                self._extraction_model,
+                self._extraction_timeout_seconds,
+            )
         return None
 
     async def _extract_with_judgment(
@@ -447,10 +476,19 @@ class ConversationService:
                             model=judgment_model,
                         )
                         break
-                    except Exception:
+                    except Exception as error:
+                        logger.warning(
+                            "judgment attempt failed: model=%s %s",
+                            judgment_model,
+                            _describe_failure(error),
+                        )
                         continue
         except TimeoutError:
-            pass
+            logger.warning(
+                "judgment timed out: model=%s limit_s=%s",
+                judgment_model,
+                self._judgment_timeout_seconds,
+            )
         if body is None:
             return ExtractionDelta(), True
         delta, judgments = judgment_delta(
