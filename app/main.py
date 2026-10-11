@@ -22,6 +22,7 @@ from app.application.recommendation_engine import RecommendationEngine
 from app.application.recommendation_service import V1RecommendationService
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
+from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
 from app.domain.conversation.models import ConversationStyle
 from app.infrastructure.embedding import OpenAICompatibleEmbedder
@@ -43,6 +44,7 @@ def create_app(
     catalog_repository: CatalogRepository | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
+    configure_logging(resolved_settings.log_level)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
