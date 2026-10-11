@@ -53,13 +53,18 @@ _CONTENT_TASTE_ASPECTS = frozenset(
     {None, PreferenceAspect.ATTRIBUTE, PreferenceAspect.SENSORY, PreferenceAspect.CRITERION}
 )
 _BOTH_MODES = frozenset({RecommendationMode.SELF, RecommendationMode.GIFT})
+_GIFT_ONLY = frozenset({RecommendationMode.GIFT})
+# 선물 목록용 gift 공간 쿼리를 더하는 필드. 관심사·취미·갖고 싶은 것은 content·usage 쿼리를
+# 두 모드가 같이 쓰지만, gift_available 상품의 gift 문서와도 맞춰 봐야 선물 목록이 채워진다.
+_GIFT_QUERY_FIELDS = frozenset({TasteField.INTERESTS, TasteField.HOBBIES, TasteField.WANTS})
 
 
 def _query_text(signal: RecommendationSignal, space: VectorSpace) -> str:
     if space == VectorSpace.USAGE:
         return f"{signal.value} 활동에서 사용하는 제품"
     if space == VectorSpace.GIFT:
-        return f"선물하기 좋은 {signal.value} 관련 제품"
+        # 상품 gift 문서가 받는 사람을 취향으로 쓰므로 같은 문형으로 묻는다.
+        return f"{signal.value}에 관심 있는 사람이 받으면 좋은 선물"
     if signal.field == TasteField.INTERESTS:
         return f"{signal.value} 관련 제품"
     return signal.value
@@ -138,6 +143,19 @@ def build_search_queries(
                 text=_query_text(signal, space),
             )
         )
+    queries.extend(
+        SearchQuery(
+            query_id=f"g_{index}",
+            signal=signal,
+            modes=_GIFT_ONLY,
+            space=VectorSpace.GIFT,
+            text=_query_text(signal, VectorSpace.GIFT),
+        )
+        for index, signal in enumerate(
+            (signal for signal in interests if signal.field in _GIFT_QUERY_FIELDS),
+            start=1,
+        )
+    )
     anchors = [
         signal.value
         for signal in interests

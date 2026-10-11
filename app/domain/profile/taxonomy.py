@@ -333,7 +333,7 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
     ),
 )
 
-# 동기: 그 일에서 무엇을 얻는지, 왜 중요한지. 주신 분류표를 넓힌 부분이다.
+# 동기: 그 일에서 무엇을 얻는지, 왜 중요한지.
 # "왜" 질문의 답에서 뽑히고, 상품 문서와는 맞지 않아 추천 쿼리 대신 요약문에 쓴다.
 _M = PreferenceAspect.MOTIVE
 TASTE_AXES = (
@@ -416,7 +416,7 @@ INTEREST_CATEGORIES: tuple[InterestCategory, ...] = (
     InterestCategory(
         "outdoor",
         "아웃도어",
-        "캠핑, 등산, 낚시, 서핑, 스키, 스노보드",
+        "캠핑, 등산, 낚시, 서핑, 스키, 스노보드, 축구, 야구",
         "Outdoor activities, such as camping, hiking, fishing, surfing, skiing, snowboarding",
     ),
     InterestCategory(
@@ -428,7 +428,7 @@ INTEREST_CATEGORIES: tuple[InterestCategory, ...] = (
     InterestCategory(
         "music",
         "음악",
-        "K-pop, 힙합, R&B, 락, 재즈, 클래식, EDM, 악기",
+        "K-pop, 힙합, R&B, 밴드, 재즈, 클래식, EDM, 악기",
         "Music, such as K-pop, hip-hop, R&B, rock, jazz, classical, EDM, instruments",
     ),
     InterestCategory(
@@ -470,7 +470,7 @@ INTEREST_CATEGORIES: tuple[InterestCategory, ...] = (
     InterestCategory(
         "vehicles",
         "자동차",
-        "자동차, 바이크, 튜닝, 드라이브, 모터스포츠",
+        "자동차, 바이크, 튜닝, 드라이브, 자동차용품, 모터스포츠",
         "Cars and bikes, such as cars, motorcycles, tuning, driving, motorsports",
     ),
     InterestCategory(
@@ -520,6 +520,13 @@ INTEREST_CATEGORIES: tuple[InterestCategory, ...] = (
         "자기관리",
         "명상, 습관관리, 생산성, 다이어리, 자기계발",
         "Self-management, such as meditation, habit tracking, productivity, journaling",
+    ),
+    InterestCategory(
+        "wellness",
+        "건강·웰니스",
+        "영양제, 홍삼, 수면, 피로회복, 마사지, 찜질, 컨디션 관리",
+        "Health and wellness, such as supplements, red ginseng, sleep, recovering from fatigue, "
+        "massage, heat therapy, taking care of physical condition",
     ),
 )
 

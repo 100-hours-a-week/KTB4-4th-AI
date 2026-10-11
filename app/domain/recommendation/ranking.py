@@ -137,6 +137,10 @@ def rank_recommendations(
     for match in matches:
         if mode not in match.query.modes or match.product.key in excluded:
             continue
+        # 선물 목록은 gift_available 상품만 보여 준다. content·usage 쿼리는 두 모드가 같이 쓰므로
+        # gift_available 이 아닌 상품도 검색 결과에 섞여 들어온다.
+        if mode is RecommendationMode.GIFT and not match.product.gift_available:
+            continue
         candidates[match.product.key].append(match)
         products[match.product.key] = match.product
 

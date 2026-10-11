@@ -26,6 +26,8 @@ SELECT p.platform,
        p.external_id,
        p.name,
        p.price,
+       p.category,
+       p.gift_available,
        1 - (d.embedding <=> $1::vector) AS similarity
   FROM catalog_product_documents AS d
   JOIN catalog_products AS p
@@ -35,6 +37,8 @@ SELECT p.platform,
    AND d.embedding_model_version = $3
    AND p.is_active
    AND p.processing_status = 'ready'
+   AND ($5::text[] IS NULL OR p.category = ANY($5::text[]))
+   AND (NOT $6::boolean OR p.gift_available)
  ORDER BY d.embedding <=> $1::vector
  LIMIT $4
 """
@@ -57,6 +61,8 @@ class PostgresCatalogRepository:
         space: VectorSpace,
         embedding_space_id: str,
         limit: int,
+        categories: Sequence[str] | None = None,
+        gift_available_only: bool = False,
     ) -> Sequence[CatalogSearchResult]:
         if limit <= 0:
             raise ValueError("limit must be positive")
@@ -67,6 +73,8 @@ class PostgresCatalogRepository:
                 space.value,
                 embedding_space_id,
                 limit,
+                list(categories) if categories else None,
+                gift_available_only,
             )
         return [_to_result(row) for row in rows]
 
@@ -78,6 +86,8 @@ def _to_result(row: Any) -> CatalogSearchResult:
             key=ProductKey(platform=row["platform"], external_id=row["external_id"]),
             name=row["name"],
             price=None if price is None else Decimal(str(price)),
+            category=row["category"],
+            gift_available=bool(row["gift_available"]),
         ),
         similarity=float(row["similarity"]),
     )

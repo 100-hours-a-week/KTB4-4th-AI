@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -21,6 +23,8 @@ from app.domain.profile.merger import (
     taste_rank_score,
 )
 from app.domain.profile.models import ProfileState, TasteField
+
+logger = logging.getLogger(__name__)
 
 ANALYSIS_KEYWORD_LIMIT = 3
 _TASTE_KEYWORD_FIELDS = (TasteField.PREFERENCES,)
@@ -114,15 +118,51 @@ class ChatUseCases:
     def _lock(self, session_id: int) -> asyncio.Lock:
         return self._locks.setdefault(session_id, asyncio.Lock())
 
-    async def _complete(self, messages, *, timeout_seconds: float) -> str:
+    async def _complete(
+        self,
+        messages,
+        *,
+        timeout_seconds: float,
+        purpose: str,
+        session_id: int,
+    ) -> str:
+        """응답 모델을 부른다.
+
+        실패하면 원인을 로그 한 줄로 남기고 ResponseModelUnavailableError로 바꾼다.
+        로그의 reason으로 실패를 나눈다. timeout은 이 서버가 기다리다 끊은 것이고,
+        나머지는 게이트웨이가 붙인 이름(http_status, upstream_error, network 등)이다.
+        """
+        started = time.monotonic()
         try:
             async with asyncio.timeout(timeout_seconds):
                 return await self._model_gateway.complete(
                     messages,
                     model=self._response_model,
                 )
+        except TimeoutError as error:
+            logger.warning(
+                "response model failed: purpose=%s session=%s model=%s elapsed_ms=%d "
+                "reason=timeout limit_s=%s",
+                purpose,
+                session_id,
+                self._response_model,
+                (time.monotonic() - started) * 1000,
+                timeout_seconds,
+            )
+            raise ResponseModelUnavailableError("timeout") from error
         except Exception as error:
-            raise ResponseModelUnavailableError from error
+            describe = getattr(error, "describe", None)
+            detail = describe() if callable(describe) else f"reason=unexpected {error!r}"
+            logger.warning(
+                "response model failed: purpose=%s session=%s model=%s elapsed_ms=%d %s",
+                purpose,
+                session_id,
+                self._response_model,
+                (time.monotonic() - started) * 1000,
+                detail,
+                exc_info=True,
+            )
+            raise ResponseModelUnavailableError(getattr(error, "reason", "unexpected")) from error
 
     async def create_session(self, *, user_id: int, conversation_room_id: int) -> StartedSession:
         lock = self._lock(conversation_room_id)
@@ -136,6 +176,8 @@ class ChatUseCases:
             greeting = await self._complete(
                 prepared.messages,
                 timeout_seconds=self._response_timeout_seconds,
+                purpose="opening",
+                session_id=conversation_room_id,
             )
             greeting = self._conversations.record_opening(prepared.state, greeting)
             await self._states.save(prepared.state)
@@ -171,6 +213,8 @@ class ChatUseCases:
                 raw_reply = await self._complete(
                     prepared.messages,
                     timeout_seconds=self._response_timeout_seconds,
+                    purpose="reply",
+                    session_id=session_id,
                 )
             except BaseException:
                 extraction.cancel()
@@ -250,6 +294,8 @@ class ChatUseCases:
                     summary = await self._complete(
                         build_friend_summary_messages(state.profile),
                         timeout_seconds=self._summary_timeout_seconds,
+                        purpose="summary",
+                        session_id=session_id,
                     )
                 except ResponseModelUnavailableError:
                     summary = None
