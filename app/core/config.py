@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     source_mysql_password: SecretStr | None = None
     source_mysql_database: str | None = None
     source_mysql_table: str = "products"
+    # 상품 카테고리 컬럼. 비우면 카테고리 없이 읽고 문서 생성 모델이 고른다.
+    source_mysql_category_column: str | None = None
+    # 선물 테마 목록 컬럼(JSON 배열 또는 | 구분). gift 문서 작성 여부와 힌트에 쓴다.
+    source_mysql_themes_column: str | None = None
     source_mysql_pool_size: int = Field(default=2, ge=1, le=20)
 
     # AI 카탈로그 PostgreSQL. 예: postgresql://user:pw@host:5432/ai_catalog

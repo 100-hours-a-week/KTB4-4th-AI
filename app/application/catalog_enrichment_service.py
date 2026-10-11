@@ -67,9 +67,7 @@ class CatalogEnrichmentService:
         if not claimed:
             return EnrichmentReport(claimed=0, succeeded=0, failed=0, released=released)
 
-        outcomes = await asyncio.gather(
-            *(self._process(product.to_document_input()) for product in claimed)
-        )
+        outcomes = await asyncio.gather(*(self._process(product) for product in claimed))
         succeeded = sum(outcomes)
 
         return EnrichmentReport(
