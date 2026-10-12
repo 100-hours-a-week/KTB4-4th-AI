@@ -45,6 +45,24 @@ feat: 기능 추가                → minor
 feat!: 호환되지 않는 계약 변경 → major
 ```
 
+## 로컬 AI 운영·실험 보드
+
+LM Studio·Ollama·RunPod의 OpenAI 호환 모델을 테스트하는 별도 관리 앱은
+[dashboard/README.md](dashboard/README.md)를 따른다. 목적과 단계별 범위는
+[AI 대시보드 계획](docs/ai-dashboard-plan.md)에 정리했다.
+
+관리 API와 테스트 워커는 서비스 API와 다른 프로세스로 실행한다.
+
+```bash
+uv run uvicorn admin_api.main:app --host 127.0.0.1 --port 8010
+uv run python -m benchmarks.worker
+```
+
+각 명령을 별도 터미널에서 실행한 뒤 <http://127.0.0.1:8010>을 연다.
+
+직접 대화 테스트는 관리 API만으로 실행할 수 있다. 등록한 로컬 모델로 니쥬 채팅을 진행하고 추출·추천
+쿼리를 확인한다. 상세 페르소나 10개의 고정 시나리오 실행에는 워커가 필요하다.
+
 ## 패키지 경계
 
 ```text
