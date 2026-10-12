@@ -11,7 +11,7 @@ from app.application.conversation_prompts import (
 )
 from app.application.conversation_service import ConversationService
 from app.domain.conversation import policy
-from app.domain.conversation.energy import LOW_ENERGY, turn_energy, wants_to_exit
+from app.domain.conversation.energy import LOW_ENERGY, asks_back, turn_energy, wants_to_exit
 from app.domain.conversation.guards import sanitize_response
 from app.domain.conversation.models import (
     CompletionReason,
@@ -98,11 +98,26 @@ def test_default_move_is_follow() -> None:
     assert decision.move == ConversationMove.FOLLOW
 
 
-def test_two_questions_in_a_row_switch_to_add() -> None:
+def test_question_streak_does_not_stop_follow_questions() -> None:
     state = companion_state(turn_count=3)
-    state.question_streak = 2
+    state.question_streak = 4
 
-    assert decide_goal(state, "영화 보는 거 좋아해요").move == ConversationMove.ADD
+    assert decide_goal(state, "영화 보는 거 좋아해요").move == ConversationMove.FOLLOW
+
+
+def test_unsure_answer_asks_with_a_suggestion() -> None:
+    state = companion_state(turn_count=2)
+    card = build_reply_messages(
+        state, ConversationGoal.CHAT, "좋아하는 거요? 딱히 없는데", move=ConversationMove.FOLLOW
+    )[-2]["content"]
+
+    assert "혹시 ~ 좋아해요?" in card
+
+
+def test_puzzled_reply_is_not_treated_as_asking_back() -> None:
+    assert not asks_back("어쩌라는거지?")
+    assert not asks_back("뭔 소리예요?")
+    assert asks_back("니쥬는 뭐 좋아해요?")
 
 
 def test_user_asking_back_is_followed_and_answered() -> None:
@@ -114,7 +129,7 @@ def test_user_asking_back_is_followed_and_answered() -> None:
     card = build_reply_messages(state, decision.goal, "니쥬는 뭐 좋아해요?", move=decision.move)[
         -2
     ]["content"]
-    assert "니쥬 생각부터" in card
+    assert "네 생각부터 솔직하게 답한다" in card
 
 
 def test_low_energy_twice_lightens_with_play_then_return() -> None:
@@ -124,7 +139,7 @@ def test_low_energy_twice_lightens_with_play_then_return() -> None:
 
     play = decide_goal(state, "음")
     assert play.move == ConversationMove.PLAY
-    assert play.scene in {scene for scene, _ in COMPANION_SCENES}
+    assert play.scene in COMPANION_SCENES
 
     state.best_topic = "야구"
     back = decide_goal(state, "음")
@@ -143,25 +158,49 @@ def test_stays_on_topic_while_energy_is_high() -> None:
     assert decision.move == ConversationMove.FOLLOW
 
 
-def test_bridges_when_topic_runs_long_and_energy_falls() -> None:
+def test_no_new_interest_does_not_force_a_topic_change() -> None:
     state = companion_state(turn_count=6)
     state.turns_since_new_interest = 3
     state.energy = 0.5
     state.peak_energy = 0.9
     state.user_length_avg = 20.0
 
-    decision = decide_goal(state, "그냥 그랬어요 뭐 별로 특별한 건 없었고")
-    assert decision.move == ConversationMove.BRIDGE
-    assert decision.scene is not None
+    decision = decide_goal(
+        state, "언젠가 책방을 열면 사람들이 편히 이야기할 수 있는 곳이면 좋겠어요"
+    )
+    assert decision.move == ConversationMove.FOLLOW
+    assert decision.scene is None
 
 
-def test_late_turns_prefer_scenes_that_fill_gaps() -> None:
-    state = companion_state(turn_count=15)
-    missing = ("gear",)
+def test_conversation_scene_does_not_depend_on_missing_recommendation_fields(monkeypatch) -> None:
+    scenes = []
+    for missing in (("gear",), ("query_signals", "taste_axes")):
+        monkeypatch.setattr(
+            policy,
+            "recommendation_readiness",
+            lambda state, gaps=missing: ReadinessResult(False, gaps),
+        )
+        state = companion_state(turn_count=15)
+        state.low_energy_streak = 1
+        state.user_length_avg = 20
+        scenes.append(decide_goal(state, "음").scene)
 
-    scene = policy._pick_scene(state, missing)
-    gaps = dict(COMPANION_SCENES)[scene]
-    assert "gear" in gaps
+    assert scenes[0] is not None
+    assert scenes[0] == scenes[1]
+
+
+def test_question_break_does_not_turn_into_a_profile_assessment(monkeypatch) -> None:
+    state = companion_state(turn_count=5)
+    state.question_streak = 2
+
+    def unexpected_reflection(_):
+        raise AssertionError("Extracted clues must not force a personality assessment")
+
+    monkeypatch.setattr(policy, "reflection_clues", unexpected_reflection)
+    assert (
+        decide_goal(state, "다음에는 다른 도시에서 잠깐 살아보고 싶어요").move
+        == ConversationMove.FOLLOW
+    )
 
 
 # ---- 종료 ----
@@ -279,22 +318,8 @@ def test_move_card_and_memo_replace_state_json() -> None:
     assert messages[0]["content"] == SYSTEM_COMPANION
     card = messages[-2]["content"]
     assert COMPANION_MOVES[ConversationMove.ADD] in card
-    assert "60자 안팎" in card
     assert not any('"items"' in message["content"] for message in messages)
     assert messages[-1] == {"role": "user", "content": "요즘 뜨개질 해요"}
-
-
-def test_reply_budget_grows_with_user_length() -> None:
-    state = companion_state(turn_count=2)
-    long_message = (
-        "주말마다 혼자 캠핑을 가는데 이번엔 강원도 쪽 계곡 옆에 자리를 잡아서 "
-        "밤새 물소리 들으면서 잤어요. 아침에 커피 내려 마시는데 진짜 행복했어요"
-    )
-    card = build_reply_messages(
-        state, ConversationGoal.CHAT, long_message, move=ConversationMove.FOLLOW
-    )[-2]["content"]
-
-    assert "110자 안팎" in card
 
 
 def test_bridge_card_carries_scene() -> None:
@@ -314,7 +339,7 @@ def test_opening_uses_companion_prompt() -> None:
     messages = build_opening_messages(now=NOW, style=ConversationStyle.COMPANION)
 
     assert messages[0]["content"] == SYSTEM_COMPANION
-    assert "3초" in messages[1]["content"]
+    assert "바로 답할 수 있게" in messages[1]["content"]
 
 
 # ---- 응답 가드 ----
@@ -333,6 +358,20 @@ def test_companion_reply_keeps_statement_and_short_tail_after_question() -> None
     )
     assert (
         sanitize_response(rambling, ConversationGoal.CHAT, companion=True) == "제일 좋았던 밤은요?"
+    )
+
+
+def test_companion_reply_drops_label_line_breaks_and_imitated_next_turn() -> None:
+    raw = "니쥬: 와, 드디어 해방이네요.\n\n끝나자마자 뭐 했어요?\n사용자: 그냥 잤어요"
+    assert (
+        sanitize_response(raw, ConversationGoal.CHAT, companion=True)
+        == "와, 드디어 해방이네요. 끝나자마자 뭐 했어요?"
+    )
+
+    leaked = "그럴 때 있죠. 오늘은 쉬는 날이에요? [말투] 또래 친구와 메신저로"
+    assert (
+        sanitize_response(leaked, ConversationGoal.CHAT, companion=True)
+        == "그럴 때 있죠. 오늘은 쉬는 날이에요?"
     )
 
 

@@ -1,12 +1,27 @@
+import re
+
 from app.domain.conversation.models import ConversationGoal
 
+# 이 표시가 나오면 그 뒤는 지시문이나 메모가 새어 나온 것이라 잘라 낸다.
+# "사용자:"는 프롬프트 예시를 흉내 내 다음 차례까지 이어 쓴 경우다.
 _LEAK_MARKERS = (
     "<<<STATE>>>",
     "[STATE]",
     "[시스템 지시]",
     "시스템 프롬프트:",
     "현재 목표:",
+    "[대화하는 방식]",
+    "[말투]",
+    "[안전]",
+    "[예시]",
+    "[소재]",
+    "[지금]",
+    "지금까지 들은 것:",
+    "사용자:",
 )
+# 응답 앞에 붙은 화자 이름표. 예시 형식을 따라 "니쥬: ..."로 쓰는 경우가 있다.
+_SPEAKER_LABEL = re.compile(r"^\s*(니쥬|AI|assistant)\s*[:：]\s*", re.IGNORECASE)
+_WRAPPING_QUOTES = ('"', "“", "”", "'")
 
 _FALLBACK_QUESTIONS = {
     ConversationGoal.OPENING: "요즘 어떻게 지내세요?",
@@ -37,11 +52,15 @@ def sanitize_response(
     concise: bool = False,
     companion: bool = False,
 ) -> str:
-    cleaned = text.strip()
+    cleaned = _SPEAKER_LABEL.sub("", text.strip())
     cut_positions = [cleaned.find(marker) for marker in _LEAK_MARKERS]
     cut_positions = [position for position in cut_positions if position >= 0]
     if cut_positions:
         cleaned = cleaned[: min(cut_positions)].rstrip()
+    # 응답은 한 문단으로 보낸다. 모델이 넣은 줄바꿈은 띄어쓰기로 바꾼다.
+    cleaned = re.sub(r"\s*\n+\s*", " ", cleaned).strip()
+    if len(cleaned) > 1 and cleaned[0] in _WRAPPING_QUOTES and cleaned[-1] in _WRAPPING_QUOTES:
+        cleaned = cleaned[1:-1].strip()
 
     if companion:
         # companion은 질문 없이 끝나는 응답도 있고, "뭐 골라요? 저는 빔프요."처럼 질문 뒤에
@@ -61,7 +80,7 @@ def sanitize_response(
     return cleaned or _FALLBACK_QUESTIONS[goal]
 
 
-CLOSING_MESSAGE = "들려주신 이야기로 당신의 취향과 관심사를 찾아볼게요."
+CLOSING_MESSAGE = "들려주신 이야기로 취향과 관심사를 정리해 볼게요."
 
 
 def closing_reply(reply: str) -> str:

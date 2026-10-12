@@ -26,6 +26,8 @@ _SHORT_AVOIDANCE = re.compile(
 )
 _AVOIDANCE = re.compile(r"딱히|글쎄|모르겠|기억이? ?안 나|생각이? ?안 나|별거 없|별 거 없")
 _ASKS_BACK = re.compile(r"\?|니쥬는|니쥬도|너는|넌 |넌$|님은|님도")
+# 물음표가 있어도 니쥬에게 묻는 게 아니라 니쥬 말에 어리둥절하거나 불만인 표현.
+_PUZZLED = re.compile(r"어쩌라|뭐라는|뭔\s*소리|무슨\s*소리|무슨\s*말(이|인)|그래서\s*뭐")
 # 대화를 그만하고 싶다는 뜻이 분명한 표현.
 _EXIT_INTENT = re.compile(
     r"그만\s*(할|하|해)|이제\s*됐|끝낼|끝내(자|요|줘)|나갈게|다음에\s*(할|얘기|이야기)|"
@@ -37,9 +39,14 @@ def wants_to_exit(utterance: str) -> bool:
     return bool(_EXIT_INTENT.search(utterance))
 
 
+def unsure(utterance: str) -> bool:
+    """사용자가 뭘 좋아하는지, 뭐가 있었는지 잘 모르겠다고 답했는지."""
+    return bool(_AVOIDANCE.search(utterance))
+
+
 def asks_back(utterance: str) -> bool:
     """사용자가 니쥬에게 되물었는지. 되묻기는 대화가 재밌다는 강한 신호다."""
-    return bool(_ASKS_BACK.search(utterance))
+    return bool(_ASKS_BACK.search(utterance)) and not _PUZZLED.search(utterance)
 
 
 def _length_score(state: ConversationState, utterance: str) -> float:
