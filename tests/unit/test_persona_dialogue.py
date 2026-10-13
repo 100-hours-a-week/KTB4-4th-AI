@@ -97,6 +97,12 @@ def test_simulator_sees_actual_dialogue_without_review_answers(tmp_path):
     assert "[STATE]" not in json.dumps(persona_calls, ensure_ascii=False)
     assert all(c["model"] == "google/gemini-test" for c in persona_calls)
     assert result["samples"][-1]["pipeline"]["queries"]
+    review = result["samples"][-1]["pipeline"]["query_review"]
+    assert result["summary"]["query_review"] == review
+    assert 0 < review["score"] < 1
+    assert review["exclusion_score"] == 1
+    assert "expected_queries" not in system
+    assert "forbidden_query_terms" not in system
     assert "synthetic-model-key" not in json.dumps(result)
 
 

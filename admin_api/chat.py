@@ -15,6 +15,7 @@ from app.application.chat_use_cases import ChatUseCaseError, ProfileTooSparseErr
 from app.domain.conversation.models import ConversationState
 from benchmarks.needu import build_chat, profile_snapshot
 from benchmarks.personas import persona_snapshot
+from benchmarks.query_review import review_queries
 
 
 class LocalChatStates:
@@ -126,6 +127,11 @@ class LabChats:
             session.update(status=state.status.value, turn_count=state.turn_count)
             session["messages"] = [turn.to_dict() for turn in state.history]
             session["pipeline"] = jsonable_encoder(profile_snapshot(state))
+            if session.get("persona"):
+                pipeline = session["pipeline"]
+                pipeline["query_review"] = review_queries(
+                    session["persona"], pipeline["queries"], pipeline["exclusions"]
+                )
         if status:
             session["status"] = status
         self.store.save_chat(session)

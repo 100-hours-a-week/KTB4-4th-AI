@@ -21,6 +21,7 @@ from app.infrastructure.embedding import OpenAICompatibleEmbedder
 from app.infrastructure.model_gateway import OpenAICompatibleModelGateway, SystemOneJudgmentGateway
 from app.infrastructure.persistence import InMemorySessionStore
 from benchmarks.persona_dialogue import PersonaReply, persona_messages
+from benchmarks.query_review import review_queries
 from benchmarks.runner import percentile, summarize
 
 
@@ -334,6 +335,10 @@ async def execute_needu(store, run, stop=None, *, settings=None, client=None, ca
 
     def record(output, snapshot, ok=True, error=None):
         nonlocal current
+        if "queries" in snapshot and run["manifest"].get("persona"):
+            snapshot["query_review"] = review_queries(
+                run["manifest"]["persona"], snapshot["queries"], snapshot.get("exclusions", [])
+            )
         sample = jsonable_encoder(
             {
                 **current,
@@ -453,6 +458,14 @@ async def execute_needu(store, run, stop=None, *, settings=None, client=None, ca
         summary = summarize(samples, time.perf_counter() - started, run["spec"]["requests"])
         turn_samples = [s for s in samples if s["stage"] == "turn"]
         summary.update(
+            query_review=next(
+                (
+                    s["pipeline"]["query_review"]
+                    for s in reversed(samples)
+                    if "query_review" in s["pipeline"]
+                ),
+                None,
+            ),
             planned_turns=planned_turns,
             dialogue_mode="simulated" if simulated else "fixed",
             executed_turns=len(turn_samples),

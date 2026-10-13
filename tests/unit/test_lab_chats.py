@@ -100,6 +100,11 @@ def test_interactive_chat_uses_real_service_and_persists_history_after_restart(t
                 assert latest["turn_count"] == 2
                 assert len(latest["messages"]) == 5
                 assert any("캠핑" in q["text"] for q in latest["pipeline"]["queries"])
+                assert latest["pipeline"]["query_review"]["score"] is not None
+                assert (
+                    latest["pipeline"]["query_review"]["persona_version"]
+                    == session["persona"]["version"]
+                )
                 response_calls = [data for _, data in seen if "response_format" not in data]
                 assert "주말마다 캠핑을 가요." in json.dumps(response_calls[-1], ensure_ascii=False)
                 assert response_calls[-1]["model"] == "solar:latest"
@@ -173,7 +178,7 @@ def test_personas_are_valid_service_inputs_and_recorded_in_run_manifest(tmp_path
                 transport=httpx.ASGITransport(app=app), base_url="http://testserver"
             ) as client:
                 personas = (await client.get("/api/personas")).json()["personas"]
-                assert len(personas) == 10
+                assert len(personas) == 30
                 for persona in personas:
                     response = await client.post(
                         "/api/runs",
@@ -185,6 +190,11 @@ def test_personas_are_valid_service_inputs_and_recorded_in_run_manifest(tmp_path
                     )
                     assert response.status_code == 201, response.text
                     assert response.json()["manifest"]["persona"]["expected"] == persona["expected"]
+                    assert (
+                        response.json()["manifest"]["persona"]["expected_queries"]
+                        == persona["expected_queries"]
+                    )
+                    app.state.store.finish(response.json()["id"], "completed", {})
                 snapshot = persona_snapshot("p01")
                 snapshot["turns"][0] = "changed"
                 assert PERSONAS[0]["turns"][0] != "changed"

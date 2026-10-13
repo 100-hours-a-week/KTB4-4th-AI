@@ -82,6 +82,29 @@ class Store:
                     ),
                 ),
             )
+            for connection_id, name, model in [
+                ("openrouter", "OpenRouter · Claude Haiku 5.5", "anthropic/claude-haiku-5.5"),
+                (
+                    "openrouter-gemini",
+                    "OpenRouter · Gemini 3.5 Flash Lite",
+                    "google/gemini-3.5-flash-lite",
+                ),
+            ]:
+                data = dict(
+                    name=name,
+                    provider="openai",
+                    environment="other",
+                    base_url="https://openrouter.ai/api/v1",
+                    model=model,
+                    api_key_env="OPENROUTER_API_KEY",
+                    revision="",
+                    precision="",
+                    hardware="호스팅 제공업체 관리",
+                )
+                db.execute(
+                    "INSERT OR IGNORE INTO connections(id,data) VALUES (?,?)",
+                    (connection_id, json.dumps(data, ensure_ascii=False)),
+                )
 
     @contextmanager
     def db(self):

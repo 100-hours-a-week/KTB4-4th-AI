@@ -11,6 +11,7 @@ const state = {
   activeRun: null,
   detail: null,
   compare: new Set(),
+  compareUsage: new Map(),
   draft: null,
   personas: [],
   selectedPersona: "p01",
@@ -159,10 +160,14 @@ function avatar(persona, index = 0) {
 function personaGuide(p) {
   if (!p) return "";
   return `<div class="persona-top">${avatar(p, state.personas.indexOf(p))}<div><strong>${e(p.name)} <span class="muted">${p.age}세</span></strong><small>${e(p.occupation)} · ${e(p.tag)}</small></div></div><p>${e(p.context)}</p>${[
+    ["페르소나 구분", p.group],
     ["중요하게 여기는 것", p.values],
     ["미래 계획", p.future],
     ["추천 검토 상황", p.situation],
+    ["생활·공간·예산", p.lifestyle],
+    ["대화 말투", p.speech_style],
   ]
+    .filter(([, text]) => text)
     .map(([label, text]) => `<div class="detail-section"><h3>${label}</h3><p>${e(text)}</p></div>`)
     .join("")}${[
     ["기대 추출 · 사람이 검토", p.expected],
@@ -176,20 +181,20 @@ function personaGuide(p) {
     )
     .join(
       "",
-    )}<details class="sample"><summary>고정 대화 시나리오 · ${p.turns.length}턴</summary><div class="sample-body"><ol>${p.turns.map((t) => `<li>${e(t)}</li>`).join("")}</ol></div></details>`;
+    )}${p.expected_queries?.length ? `<div class="detail-section"><h3>기대 추천 쿼리 · 조건 유사도 기준</h3><ul>${p.expected_queries.map((q) => `<li><strong>${e(q.space)} · ${e(q.mode)}</strong> ${e(q.text)}<br><small>확인할 조건: ${e(q.concepts.map((group) => group.join(" / ")).join(" · "))}</small></li>`).join("")}</ul><p class="muted">실행 결과에서 가장 가까운 실제 쿼리와 반영·누락된 조건을 확인합니다.</p></div>` : ""}<details class="sample"><summary>고정 대화 시나리오 · ${p.turns.length}턴</summary><div class="sample-body"><ol>${p.turns.map((t) => `<li>${e(t)}</li>`).join("")}</ol></div></details>`;
 }
 
 function personaCards() {
   const filtered = state.personas.filter(
     (p) =>
       (!state.personaCategory || p.category === state.personaCategory) &&
-      `${p.name} ${p.context} ${p.values} ${p.future} ${p.tag}`.includes(state.personaSearch),
+      `${p.name} ${p.occupation} ${p.context} ${p.lifestyle || ""} ${p.values} ${p.future} ${p.tag} ${p.query_targets.join(" ")}`.includes(state.personaSearch),
   );
   return `<div class="persona-grid">${
     filtered
       .map((p) => {
         const runs = state.overview.runs.filter((r) => r.spec.persona_id === p.id);
-        return `<button class="card persona-card ${state.selectedPersona === p.id ? "selected" : ""}" data-action="persona" data-id="${p.id}" aria-label="${e(p.name)} 페르소나 상세" aria-pressed="${state.selectedPersona === p.id}"><div class="persona-top">${avatar(p, state.personas.indexOf(p))}<div><strong>${e(p.name)}</strong><small>${p.age}세 · ${e(p.occupation)}</small></div></div><p>${e(p.context)}</p><div class="persona-tags"><span>${e(p.category)}</span><span>${e(p.tag)}</span></div><div class="persona-foot"><span>시나리오 ${p.turns.length}턴</span><span>${runs.length ? `${runs.length}회 실행` : "미실행"}</span></div></button>`;
+        return `<button class="card persona-card ${state.selectedPersona === p.id ? "selected" : ""}" data-action="persona" data-id="${p.id}" aria-label="${e(p.name)} 페르소나 상세" aria-pressed="${state.selectedPersona === p.id}"><div class="persona-top">${avatar(p, state.personas.indexOf(p))}<div><strong>${e(p.name)}</strong><small>${p.age}세 · ${e(p.occupation)}</small></div></div><p>${e(p.context)}</p><div class="persona-tags">${p.group ? `<span>${e(p.group)}</span>` : ""}<span>${e(p.category)}</span><span>${e(p.tag)}</span></div><div class="persona-foot"><span>시나리오 ${p.turns.length}턴</span><span>${runs.length ? `${runs.length}회 실행` : "미실행"}</span></div></button>`;
       })
       .join("") || `<div class="empty">검색에 맞는 페르소나가 없습니다.</div>`
   }</div>`;
@@ -219,7 +224,7 @@ function overviewPage() {
     ) +
     `<div class="filters"><div class="field"><label for="persona-category">평가 주제</label><select id="persona-category"><option value="">전체 주제</option>${[...new Set(state.personas.map((p) => p.category))].map((category) => `<option ${category === state.personaCategory ? "selected" : ""}>${e(category)}</option>`).join("")}</select></div><div class="field search-field"><label for="persona-search">페르소나 검색</label><input id="persona-search" value="${e(state.personaSearch)}" placeholder="이름, 가치관, 미래 계획으로 검색"></div><a class="btn" href="#history">실험 이력</a></div>` +
     `<div class="stat-strip">${stats.map(([label, value]) => `<div><small>${label}</small><strong>${value}</strong></div>`).join("")}</div>` +
-    `<div class="dashboard-layout"><section class="card"><div class="card-head"><h2>페르소나별 검증</h2><span class="pill">합성 페르소나 10개</span></div><div id="persona-cards">${personaCards()}</div><p class="persona-help">실행 횟수와 상태는 실제 이력 기준입니다. 기대 결과는 검토 기준이며 자동 품질 점수는 아닙니다.</p></section><aside>${runStatusChart()}<section class="card"><div class="card-head"><h2>모델 연결</h2><a class="link" href="#connections">관리</a></div>${connectionRows()}<div class="note">${state.overview.worker.online ? "시나리오 워커 실행 중" : "시나리오 실행은 워커 시작 필요"}<br>직접 채팅은 관리 API만으로 실행합니다.</div></section><section class="card"><div class="card-head"><h2>최근 실행</h2><a class="link" href="#history">더 보기</a></div>${
+    `<div class="dashboard-layout"><section class="card"><div class="card-head"><h2>페르소나별 검증</h2><span class="pill">합성 페르소나 ${state.personas.length}개</span></div><div id="persona-cards">${personaCards()}</div><p class="persona-help">실행 횟수와 상태는 실제 이력 기준입니다. 기대 쿼리의 조건 유사도와 제외 조건을 실행 결과에서 확인하세요.</p></section><aside>${runStatusChart()}<section class="card"><div class="card-head"><h2>모델 연결</h2><a class="link" href="#connections">관리</a></div>${connectionRows()}<div class="note">${state.overview.worker.online ? "시나리오 워커 실행 중" : "시나리오 실행은 워커 시작 필요"}<br>직접 채팅은 관리 API만으로 실행합니다.</div></section><section class="card"><div class="card-head"><h2>최근 실행</h2><a class="link" href="#history">더 보기</a></div>${
       runs
         .slice(0, 4)
         .map(
@@ -238,7 +243,7 @@ function personasPage() {
     heading(
       "SCENARIO LIBRARY",
       "페르소나 시나리오",
-      "가치관·미래 계획·관계에서 출발해 취향·관심사와 추천 쿼리까지 검토합니다.",
+      `기존 인물과 20~26세·27~34세 추가 인물을 포함한 ${state.personas.length}명의 생활·취향과 기대 추천 쿼리를 검토합니다.`,
     ) +
     `<div class="dashboard-layout"><div>${personaCards()}</div><section class="card persona-detail">${personaGuide(p)}<div class="actions"><button class="btn" data-action="persona-chat" data-id="${p.id}">직접 대화</button><button class="btn primary" data-action="persona-run" data-id="${p.id}">시나리오 실험</button></div></section></div>`
   );
@@ -268,7 +273,7 @@ function chatPage() {
       })),
     );
   const inspector = session
-    ? `<section class="card inspector"><div class="card-head"><h2>실시간 추출·쿼리</h2><span class="pill">${session.turn_count}턴</span></div><div class="signal-list">${signals.map((s) => `<span>${e(s.field)} · ${e(s.value)}</span>`).join("") || `<p class="persona-help">아직 추출된 취향이 없습니다.</p>`}</div>${(session.pipeline?.queries || []).map((q) => `<div class="note"><strong>${e(q.space)}</strong><br>${e(q.text)}</div>`).join("")}${session.last_extraction_failed ? `<div class="note error">답변은 생성됐지만 추출이 실패했습니다. 원본 호출을 확인하세요.</div>` : ""}${session.error ? `<div class="note error">${e(session.error)}</div>` : ""}<p class="persona-help">마지막 요청 ${ms(last?.latency_ms)} · 실제 임베딩·DB는 호출하지 않습니다.</p><details class="sample"><summary>프로필·검색·임베딩 입력</summary><div class="sample-body"><pre>${e(JSON.stringify(session.pipeline, null, 2))}</pre></div></details><details class="sample"><summary>원본 모델 호출 · 프롬프트·스키마</summary><div class="sample-body"><pre>${e(JSON.stringify(session.traces, null, 2))}</pre></div></details>${persona ? `<details class="sample"><summary>${e(persona.name)} · 검토 가이드</summary><div class="sample-body persona-detail">${personaGuide(persona)}</div></details>` : ""}</section>`
+    ? `<section class="card inspector"><div class="card-head"><h2>실시간 추출·쿼리</h2><span class="pill">${session.turn_count}턴</span></div><div class="signal-list">${signals.map((s) => `<span>${e(s.field)} · ${e(s.value)}</span>`).join("") || `<p class="persona-help">아직 추출된 취향이 없습니다.</p>`}</div>${(session.pipeline?.queries || []).map((q) => `<div class="note"><strong>${e(q.space)}</strong><br>${e(q.text)}</div>`).join("")}${queryReviewHTML(session.pipeline?.query_review)}${session.last_extraction_failed ? `<div class="note error">답변은 생성됐지만 추출이 실패했습니다. 원본 호출을 확인하세요.</div>` : ""}${session.error ? `<div class="note error">${e(session.error)}</div>` : ""}<p class="persona-help">마지막 요청 ${ms(last?.latency_ms)} · 실제 임베딩·DB는 호출하지 않습니다.</p><details class="sample"><summary>프로필·검색·임베딩 입력</summary><div class="sample-body"><pre>${e(JSON.stringify(session.pipeline, null, 2))}</pre></div></details><details class="sample"><summary>원본 모델 호출 · 프롬프트·스키마</summary><div class="sample-body"><pre>${e(JSON.stringify(session.traces, null, 2))}</pre></div></details>${persona ? `<details class="sample"><summary>${e(persona.name)} · 검토 가이드</summary><div class="sample-body persona-detail">${personaGuide(persona)}</div></details>` : ""}</section>`
     : `<section class="card inspector"><h2>직접 대화하면서 검증</h2><p class="persona-help">매 턴 실제 니쥬 응답·취향 추출·프로필 병합·추천 쿼리를 확인합니다. 새로고침 후에도 로컬 DB에 저장된 대화를 다시 열 수 있습니다.</p>${persona ? personaGuide(persona) : `<p class="persona-help">페르소나를 선택하면 상황·시나리오·기대 결과를 참고할 수 있어요.</p>`}</section>`;
   return (
     heading(
@@ -300,7 +305,7 @@ function connectionsPage() {
       "ENDPOINT REGISTRY",
       "모델 연결",
       "모델을 실행한 서버의 API 주소와 실제 모델 ID를 등록하세요.",
-      `<div class="actions"><button class="btn" data-action="hf-connection">Hugging Face API</button><button class="btn" data-action="new-connection">+ 연결 추가</button></div>`,
+      `<div class="actions"><button class="btn" data-action="hf-connection">Hugging Face API</button><button class="btn" data-action="openrouter-connection">OpenRouter API</button><button class="btn" data-action="new-connection">+ 연결 추가</button></div>`,
     ) +
     `<div class="grid-two"><section class="card"><div class="card-head"><h2>${connection ? e(c.name) : "새 연결"}</h2><span class="pill">${e(c.environment)}</span></div><form id="connection-form">` +
     field("연결 이름", "name", c.name, "text", 'required maxlength="80"') +
@@ -550,6 +555,29 @@ function needuPage() {
   );
 }
 
+function queryReviewHTML(review) {
+  if (!review) return "";
+  if (review.reason === "pending")
+    return `<div class="note">추출·추천 쿼리 결과가 기록되면 기대 쿼리와 비교합니다.</div>`;
+  if (review.score == null)
+    return `<div class="note">이 실행에는 기대 쿼리 기준이 저장되지 않았습니다. 업데이트된 페르소나로 새 실험을 실행하면 조건 유사도를 확인할 수 있습니다.</div>`;
+  const conditions = `${review.matched_conditions}/${review.total_conditions}개 조건 반영`;
+  return `<details class="sample query-review" open><summary>추천 쿼리 비교 · 조건 유사도 ${pct(review.score)} · ${conditions}</summary><div class="sample-body"><p class="muted">키워드·동의어 기준으로 같은 검색 공간·추천 대상의 쿼리 중 조건이 가장 많이 반영된 문장을 비교합니다. 점수는 페르소나 전체 설정과의 조건 일치도입니다. 합성·편집 대화에서 아직 말하지 않은 설정은 누락될 수 있으므로 실제 발화와 추출 결과를 함께 검토하세요.</p><div class="table-wrap"><table><caption>기대 문장과 실제 추천 쿼리의 조건 비교</caption><thead><tr><th scope="col">기대 쿼리</th><th scope="col">가장 가까운 실제 쿼리</th><th scope="col">조건 유사도</th><th scope="col">반영·누락 조건</th></tr></thead><tbody>${review.rows.map((row) => `<tr><td><small>${e(row.space)} · ${e(row.mode)}</small>${e(row.expected)}</td><td>${e(row.actual || "해당 공간·대상의 쿼리 없음")}</td><td>${pct(row.score)}</td><td>반영: ${e(row.matched.join(" · ") || "없음")}<br>누락: ${e(row.missing.join(" · ") || "없음")}</td></tr>`).join("")}</tbody></table></div>${review.exclusions?.length ? `<div class="detail-section"><h3>제외 조건 반영 · ${pct(review.exclusion_score)}</h3><ul>${review.exclusions.map((row) => `<li>${e(row.expected)} → ${e(row.actual || "미반영")}</li>`).join("")}</ul></div>` : ""}${review.forbidden_queries?.length ? `<div class="note error"><strong>주의할 쿼리 ${review.forbidden_queries.length}개</strong><ul>${review.forbidden_queries.map((row) => `<li>${e(row.query)}<br>주의 표현: ${e(row.terms.join(" · "))}</li>`).join("")}</ul></div>` : `<p class="muted">지정한 오추천 주의 표현: 검출 없음</p>`}<small class="muted">기준 버전 ${e(review.persona_version || "미기록")} · 평가 방식 ${e(review.version)}</small></div></details>`;
+}
+
+function runQueryReview(run) {
+  return (
+    run.samples.findLast((sample) => sample.pipeline?.query_review)?.pipeline.query_review ||
+    run.summary?.query_review ||
+    (run.manifest.persona
+      ? {
+          score: null,
+          reason: run.manifest.persona.expected_queries?.length ? "pending" : "no_reference",
+        }
+      : null)
+  );
+}
+
 function pipelineResult(sample) {
   const p = sample.pipeline;
   if (!p) return "";
@@ -557,6 +585,7 @@ function pipelineResult(sample) {
   if (p.queries) {
     html += `<div class="muted">실제 서비스 추천 쿼리</div>${p.queries.length ? `<div class="table-wrap"><table><thead><tr><th>검색 공간</th><th>임베딩 검색 문장</th><th>적용</th></tr></thead><tbody>${p.queries.map((q) => `<tr><td>${e(q.space)}</td><td>${e(q.text)}</td><td>${e(q.modes.join(" / "))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="note">현재 프로필에서 생성된 검색 쿼리가 없습니다.</div>`}`;
     html += `<details class="sample"><summary>누적 프로필 · 병합 결과</summary><div class="sample-body"><pre>${e(JSON.stringify({ profile: p.profile, merge_result: p.merge_result, extraction_failed: p.extraction_failed, session_status: p.session_status, next_decision: p.next_decision }, null, 2))}</pre></div></details><details class="sample"><summary>실제 임베딩 입력 · 제외·선호 문장</summary><div class="sample-body"><pre>${e(JSON.stringify({ inputs: p.embedding_inputs, exclusions: p.exclusions, preferences: p.preferences }, null, 2))}</pre></div></details>`;
+    html += queryReviewHTML(p.query_review);
   }
   if (p.recommendation_stage)
     html += `<div class="note">실행 범위: ${e(p.recommendation_stage)} · 임베딩: ${e(p.embedding_status || "실패 / 중단")} · 추천: ${e(p.recommendation_status || "실패 / 중단")}${p.stop_reason ? `<br>${e(p.stop_reason)}` : ""}</div>`;
@@ -604,7 +633,56 @@ function historyPage() {
 function detailHTML(run) {
   const s = run.summary || {};
   const count = run.samples.length;
-  return `<section class="card detail-title"><div class="card-head"><div><div class="eyebrow">${e(run.id.slice(0, 8))} / ${e(run.connection.environment)}</div><h2>${e(modeLabel(run.spec.mode))} · ${e(run.connection.model)}</h2></div>${pill(run.status)}</div><div class="actions">${modes[run.spec.mode] ? `<button class="btn small" data-action="copy" data-id="${run.id}">조건 복사</button>` : ""}<a class="btn small" href="/api/runs/${run.id}/export?format=json" download>JSON</a><a class="btn small" href="/api/runs/${run.id}/export?format=csv" download>CSV</a>${active(run) ? `<button class="btn small danger" data-action="cancel" data-id="${run.id}">실행 취소</button>` : `<button class="btn small danger" data-action="delete" data-id="${run.id}">이력 삭제</button>`}</div>${serviceSummary(run)}${dialogueView(run)}${run.manifest.persona ? `<details class="sample persona-detail"><summary>페르소나 · ${e(run.manifest.persona.name)} · 기대 결과 검토</summary><div class="sample-body">${personaGuide(run.manifest.persona)}</div></details>` : ""}<progress value="${count}" max="${run.spec.requests}" aria-label="${run.spec.mode === "needu" ? "완료 단계 수" : "완료 요청 수"}"></progress><div class="result-strip"><span><strong>${count} / ${run.spec.requests}</strong> ${run.spec.mode === "needu" ? "단계 기록" : "요청 기록"}</span><span>완료 p95 <strong>${ms(s.latency_p95_ms)}</strong></span><span>첫 청크 p95 <strong>${ms(s.first_chunk_p95_ms)}</strong></span><span>성공률 <strong>${pct(s.success_rate)}</strong></span><span>스키마 <strong>${pct(s.schema_rate)}</strong></span><span>정답 일치 <strong>${pct(s.exact_match_rate)}</strong></span></div>${run.error ? `<div class="note error">${e(run.error)}</div>` : ""}${s.complete === false ? `<div class="note">${s.stop_reason ? e(s.stop_reason) + ". 예정된 나머지 턴은 실행하지 않았습니다." : "전체 계획을 완료하지 못했습니다. 일부 결과를 전체 평가 성능으로 해석하지 마세요."}</div>` : ""}<details class="sample"><summary>실행 조건 · 재현 정보</summary><div class="sample-body"><pre>${e(JSON.stringify({ connection: run.connection, spec: run.spec, manifest: run.manifest, summary: run.summary }, null, 2))}</pre></div></details>${run.samples.map((sample) => `<details class="sample" data-sample="${sample.ordinal}" ${count === 1 ? "open" : ""}><summary><span class="pill ${sample.ok ? "ok" : "bad"}">${sample.ok ? "성공" : "실패"}</span> ${e(sample.label)} · ${ms(sample.latency_ms)} ${sample.evaluation ? `· ${e(sample.evaluation.reason || "평가 실패")}` : ""}${sample.truncated ? " · 출력 상한 도달" : ""}</summary><div class="sample-body"><div class="muted">입력</div><pre>${e(sample.input)}</pre><div class="muted">모델 출력</div><pre>${e(sample.output || "(출력 없음)")}</pre>${pipelineResult(sample)}${sample.expected ? `<div class="muted">기대 정답</div><pre>${e(JSON.stringify(sample.expected, null, 2))}</pre>` : ""}${sample.error ? `<div class="note error">${e(sample.error)}</div>` : ""}<div class="result-strip"><span>첫 청크 ${ms(sample.first_chunk_ms)}</span><span>출력 토큰 ${num(sample.usage?.completion_tokens)}</span><span>종료 사유 ${e(sample.finish_reason || "미제공")}</span></div></div></details>`).join("")}${!count ? `<div class="empty">${active(run) ? "워커가 모델 응답을 기다리고 있습니다." : "기록된 요청이 없습니다."}</div>` : ""}</section>`;
+  return `<section class="card detail-title"><div class="card-head"><div><div class="eyebrow">${e(run.id.slice(0, 8))} / ${e(run.connection.environment)}</div><h2>${e(modeLabel(run.spec.mode))} · ${e(run.connection.model)}</h2></div>${pill(run.status)}</div><div class="actions">${modes[run.spec.mode] ? `<button class="btn small" data-action="copy" data-id="${run.id}">조건 복사</button>` : ""}<a class="btn small" href="/api/runs/${run.id}/export?format=json" download>JSON</a><a class="btn small" href="/api/runs/${run.id}/export?format=csv" download>CSV</a>${active(run) ? `<button class="btn small danger" data-action="cancel" data-id="${run.id}">실행 취소</button>` : `<button class="btn small danger" data-action="delete" data-id="${run.id}">이력 삭제</button>`}</div>${serviceSummary(run)}${dialogueView(run)}${queryReviewHTML(runQueryReview(run))}${run.manifest.persona ? `<details class="sample persona-detail"><summary>페르소나 · ${e(run.manifest.persona.name)} · 기대 결과 검토</summary><div class="sample-body">${personaGuide(run.manifest.persona)}</div></details>` : ""}<progress value="${count}" max="${run.spec.requests}" aria-label="${run.spec.mode === "needu" ? "완료 단계 수" : "완료 요청 수"}"></progress><div class="result-strip"><span><strong>${count} / ${run.spec.requests}</strong> ${run.spec.mode === "needu" ? "단계 기록" : "요청 기록"}</span><span>완료 p95 <strong>${ms(s.latency_p95_ms)}</strong></span><span>첫 청크 p95 <strong>${ms(s.first_chunk_p95_ms)}</strong></span><span>성공률 <strong>${pct(s.success_rate)}</strong></span><span>스키마 <strong>${pct(s.schema_rate)}</strong></span><span>정답 일치 <strong>${pct(s.exact_match_rate)}</strong></span></div>${run.error ? `<div class="note error">${e(run.error)}</div>` : ""}${s.complete === false ? `<div class="note">${s.stop_reason ? e(s.stop_reason) + ". 예정된 나머지 턴은 실행하지 않았습니다." : "전체 계획을 완료하지 못했습니다. 일부 결과를 전체 평가 성능으로 해석하지 마세요."}</div>` : ""}<details class="sample"><summary>실행 조건 · 재현 정보</summary><div class="sample-body"><pre>${e(JSON.stringify({ connection: run.connection, spec: run.spec, manifest: run.manifest, summary: run.summary }, null, 2))}</pre></div></details>${run.samples.map((sample) => `<details class="sample" data-sample="${sample.ordinal}" ${count === 1 ? "open" : ""}><summary><span class="pill ${sample.ok ? "ok" : "bad"}">${sample.ok ? "성공" : "실패"}</span> ${e(sample.label)} · ${ms(sample.latency_ms)} ${sample.evaluation ? `· ${e(sample.evaluation.reason || "평가 실패")}` : ""}${sample.truncated ? " · 출력 상한 도달" : ""}</summary><div class="sample-body"><div class="muted">입력</div><pre>${e(sample.input)}</pre><div class="muted">모델 출력</div><pre>${e(sample.output || "(출력 없음)")}</pre>${pipelineResult(sample)}${sample.expected ? `<div class="muted">기대 정답</div><pre>${e(JSON.stringify(sample.expected, null, 2))}</pre>` : ""}${sample.error ? `<div class="note error">${e(sample.error)}</div>` : ""}<div class="result-strip"><span>첫 청크 ${ms(sample.first_chunk_ms)}</span><span>출력 토큰 ${num(sample.usage?.completion_tokens)}</span><span>종료 사유 ${e(sample.finish_reason || "미제공")}</span></div></div></details>`).join("")}${!count ? `<div class="empty">${active(run) ? "워커가 모델 응답을 기다리고 있습니다." : "기록된 요청이 없습니다."}</div>` : ""}</section>`;
+}
+
+function tokenUsage(run) {
+  const calls =
+    run.spec.mode === "needu"
+      ? run.samples.flatMap((sample) => sample.model_calls || [])
+      : run.samples;
+  const valid = (value) => Number.isSafeInteger(value) && value >= 0;
+  return Object.fromEntries(
+    ["prompt_tokens", "completion_tokens", "total_tokens"].map((key) => {
+      const values = calls
+        .map((call) => {
+          const usage = call.usage || {};
+          if (key === "total_tokens" && !valid(usage.total_tokens)) {
+            return valid(usage.prompt_tokens) && valid(usage.completion_tokens)
+              ? usage.prompt_tokens + usage.completion_tokens
+              : null;
+          }
+          return usage[key];
+        })
+        .filter(valid);
+      return [
+        key,
+        {
+          tokens: values.length ? values.reduce((sum, value) => sum + value, 0) : null,
+          reported: values.length,
+          calls: calls.length,
+        },
+      ];
+    }),
+  );
+}
+
+function comparisonTokens(run, key) {
+  const usage = state.compareUsage.get(run.id)?.[key];
+  if (!usage) return "조회 중";
+  if (usage.tokens == null) return "미제공";
+  return `${num(usage.tokens)} 토큰${usage.reported < usage.calls ? ` · 일부 제공 (${usage.reported}/${usage.calls}회)` : ""}`;
+}
+
+async function refreshCompareUsage() {
+  const ids = [...state.compare].filter((id) => state.overview.runs.some((run) => run.id === id));
+  const usages = await Promise.all(
+    ids.map(async (id) => {
+      const run = await api(`/runs/${id}`);
+      return [id, { ...tokenUsage(run), query_review: runQueryReview(run) }];
+    }),
+  );
+  usages.forEach(([id, usage]) => state.compareUsage.set(id, usage));
 }
 
 function comparePage() {
@@ -623,6 +701,8 @@ function comparePage() {
       `<section class="card"><div class="empty"><span class="empty-icon">⇄</span><strong>${runs.length} / 2개 선택됨</strong>이력의 비교 체크박스에서 두 실험을 선택하세요.</div></section>`
     );
   const [a, b] = runs;
+  const queryReview = (run) =>
+    state.compareUsage.get(run.id)?.query_review || run.summary?.query_review;
   const keys = [
     "mode",
     "prompt",
@@ -678,6 +758,9 @@ function comparePage() {
     ["니쥬 응답 p95", (r) => ms(r.summary?.role_latency_p95_ms?.response)],
     ["사용자 생성 p95", (r) => ms(r.summary?.role_latency_p95_ms?.persona)],
     ["추출 실패 턴", (r) => num(r.summary?.extraction_failed_turns)],
+    ["추천 쿼리 조건 유사도", (r) => pct(queryReview(r)?.score)],
+    ["제외 조건 반영률", (r) => pct(queryReview(r)?.exclusion_score)],
+    ["주의할 추천 쿼리", (r) => num(queryReview(r)?.forbidden_queries?.length)],
     ["상태", (r) => statuses[r.status]],
     ["성공 표본", (r) => `${r.summary?.succeeded ?? "—"} / ${r.summary?.attempted ?? "—"}`],
     ["완료시간 p50", (r) => ms(r.summary?.latency_p50_ms)],
@@ -686,6 +769,9 @@ function comparePage() {
     ["성공률", (r) => pct(r.summary?.success_rate)],
     ["스키마 준수", (r) => pct(r.summary?.schema_rate)],
     ["내용 정답 일치", (r) => pct(r.summary?.exact_match_rate)],
+    ["입력 토큰 수", (r) => comparisonTokens(r, "prompt_tokens")],
+    ["출력 토큰 수", (r) => comparisonTokens(r, "completion_tokens")],
+    ["전체 토큰 수", (r) => comparisonTokens(r, "total_tokens")],
     [
       "성공 단계·요청 처리량",
       (r) =>
@@ -702,7 +788,7 @@ function comparePage() {
     ],
     ["실험 메모", (r) => r.spec.note || "미기록"],
   ];
-  html += `<div class="note ${mismatches.length ? "error" : "success"}">${mismatches.length ? `요청 조건 차이: ${e(mismatches.join(", "))}. 속도 우열을 직접 판정하지 마세요.` : "요청 설정이 같습니다. 런타임·하드웨어·캐시 상태·모델 정밀도도 함께 확인하세요."}<br>소규모 테스트 p95는 운영 SLO 근거로 충분하지 않습니다.</div>`;
+  html += `<div class="note ${mismatches.length ? "error" : "success"}">${mismatches.length ? `요청 조건 차이: ${e(mismatches.join(", "))}. 속도 우열을 직접 판정하지 마세요.` : "요청 설정이 같습니다. 런타임·하드웨어·캐시 상태·모델 정밀도도 함께 확인하세요."}<br>소규모 테스트 p95는 운영 SLO 근거로 충분하지 않습니다.</div><div class="note">토큰 수는 모델이 반환한 사용량을 합산합니다. 니쥬 서비스는 응답·추출·요약·판단·합성 사용자 호출을 포함합니다. 전체 토큰 수가 없으면 제공된 입력·출력 토큰을 더합니다. 일부 제공은 확인된 호출만 집계한 값이며, 미제공 사용량은 추정하지 않습니다. 실행 중에는 현재까지 기록된 사용량입니다.</div>`;
   return (
     html +
     `<section class="card table-wrap"><table class="compare-metrics"><thead><tr><th>항목</th><th>${e(a.connection.name)} · ${a.id.slice(0, 8)}</th><th>${e(b.connection.name)} · ${b.id.slice(0, 8)}</th></tr></thead><tbody>${rows.map(([label, get]) => `<tr><td>${label}</td><td>${e(get(a))}</td><td>${e(get(b))}</td></tr>`).join("")}</tbody></table></section><div class="note">코드 revision: ${e(a.manifest.code_revision.slice(0, 8))} / ${e(b.manifest.code_revision.slice(0, 8))} · 평가셋 해시 ${a.manifest.fixture_hash && b.manifest.fixture_hash ? (a.manifest.fixture_hash === b.manifest.fixture_hash ? "같음" : "다름") : "미사용 · 서비스 경로 실행"} · 현재 비용·GPU는 미수집</div>`
@@ -722,7 +808,7 @@ function baselineGuide() {
     "근거가 없을 때 정보를 지어내지 않고 추출을 비워 두는가",
     "병합된 프로필·제외 조건이 추천 쿼리에 반영되는가",
   ];
-  return `<section class="card prose"><h2>학습 없이 먼저 검증하세요</h2><p>8B·1B·30B는 확정 모델이 아닙니다. 후보 2~3개를 같은 소규모 사례로 비교하고, 니쥬에 필요한 품질·지연으로 선택하세요.</p><ol><li>중요한 상황 10~15개를 고르고, 상황별 발화와 기대 결과를 실험 메모에 적습니다.</li><li>같은 발화·스타일·추천 범위를 유지하고 모델 연결만 바꿔 비교합니다.</li><li>실패하면 프롬프트·추출·프로필 병합·쿼리 중 어느 단계가 원인인지 확인합니다.</li><li>수정 후에도 모델의 실패가 반복되고 더 큰 모델의 비용·지연이 부담될 때 파인튜닝을 검토합니다.</li></ol><details class="sample"><summary>우선 확인할 상황 10개</summary><div class="sample-body"><ol>${checks.map((check) => `<li>${check}</li>`).join("")}</ol></div></details><p>이 목록은 사람이 검토할 기준입니다. 10개의 자동 정답 평가셋이 아닙니다. 니쥬 서비스 테스트에서 출력과 근거를 확인하고, 기존 초기 추출 평가 8개의 점수와 구분하세요.</p><p>상세 페르소나 10개를 시나리오와 직접 대화에서 사용하세요. 30개 확장·대규모 학습·GPU 관측은 필요가 확인되면 추가합니다. AI Hub 데이터는 후보로 보관하고, 파인튜닝이 필요해질 때 학습용으로 검토합니다.</p></section>`;
+  return `<section class="card prose"><h2>학습 없이 먼저 검증하세요</h2><p>8B·1B·30B는 확정 모델이 아닙니다. 후보 2~3개를 같은 소규모 사례로 비교하고, 니쥬에 필요한 품질·지연으로 선택하세요.</p><ol><li>중요한 상황 10~15개를 고르고, 상황별 발화와 기대 결과를 실험 메모에 적습니다.</li><li>같은 발화·스타일·추천 범위를 유지하고 모델 연결만 바꿔 비교합니다.</li><li>실패하면 프롬프트·추출·프로필 병합·쿼리 중 어느 단계가 원인인지 확인합니다.</li><li>수정 후에도 모델의 실패가 반복되고 더 큰 모델의 비용·지연이 부담될 때 파인튜닝을 검토합니다.</li></ol><details class="sample"><summary>우선 확인할 상황 10개</summary><div class="sample-body"><ol>${checks.map((check) => `<li>${check}</li>`).join("")}</ol></div></details><p>이 목록은 사람이 검토할 기준입니다. 10개의 자동 정답 평가셋이 아닙니다. 니쥬 서비스 테스트에서 출력과 근거를 확인하고, 기존 초기 추출 평가 8개의 점수와 구분하세요.</p><p>상세 페르소나 ${state.personas.length}개를 시나리오와 직접 대화에서 사용하세요. 추가 확장·대규모 학습·GPU 관측은 필요가 확인되면 추가합니다. AI Hub 데이터는 후보로 보관하고, 파인튜닝이 필요해질 때 학습용으로 검토합니다.</p></section>`;
 }
 
 function purposePage() {
@@ -755,9 +841,23 @@ function render() {
   };
   main.innerHTML = pages[state.page]();
   if (state.page === "experiments") updateBudget();
-  if (state.page === "chat") {
+  if (state.page === "chat" || state.page === "history") {
     const feed = $(".chat-feed");
     if (feed) feed.scrollTop = feed.scrollHeight;
+  }
+}
+
+function updateRunDetail(resetScroll = false) {
+  const previousFeed = $("#run-detail .chat-feed");
+  const previousScrollTop = previousFeed?.scrollTop ?? 0;
+  const previousMessageCount = previousFeed?.childElementCount;
+  $("#run-detail").innerHTML = detailHTML(state.detail);
+  const feed = $("#run-detail .chat-feed");
+  if (feed) {
+    feed.scrollTop =
+      resetScroll || feed.childElementCount !== previousMessageCount
+        ? feed.scrollHeight
+        : previousScrollTop;
   }
 }
 
@@ -800,6 +900,7 @@ async function refresh(renderPage = false) {
     ? "테스트 워커 준비됨"
     : "테스트 워커 꺼짐";
   if (state.activeRun) state.detail = await api(`/runs/${state.activeRun}`);
+  if (state.page === "compare") await refreshCompareUsage();
   if (renderPage) render();
 }
 
@@ -809,7 +910,7 @@ async function showDetail(id, scroll = true) {
   if (state.page !== "history") {
     location.hash = "history";
   } else {
-    $("#run-detail").innerHTML = detailHTML(state.detail);
+    updateRunDetail(true);
   }
   if (scroll)
     setTimeout(
@@ -1023,6 +1124,11 @@ main.addEventListener("click", async (event) => {
       if (!connection) throw new Error("Hugging Face 연결을 불러오려면 관리 API를 재시작하세요.");
       state.connectionId = connection.id;
       render();
+    } else if (action === "openrouter-connection") {
+      const connection = state.overview.connections.find((c) => c.id === "openrouter");
+      if (!connection) throw new Error("OpenRouter 연결을 불러오려면 관리 API를 재시작하세요.");
+      state.connectionId = connection.id;
+      render();
     } else if (action === "new-connection" || action === "edit-connection") {
       state.connectionId = action === "new-connection" ? null : id;
       render();
@@ -1083,7 +1189,7 @@ main.addEventListener("click", async (event) => {
   }
 });
 
-function navigate() {
+async function navigate() {
   const page = location.hash.slice(1) || "overview";
   state.page = [
     "overview",
@@ -1098,6 +1204,14 @@ function navigate() {
     ? page
     : "overview";
   render();
+  if (state.page === "compare") {
+    try {
+      await refreshCompareUsage();
+      if (state.page === "compare") render();
+    } catch (error) {
+      notice(error.message, true);
+    }
+  }
 }
 
 window.addEventListener("hashchange", navigate);
@@ -1139,6 +1253,7 @@ setInterval(async () => {
     const oldDetail = state.detail;
     await refresh(false);
     if (state.page === "overview") render();
+    else if (state.page === "compare") render();
     else if (
       state.page === "history" &&
       state.detail &&
@@ -1147,7 +1262,7 @@ setInterval(async () => {
       const expanded = [...document.querySelectorAll("details[data-sample][open]")].map(
         (d) => d.dataset.sample,
       );
-      $("#run-detail").innerHTML = detailHTML(state.detail);
+      updateRunDetail();
       document.querySelectorAll("details[data-sample]").forEach((d) => {
         if (expanded.includes(d.dataset.sample)) d.open = true;
       });
