@@ -47,8 +47,8 @@ HOBBY_BONUS = 0.05
 MAX_ACTIVE_OWNED_SIGNALS = 3
 MAX_AXES = 3
 
-# 일반적인 응답을 걸러내는 1차 책임은 EXTRACTION_SYSTEM 프롬프트와
-# noneAnswer 경로에 있다. 아래 목록은 그 경로가 실패했을 때
+# 일반적인 응답을 걸러내는 1차 책임은 추출 프롬프트에 있다.
+# 아래 목록은 그 경로가 실패했을 때
 # 프로필이 오염되지 않게 막는 최소한의 안전망이므로, 새 사례가 나와도
 # 여기에 단어를 추가하지 말고 프롬프트를 고친다.
 _GENERIC_VALUES = frozenset(

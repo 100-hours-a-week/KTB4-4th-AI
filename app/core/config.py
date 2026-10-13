@@ -63,10 +63,6 @@ class Settings(BaseSettings):
     # base url이 없으면 판단 단계 없이 추출 모델 혼자 취향을 뽑는 기존 방식으로 돈다.
     judgment_model_base_url: AnyHttpUrl | None = None
     judgment_model_name: str = "~typesafe/jev-latest"
-    # explore: 부족한 정보를 차례로 묻는 기존 대화. reflective: 한 이야기를 무엇 → 어떻게 → 왜로
-    # 따라가며 곰곰이 생각하게 하는 대화. companion: 니쥬가 반응하고 생각을 보태며 수다를 떨고
-    # 사용자 에너지를 보고 매 턴 반응 방식(move)을 고르는 대화. 새 세션부터 적용된다.
-    conversation_style: Literal["explore", "reflective", "companion"] = "companion"
 
     response_model_timeout_seconds: float = Field(default=60.0, gt=0)
     extraction_model_timeout_seconds: float = Field(default=30.0, gt=0)

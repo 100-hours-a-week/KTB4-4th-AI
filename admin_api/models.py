@@ -56,7 +56,6 @@ class RunSpec(BaseModel):
     duration_seconds: int = Field(default=120, ge=5, le=1800)
     timeout_seconds: int = Field(default=60, ge=1, le=120)
     note: str = Field(default="", max_length=1000)
-    conversation_style: Literal["environment", "companion", "reflective", "explore"] = "environment"
     response_connection_id: str | None = None
     extraction_connection_id: str | None = None
     judgment_mode: Literal["environment", "disabled"] = "environment"
@@ -94,7 +93,6 @@ class RunSpec(BaseModel):
 
 class ChatSpec(BaseModel):
     title: str = Field(default="새 테스트 대화", min_length=1, max_length=80)
-    conversation_style: Literal["environment", "companion", "reflective", "explore"] = "environment"
     response_connection_id: str | None = None
     extraction_connection_id: str | None = None
     judgment_mode: Literal["environment", "disabled"] = "environment"

@@ -649,6 +649,19 @@ code {
 .sample-body pre {
   margin-top: 5px;
 }
+.query-review table {
+  min-width: 640px;
+  table-layout: fixed;
+}
+.query-review caption {
+  padding: 12px;
+  color: var(--muted);
+  text-align: left;
+}
+.query-review td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
 .detail-title {
   margin-top: 30px;
 }

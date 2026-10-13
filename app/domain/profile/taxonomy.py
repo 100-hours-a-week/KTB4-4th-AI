@@ -28,8 +28,6 @@ class TasteAxis:
     aspect: PreferenceAspect
     # 판단 모델(Jev)에 주는 설명. 영어가 주 학습 언어라 영어로 쓴다.
     description: str
-    # 대화 모델이 이 축을 자연스럽게 물을 때 쓰는 방향. 비어 있으면 대화로 묻지 않는다.
-    ask: str = ""
 
     @property
     def path(self) -> tuple[str, ...]:
@@ -61,7 +59,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "무채색, 파스텔, 원색, 어두운 색, 따뜻한 색",
         _A,
         "Preferred colors, such as achromatic, pastel, vivid, dark, or warm colors",
-        "즐겨 쓰는 물건이나 옷의 색",
     ),
     TasteAxis(
         "visual.design",
@@ -70,7 +67,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "미니멀, 화려함, 심플, 장식적",
         _A,
         "Preferred design, such as minimal, flashy, simple, or ornate",
-        "물건이 어떤 느낌의 디자인인지",
     ),
     TasteAxis(
         "visual.shape",
@@ -87,7 +83,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "모던, 클래식, 빈티지, 레트로, 미래적",
         _A,
         "Preferred stylistic mood, such as modern, classic, vintage, retro, or futuristic",
-        "좋아하는 물건이나 공간의 스타일",
     ),
     TasteAxis(
         "style.fashion",
@@ -96,7 +91,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "캐주얼, 스트리트, 포멀, 내추럴, 키치",
         _A,
         "Preferred fashion style, such as casual, street, formal, natural, or kitsch",
-        "평소 즐겨 입는 옷 느낌",
     ),
     TasteAxis(
         "sense.taste",
@@ -105,7 +99,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "단맛, 짠맛, 매운맛, 산미, 쓴맛, 고소함",
         _S,
         "Preferred flavors, such as sweet, salty, spicy, sour, bitter, or nutty",
-        "좋아하는 맛",
     ),
     TasteAxis(
         "sense.scent",
@@ -114,7 +107,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "우디, 머스크, 플로럴, 시트러스, 비누향",
         _S,
         "Preferred scents, such as woody, musk, floral, citrus, or clean soap",
-        "좋아하는 향",
     ),
     TasteAxis(
         "sense.sound",
@@ -123,7 +115,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "잔잔함, 강한 비트, 어쿠스틱, 웅장함",
         _S,
         "Preferred sound or music feel, such as calm, strong beat, acoustic, or grand",
-        "좋아하는 음악 분위기",
     ),
     TasteAxis(
         "sense.texture",
@@ -140,7 +131,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "조용한, 활기찬, 아늑한, 개방적인",
         _T,
         "Preferred atmosphere of a space, such as quiet, lively, cozy, or open",
-        "좋아하는 공간 분위기",
     ),
     TasteAxis(
         "activity.energy",
@@ -149,7 +139,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "활동적인 ↔ 정적인",
         _T,
         "Preference for active versus calm, still ways of spending time",
-        "쉴 때 몸을 움직이는 쪽인지 가만히 쉬는 쪽인지",
     ),
     TasteAxis(
         "experience.novelty",
@@ -158,7 +147,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "새로운 것 선호 ↔ 익숙한 것 선호",
         _T,
         "Preference for trying new things versus sticking to familiar ones",
-        "새로운 곳을 찾아가는지 가던 곳을 가는지",
     ),
     TasteAxis(
         "experience.planning",
@@ -167,7 +155,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "계획적인 ↔ 즉흥적인",
         _T,
         "Preference for planning ahead versus acting spontaneously",
-        "미리 계획을 세우는지 즉흥적으로 움직이는지",
     ),
     TasteAxis(
         "experience.pace",
@@ -176,7 +163,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "여유로운 ↔ 빠른",
         _T,
         "Preference for a relaxed, slow pace versus a fast, packed pace",
-        "여유롭게 즐기는지 알차게 몰아서 하는지",
     ),
     TasteAxis(
         "social.size",
@@ -185,7 +171,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "혼자 ↔ 소수 ↔ 다수",
         _T,
         "Preference for doing things alone, with a few people, or in a large group",
-        "혼자 하는지 여럿이 하는지",
     ),
     TasteAxis(
         "social.relation",
@@ -194,7 +179,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "친한 사람 중심 ↔ 새로운 사람",
         _T,
         "Preference for spending time with close people versus meeting new people",
-        "주로 누구와 함께하는지",
     ),
     TasteAxis(
         "place.setting",
@@ -203,7 +187,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "실내 ↔ 야외",
         _T,
         "Preference for indoor versus outdoor places",
-        "실내에서 즐기는지 밖에서 즐기는지",
     ),
     TasteAxis(
         "place.crowd",
@@ -212,7 +195,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "한적함 ↔ 붐빔",
         _T,
         "Preference for quiet, uncrowded places versus busy, crowded places",
-        "한적한 곳을 찾는지 북적이는 곳이 좋은지",
     ),
     TasteAxis(
         "spending.price",
@@ -221,7 +203,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "가성비 ↔ 프리미엄",
         _C,
         "Preference for good value for money versus premium products",
-        "하나를 사도 좋은 걸 사는지 가볍게 여러 개 사는지",
     ),
     TasteAxis(
         "spending.function",
@@ -230,7 +211,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "실용성 ↔ 심미성",
         _C,
         "Preference for practicality versus looks when choosing things",
-        "물건을 쓸모로 고르는지 예뻐서 고르는지",
     ),
     TasteAxis(
         "spending.brand",
@@ -263,7 +243,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "오래 사용 ↔ 자주 교체",
         _C,
         "Preference for using things for a long time versus replacing them often",
-        "물건을 오래 쓰는 편인지 자주 바꾸는 편인지",
     ),
     TasteAxis(
         "value.simplicity",
@@ -312,7 +291,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "가볍고 쉬움 ↔ 깊고 복잡함",
         _A,
         "Preference for light, easy content versus deep, complex content",
-        "가볍게 보는 걸 좋아하는지 깊이 파고드는 걸 좋아하는지",
     ),
     TasteAxis(
         "content.emotion",
@@ -321,7 +299,6 @@ TASTE_AXES: tuple[TasteAxis, ...] = (
         "편안함 ↔ 자극적",
         _A,
         "Preference for comforting, relaxing content versus thrilling, intense content",
-        "편하게 보는 걸 좋아하는지 자극적인 걸 좋아하는지",
     ),
     TasteAxis(
         "content.narrative",
@@ -531,37 +508,7 @@ INTEREST_CATEGORIES: tuple[InterestCategory, ...] = (
 )
 
 TASTE_AXES_BY_KEY = {axis.key: axis for axis in TASTE_AXES}
-# 대화로 물을 때의 순서. 어떤 활동 이야기에서든 이어 묻기 쉬운 축(누구와, 어디서, 어떤 분위기)을
-# 앞에 두고, 물건이나 소비 이야기가 나와야 자연스러운 축은 뒤에 둔다.
-ASK_PRIORITY = (
-    "social.size",
-    "place.crowd",
-    "mood.space",
-    "place.setting",
-    "experience.planning",
-    "experience.novelty",
-    "experience.pace",
-    "activity.energy",
-    "social.relation",
-    "content.emotion",
-    "content.depth",
-    "sense.taste",
-    "sense.sound",
-    "sense.scent",
-    "style.mood",
-    "visual.design",
-    "visual.color",
-    "style.fashion",
-    "spending.ownership",
-    "spending.price",
-    "spending.function",
-)
 INTEREST_CATEGORIES_BY_KEY = {category.key: category for category in INTEREST_CATEGORIES}
-_AXES_BY_PATH = {axis.path: axis for axis in TASTE_AXES}
-
-
-def taste_axis_for_path(path: tuple[str, ...] | None) -> TasteAxis | None:
-    return _AXES_BY_PATH.get(path) if path else None
 
 
 def taste_axes_guide() -> str:

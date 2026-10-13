@@ -4,7 +4,7 @@ import json
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PROMPT_VERSION = "persona-dialogue-v1"
+PROMPT_VERSION = "persona-dialogue-v2"
 
 
 class PersonaReply(BaseModel):
@@ -19,6 +19,9 @@ def persona_system(persona):
         key: persona[key] for key in ("name", "age", "occupation", "context", "values", "future")
     }
     private["known_facts"] = persona["turns"]
+    for key in ("lifestyle", "speech_style"):
+        if key in persona:
+            private[key] = persona[key]
     return (
         "너는 아래 설정의 가상 사용자 역할로 니쥬와 대화한다. AI 평가자나 상담사가 아니다.\n"
         "한국어 존댓말로 실제 사람처럼 짧고 자연스럽게 답한다. "

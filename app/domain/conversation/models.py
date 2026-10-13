@@ -10,71 +10,22 @@ from app.domain.profile.models import ProfileState, utc_now
 
 class ConversationGoal(StrEnum):
     OPENING = "OPENING"
-    INTEREST = "INTEREST"
-    INTEREST_VIA_ROUTINE = "INTEREST_VIA_ROUTINE"
-    TASTE = "TASTE"
-    DISLIKE = "DISLIKE"
-    GEAR = "GEAR"
-    DEEPEN = "DEEPEN"
-    # 곰곰이 생각하게 하는 대화(reflective)에서만 쓴다.
-    BRIDGE = "BRIDGE"
-    REFLECT = "REFLECT"
-    # 니쥬 수다(companion)에서 대화를 이어가는 차례. 구체적인 반응 방식은 move가 정한다.
+    # 대화를 이어가는 차례. 구체적인 반응 방식은 move가 정한다.
     CHAT = "CHAT"
     WRAP = "WRAP"
 
 
-class ConversationStyle(StrEnum):
-    # 부족한 정보를 차례로 묻는 기존 방식
-    EXPLORE = "explore"
-    # 한 이야기를 무엇 → 어떻게 → 왜 → 반대편으로 따라가며 곰곰이 생각하게 하는 방식
-    REFLECTIVE = "reflective"
-    # 니쥬가 반응하고 자기 생각을 보태며 수다를 떨고,
-    # 사용자 에너지를 보고 반응 방식(move)을 고르는 방식
-    COMPANION = "companion"
-
-
 class ConversationMove(StrEnum):
-    """companion 대화에서 니쥬가 이번 턴에 어떻게 반응할지. 무엇을 알아낼지가 아니다."""
+    """니쥬가 이번 턴에 어떻게 반응할지. 무엇을 알아낼지가 아니다."""
 
     # 방금 이야기를 이어 묻는다. 기본 move.
     FOLLOW = "follow"
     # 질문 없이 니쥬의 의견, 감상, 아는 이야기를 보탠다.
     ADD = "add"
-    # 들은 이야기의 공통된 결을 짐작으로 되비춘다.
-    REFLECT_BACK = "reflect_back"
-    # 방금 이야기에서 다리를 놓아 다른 생활 화제로 건너간다.
-    BRIDGE = "bridge"
     # 밸런스 게임이나 둘 중 고르기로 답하는 부담을 낮춘다.
     PLAY = "play"
     # 앞에서 신나게 이야기한 화제로 돌아간다.
     RETURN = "return"
-
-
-class ThreadStage(StrEnum):
-    """reflective 대화에서 지금 이야기 줄기가 어디까지 왔는지."""
-
-    WHAT = "what"
-    HOW = "how"
-    WHY = "why"
-    CONTRAST = "contrast"
-    BRIDGE = "bridge"
-
-
-class GoalArea(StrEnum):
-    INTEREST = "interest"
-    TASTE = "taste"
-    GEAR = "gear"
-    EXCLUSION = "exclusion"
-    DEEPEN = "deepen"
-
-
-class CoverageStatus(StrEnum):
-    PENDING = "pending"
-    FOUND = "found"
-    CONFIRMED_NONE = "confirmed_none"
-    UNRESOLVED = "unresolved"
-    EXHAUSTED = "exhausted"
 
 
 class SessionStatus(StrEnum):
@@ -118,10 +69,6 @@ class ConversationTurn:
         )
 
 
-def _default_coverage() -> dict[GoalArea, CoverageStatus]:
-    return {area: CoverageStatus.PENDING for area in GoalArea}
-
-
 @dataclass(slots=True)
 class ConversationState:
     user_id: int
@@ -130,10 +77,6 @@ class ConversationState:
     turn_count: int = 0
     history: list[ConversationTurn] = field(default_factory=list)
     profile: ProfileState = field(default_factory=ProfileState)
-    goal_coverage: dict[GoalArea, CoverageStatus] = field(default_factory=_default_coverage)
-    goal_attempts: dict[str, int] = field(default_factory=dict)
-    last_goal: ConversationGoal | None = None
-    turns_since_new_interest: int = 0
     completion_reason: CompletionReason | None = None
     created_at: datetime = field(default_factory=utc_now)
     last_active_at: datetime = field(default_factory=utc_now)
@@ -146,24 +89,9 @@ class ConversationState:
     analysis_interest_keywords: list[str] = field(default_factory=list)
     analysis_keyword_scores: dict[str, float] = field(default_factory=dict)
     analysis_patch_used: bool = False
-    conversation_style: ConversationStyle = ConversationStyle.EXPLORE
-    # reflective 대화의 이야기 줄기. 줄기 관심사와 단계, 줄기 안에서 주고받은 턴 수.
-    thread_topic: str | None = None
-    thread_stage: ThreadStage = ThreadStage.WHAT
-    thread_turns: int = 0
-    # "왜" 질문을 한 횟수. 대화가 무거워지지 않게 제한한다.
-    why_count: int = 0
-    # 직전 사용자 답의 깊이(0 짧게 넘김 ~ 2 이유나 느낌을 담음)와 짧은 답이 이어진 횟수.
-    last_answer_depth: float | None = None
-    shallow_streak: int = 0
-    # 되비추기를 했는지, 되비추기에 쓴 항목 값. 다음 답에서 정정 대상 후보가 된다.
-    reflected: bool = False
-    reflection_values: list[str] = field(default_factory=list)
-    # companion 대화의 흐름 상태.
-    # 최근 move, 질문으로 끝난 니쥬 응답이 이어진 횟수, 사용자 에너지(0~1)와 그 최고치,
+    # 대화 흐름 상태. 최근 move, 사용자 에너지(0~1)와 그 최고치,
     # 에너지가 낮은 턴이 이어진 횟수, 사용자 평균 발화 길이.
     move_history: list[str] = field(default_factory=list)
-    question_streak: int = 0
     energy: float | None = None
     peak_energy: float = 0.0
     low_energy_streak: int = 0
@@ -173,7 +101,6 @@ class ConversationState:
     best_topic_energy: float = 0.0
     returned_topics: list[str] = field(default_factory=list)
     used_scenes: list[str] = field(default_factory=list)
-    reflect_back_count: int = 0
     # 한 번 오른 진행률은 내리지 않는다.
     progress_floor: int = 0
 
@@ -198,12 +125,6 @@ class ConversationState:
             "turn_count": self.turn_count,
             "history": [turn.to_dict() for turn in self.history],
             "profile": self.profile.to_dict(),
-            "goal_coverage": {
-                area.value: status.value for area, status in self.goal_coverage.items()
-            },
-            "goal_attempts": dict(self.goal_attempts),
-            "last_goal": self.last_goal.value if self.last_goal else None,
-            "turns_since_new_interest": self.turns_since_new_interest,
             "completion_reason": (self.completion_reason.value if self.completion_reason else None),
             "created_at": self.created_at.isoformat(),
             "last_active_at": self.last_active_at.isoformat(),
@@ -216,17 +137,7 @@ class ConversationState:
             "analysis_interest_keywords": list(self.analysis_interest_keywords),
             "analysis_keyword_scores": dict(self.analysis_keyword_scores),
             "analysis_patch_used": self.analysis_patch_used,
-            "conversation_style": self.conversation_style.value,
-            "thread_topic": self.thread_topic,
-            "thread_stage": self.thread_stage.value,
-            "thread_turns": self.thread_turns,
-            "why_count": self.why_count,
-            "last_answer_depth": self.last_answer_depth,
-            "shallow_streak": self.shallow_streak,
-            "reflected": self.reflected,
-            "reflection_values": list(self.reflection_values),
             "move_history": list(self.move_history),
-            "question_streak": self.question_streak,
             "energy": self.energy,
             "peak_energy": self.peak_energy,
             "low_energy_streak": self.low_energy_streak,
@@ -235,17 +146,12 @@ class ConversationState:
             "best_topic_energy": self.best_topic_energy,
             "returned_topics": list(self.returned_topics),
             "used_scenes": list(self.used_scenes),
-            "reflect_back_count": self.reflect_back_count,
             "progress_floor": self.progress_floor,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ConversationState:
         created_at = datetime.fromisoformat(payload["created_at"])
-        coverage = _default_coverage()
-        for area, status in payload.get("goal_coverage", {}).items():
-            coverage[GoalArea(area)] = CoverageStatus(status)
-        last_goal = payload.get("last_goal")
         completion_reason = payload.get("completion_reason")
         return cls(
             user_id=int(payload["user_id"]),
@@ -257,12 +163,6 @@ class ConversationState:
                 for turn in payload.get("history", [])
             ],
             profile=ProfileState.from_dict(payload.get("profile")),
-            goal_coverage=coverage,
-            goal_attempts={
-                key: int(value) for key, value in payload.get("goal_attempts", {}).items()
-            },
-            last_goal=ConversationGoal(last_goal) if last_goal else None,
-            turns_since_new_interest=int(payload.get("turns_since_new_interest", 0)),
             completion_reason=(CompletionReason(completion_reason) if completion_reason else None),
             created_at=created_at,
             last_active_at=datetime.fromisoformat(payload["last_active_at"]),
@@ -286,23 +186,7 @@ class ConversationState:
                 for key, value in payload.get("analysis_keyword_scores", {}).items()
             },
             analysis_patch_used=bool(payload.get("analysis_patch_used", False)),
-            conversation_style=ConversationStyle(
-                payload.get("conversation_style", ConversationStyle.EXPLORE)
-            ),
-            thread_topic=payload.get("thread_topic"),
-            thread_stage=ThreadStage(payload.get("thread_stage", ThreadStage.WHAT)),
-            thread_turns=int(payload.get("thread_turns", 0)),
-            why_count=int(payload.get("why_count", 0)),
-            last_answer_depth=(
-                float(payload["last_answer_depth"])
-                if payload.get("last_answer_depth") is not None
-                else None
-            ),
-            shallow_streak=int(payload.get("shallow_streak", 0)),
-            reflected=bool(payload.get("reflected", False)),
-            reflection_values=list(payload.get("reflection_values", [])),
             move_history=list(payload.get("move_history", [])),
-            question_streak=int(payload.get("question_streak", 0)),
             energy=float(payload["energy"]) if payload.get("energy") is not None else None,
             peak_energy=float(payload.get("peak_energy", 0.0)),
             low_energy_streak=int(payload.get("low_energy_streak", 0)),
@@ -315,7 +199,6 @@ class ConversationState:
             best_topic_energy=float(payload.get("best_topic_energy", 0.0)),
             returned_topics=list(payload.get("returned_topics", [])),
             used_scenes=list(payload.get("used_scenes", [])),
-            reflect_back_count=int(payload.get("reflect_back_count", 0)),
             progress_floor=int(payload.get("progress_floor", 0)),
         )
 
@@ -330,6 +213,6 @@ class ReadinessResult:
 class GoalDecision:
     goal: ConversationGoal
     completion_reason: CompletionReason | None = None
-    # companion 대화에서만 쓴다. 이번 턴의 반응 방식과 건너갈 때 쓸 후보 화제.
+    # 이번 턴의 반응 방식과 그때 참고할 화제.
     move: ConversationMove | None = None
     scene: str | None = None

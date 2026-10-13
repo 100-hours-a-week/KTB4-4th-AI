@@ -9,7 +9,7 @@ from app.application.conversation_state_store import (
     ConversationStateStore,
     SessionLifetimeExceededError,
 )
-from app.domain.conversation.models import ConversationGoal, ConversationState, ConversationTurn
+from app.domain.conversation.models import ConversationState, ConversationTurn
 
 
 class FakeSessionStore:
@@ -41,7 +41,6 @@ def test_state_store_round_trips_redis_serializable_state() -> None:
     state = ConversationState(
         user_id=1,
         conversation_room_id=101,
-        last_goal=ConversationGoal.INTEREST,
         history=[ConversationTurn(role="assistant", content="안녕하세요", created_at=now)],
         analysis_interest_keywords=["캠핑"],
         analysis_keyword_scores={"캠핑": 0.9},

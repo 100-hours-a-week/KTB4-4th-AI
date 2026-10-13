@@ -1,24 +1,8 @@
 from datetime import UTC, datetime
 
-from app.application.conversation_prompts import build_reply_messages
-from app.domain.conversation.models import (
-    CompletionReason,
-    ConversationGoal,
-    ConversationState,
-    ConversationTurn,
-    CoverageStatus,
-    GoalArea,
-    SessionStatus,
-)
-from app.domain.conversation.policy import (
-    apply_goal_assessment,
-    conversation_progress,
-    decide_goal,
-    recommendation_readiness,
-    uncovered_taste_axes,
-)
+from app.domain.conversation.models import ConversationState, SessionStatus
+from app.domain.conversation.policy import conversation_progress, recommendation_readiness
 from app.domain.profile.models import (
-    AssessmentStatus,
     EvidenceType,
     IntentType,
     LinkRole,
@@ -76,156 +60,59 @@ def two_taste_axes() -> list[ProfileSignal]:
     ]
 
 
-def test_interest_is_first_goal_when_query_signals_are_missing() -> None:
-    decision = decide_goal(state(), "주말에는 뭘 할까요")
+def five_interests() -> list[ProfileSignal]:
+    return [
+        signal(TasteField.INTERESTS, "캠핑"),
+        signal(TasteField.HOBBIES, "핸드드립"),
+        signal(TasteField.WANTS, "가벼운 컵", confidence=0.5),
+        signal(TasteField.INTERESTS, "사진", confidence=0.5),
+        signal(TasteField.HOBBIES, "러닝", confidence=0.5),
+    ]
 
-    assert decision.goal == ConversationGoal.INTEREST
 
-
-def test_natural_language_exit_words_do_not_force_session_close() -> None:
+def test_ready_profile_does_not_require_dislikes() -> None:
     conversation = state()
-
-    assert decide_goal(conversation, "그만").goal == ConversationGoal.INTEREST
-    assert decide_goal(conversation, "요즘 수영을 그만뒀어요").goal == ConversationGoal.INTEREST
-
-
-def test_interest_switches_to_routine_after_two_unsuccessful_attempts() -> None:
-    conversation = state()
-    conversation.goal_attempts[ConversationGoal.INTEREST.value] = 2
-
-    decision = decide_goal(conversation, "잘 모르겠어요")
-
-    assert decision.goal == ConversationGoal.INTEREST_VIA_ROUTINE
-
-
-def test_ready_profile_wraps_before_eight_turns() -> None:
-    conversation = state()
-    conversation.profile.signals.extend(
-        [
-            signal(TasteField.INTERESTS, "캠핑"),
-            signal(TasteField.HOBBIES, "핸드드립"),
-            signal(TasteField.WANTS, "가벼운 컵"),
-            signal(TasteField.INTERESTS, "사진"),
-            signal(TasteField.HOBBIES, "러닝"),
-            *two_taste_axes(),
-        ]
-    )
-    conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
-    conversation.goal_coverage[GoalArea.EXCLUSION] = CoverageStatus.CONFIRMED_NONE
+    conversation.profile.signals.extend([*five_interests(), *two_taste_axes()])
 
     readiness = recommendation_readiness(conversation)
-    decision = decide_goal(conversation, "좋아요")
 
     assert readiness.sufficient is True
-    assert conversation.turn_count < 8
-    assert decision.goal == ConversationGoal.WRAP
-    assert decision.completion_reason == CompletionReason.SUFFICIENT
+    assert readiness.missing_signals == ()
 
 
-def test_exclusion_is_asked_early_when_five_query_signals_are_already_known() -> None:
+def test_one_interest_lists_every_missing_signal() -> None:
     conversation = state()
-    conversation.profile.signals.extend(
-        [
-            signal(TasteField.INTERESTS, "캠핑"),
-            signal(TasteField.HOBBIES, "핸드드립"),
-            signal(TasteField.WANTS, "가벼운 컵"),
-            signal(TasteField.INTERESTS, "사진"),
-            signal(TasteField.HOBBIES, "러닝"),
-            *two_taste_axes(),
-        ]
+    conversation.profile.signals.append(signal(TasteField.INTERESTS, "캠핑", confidence=0.5))
+
+    assert recommendation_readiness(conversation).missing_signals == (
+        "query_signals",
+        "high_confidence_query_signals",
+        "taste_axes",
+        "gear",
     )
 
-    decision = decide_goal(conversation, "사진도 좋아해요")
 
-    assert conversation.turn_count == 0
-    assert decision.goal == ConversationGoal.DISLIKE
-
-
-def test_empty_arrays_do_not_mean_goal_was_resolved() -> None:
+def test_readiness_is_recomputed_when_a_taste_is_replaced() -> None:
     conversation = state()
-    conversation.profile.signals.extend(
-        [
-            signal(TasteField.INTERESTS, "캠핑"),
-            signal(TasteField.HOBBIES, "핸드드립"),
-            signal(TasteField.WANTS, "가벼운 컵"),
-            signal(TasteField.INTERESTS, "사진"),
-            signal(TasteField.HOBBIES, "러닝"),
-        ]
-    )
-
-    readiness = recommendation_readiness(conversation)
-
-    assert readiness.sufficient is False
-    assert "gear" in readiness.missing_signals
-    assert "exclusion" in readiness.missing_signals
-
-
-def test_one_interest_does_not_complete_five_signal_interest_target() -> None:
-    conversation = state()
-    conversation.profile.signals.append(signal(TasteField.INTERESTS, "캠핑"))
-
-    apply_goal_assessment(
-        conversation,
-        ConversationGoal.INTEREST,
-        AssessmentStatus.FOUND,
-    )
-
-    assert conversation.goal_coverage[GoalArea.INTEREST] == CoverageStatus.UNRESOLVED
-    assert decide_goal(conversation, "좋아요").goal == ConversationGoal.INTEREST
-
-
-def test_confirmed_none_only_resolves_optional_gear_and_exclusion_goals() -> None:
-    conversation = state()
-
-    apply_goal_assessment(
-        conversation,
-        ConversationGoal.GEAR,
-        AssessmentStatus.CONFIRMED_NONE,
-    )
-    apply_goal_assessment(
-        conversation,
-        ConversationGoal.DISLIKE,
-        AssessmentStatus.CONFIRMED_NONE,
-    )
-    apply_goal_assessment(
-        conversation,
-        ConversationGoal.INTEREST,
-        AssessmentStatus.CONFIRMED_NONE,
-    )
-
-    assert conversation.goal_coverage[GoalArea.GEAR] == CoverageStatus.CONFIRMED_NONE
-    assert conversation.goal_coverage[GoalArea.EXCLUSION] == CoverageStatus.CONFIRMED_NONE
-    assert conversation.goal_coverage[GoalArea.INTEREST] == CoverageStatus.UNRESOLVED
-
-
-def test_readiness_is_recomputed_when_last_active_signal_is_removed() -> None:
-    conversation = state()
-    conversation.profile.signals.extend(
-        [
-            signal(TasteField.INTERESTS, "캠핑"),
-            signal(TasteField.HOBBIES, "핸드드립"),
-            signal(TasteField.WANTS, "가벼운 컵"),
-            signal(TasteField.INTERESTS, "사진"),
-            signal(TasteField.HOBBIES, "러닝"),
-            *two_taste_axes(),
-        ]
-    )
-    exclusion = signal(TasteField.DISLIKES, "강한 향")
-    exclusion.link_role = LinkRole.FILTER
-    conversation.profile.signals.append(exclusion)
-    conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
-
+    tastes = two_taste_axes()
+    conversation.profile.signals.extend([*five_interests(), *tastes])
     assert recommendation_readiness(conversation).sufficient is True
 
-    exclusion.status = SignalStatus.SUPERSEDED
+    tastes[1].status = SignalStatus.SUPERSEDED
     readiness = recommendation_readiness(conversation)
 
     assert readiness.sufficient is False
-    assert "exclusion" in readiness.missing_signals
-    assert conversation.goal_coverage[GoalArea.EXCLUSION] == CoverageStatus.PENDING
+    assert readiness.missing_signals == ("taste_axes",)
 
 
-def test_progress_uses_extracted_signals_and_resolved_goals() -> None:
+def test_owned_item_alone_counts_as_gear() -> None:
+    conversation = state()
+    conversation.profile.signals.append(signal(TasteField.OWNED, "캠핑 의자"))
+
+    assert "gear" not in recommendation_readiness(conversation).missing_signals
+
+
+def test_progress_scales_filled_signals_to_100_without_dislikes() -> None:
     conversation = state()
     conversation.profile.signals.extend(
         [
@@ -233,10 +120,22 @@ def test_progress_uses_extracted_signals_and_resolved_goals() -> None:
             signal(TasteField.HOBBIES, "핸드드립", confidence=0.5),
         ]
     )
-    conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
+    # (관심사 2/5 * 25 + 확신 높은 관심사 1/2 * 25) / 85 * 100
+    assert conversation_progress(conversation) == 26
 
-    # 관심사 2/5 * 25 + 확신 높은 관심사 1/2 * 25 + 취향 축 0 + 소지품 확인 15
-    assert conversation_progress(conversation) == 38
+    conversation.profile.signals.append(signal(TasteField.OWNED, "캠핑 의자"))
+    # 소지품 15 추가
+    assert conversation_progress(conversation) == 44
+
+    conversation.profile.signals.extend([*five_interests(), *two_taste_axes()])
+    assert conversation_progress(conversation) == 100
+
+
+def test_progress_does_not_go_down() -> None:
+    conversation = state()
+    conversation.progress_floor = 60
+
+    assert conversation_progress(conversation) == 60
 
 
 def test_progress_is_complete_when_input_is_locked_or_under_review() -> None:
@@ -246,100 +145,3 @@ def test_progress_is_complete_when_input_is_locked_or_under_review() -> None:
 
     conversation.status = SessionStatus.REVIEW
     assert conversation_progress(conversation) == 100
-
-
-def test_goals_running_out_below_five_tastes_keeps_exploring_instead_of_wrapping() -> None:
-    conversation = state()
-    conversation.turn_count = 10
-    conversation.profile.signals.extend(
-        [
-            signal(TasteField.INTERESTS, "캠핑"),
-            signal(TasteField.HOBBIES, "핸드드립"),
-            *two_taste_axes(),
-        ]
-    )
-    for goal in (
-        ConversationGoal.INTEREST,
-        ConversationGoal.INTEREST_VIA_ROUTINE,
-        ConversationGoal.TASTE,
-        ConversationGoal.DISLIKE,
-        ConversationGoal.GEAR,
-        ConversationGoal.DEEPEN,
-    ):
-        conversation.goal_attempts[goal.value] = 3
-    conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
-    conversation.goal_coverage[GoalArea.EXCLUSION] = CoverageStatus.CONFIRMED_NONE
-    conversation.last_goal = ConversationGoal.DEEPEN
-
-    decision = decide_goal(conversation, "캠핑 얘기 좀 더 할래요")
-
-    assert decision.goal in {ConversationGoal.INTEREST, ConversationGoal.INTEREST_VIA_ROUTINE}
-    assert decision.completion_reason is None
-
-
-def test_short_but_not_tiny_answers_are_not_treated_as_disengagement() -> None:
-    conversation = state()
-    for text in ("주말에 친구랑 캠핑 갔다 왔어", "고기 구워 먹었어", "재밌었어"):
-        conversation.history.append(
-            ConversationTurn(role="user", content=text, created_at=datetime(2026, 9, 18))
-        )
-
-    assert decide_goal(conversation, "재밌었어").goal != ConversationGoal.WRAP
-
-
-def test_missing_exclusion_is_asked_again_after_default_order_runs_out() -> None:
-    conversation = state()
-    conversation.turn_count = 12
-    conversation.profile.signals.extend(
-        [
-            signal(TasteField.INTERESTS, "캠핑"),
-            signal(TasteField.HOBBIES, "핸드드립"),
-            signal(TasteField.WANTS, "가벼운 컵"),
-            signal(TasteField.INTERESTS, "사진"),
-            signal(TasteField.HOBBIES, "러닝"),
-            *two_taste_axes(),
-        ]
-    )
-    for goal in (ConversationGoal.DISLIKE, ConversationGoal.GEAR, ConversationGoal.DEEPEN):
-        conversation.goal_attempts[goal.value] = 3
-    conversation.goal_coverage[GoalArea.GEAR] = CoverageStatus.CONFIRMED_NONE
-    conversation.goal_coverage[GoalArea.EXCLUSION] = CoverageStatus.EXHAUSTED
-
-    assert decide_goal(conversation, "음").goal == ConversationGoal.DISLIKE
-
-    conversation.goal_attempts[ConversationGoal.DISLIKE.value] = 5
-    decision = decide_goal(conversation, "음")
-    assert decision.goal == ConversationGoal.WRAP
-    assert decision.completion_reason == CompletionReason.MAX_CYCLES
-
-
-def test_taste_is_asked_after_interests_until_two_axes_are_found() -> None:
-    conversation = state()
-    conversation.profile.signals.append(signal(TasteField.HOBBIES, "캠핑"))
-    conversation.goal_attempts[ConversationGoal.INTEREST.value] = 2
-    conversation.goal_attempts[ConversationGoal.INTEREST_VIA_ROUTINE.value] = 1
-
-    assert decide_goal(conversation, "캠핑 좋아요").goal == ConversationGoal.TASTE
-    assert "taste_axes" in recommendation_readiness(conversation).missing_signals
-
-    conversation.profile.signals.extend(two_taste_axes())
-
-    assert "taste_axes" not in recommendation_readiness(conversation).missing_signals
-    assert decide_goal(conversation, "캠핑 좋아요").goal != ConversationGoal.TASTE
-
-
-def test_taste_prompt_hints_only_axes_not_yet_covered() -> None:
-    conversation = state()
-    conversation.profile.signals.append(signal(TasteField.HOBBIES, "캠핑"))
-    conversation.profile.signals.append(taste("혼자 가는 캠핑", ("취향", "사회", "인원")))
-
-    uncovered = [axis.key for axis in uncovered_taste_axes(conversation)]
-    messages = build_reply_messages(conversation, ConversationGoal.TASTE, "캠핑 좋아요")
-    direction = messages[-2]["content"]
-
-    assert "social.size" not in uncovered
-    assert "visual.color" in uncovered
-    assert "혼자 하는지 여럿이 하는지" not in direction
-    # 누구와 하는지는 이미 나왔으니, 다음으로 묻기 쉬운 장소 분위기가 앞에 온다.
-    assert uncovered[0] == "place.crowd"
-    assert "한적한 곳을 찾는지 북적이는 곳이 좋은지" in direction

@@ -14,13 +14,14 @@ from app.application.conversation_service import ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.recommendation_engine import RecommendationEngine
 from app.application.recommendation_service import V1RecommendationService, recommendation_inputs
-from app.domain.conversation.models import ConversationStyle, SessionStatus
+from app.domain.conversation.models import SessionStatus
 from app.domain.conversation.policy import recommendation_readiness
 from app.domain.recommendation import build_search_queries
 from app.infrastructure.embedding import OpenAICompatibleEmbedder
 from app.infrastructure.model_gateway import OpenAICompatibleModelGateway, SystemOneJudgmentGateway
 from app.infrastructure.persistence import InMemorySessionStore
 from benchmarks.persona_dialogue import PersonaReply, persona_messages
+from benchmarks.query_review import review_queries
 from benchmarks.runner import percentile, summarize
 
 
@@ -281,7 +282,6 @@ def build_chat(config, settings, client, calls, session_backend=None):
         judgment_gateway=judgment,
         judgment_model=config["judgment"]["model"],
         judgment_timeout_seconds=config["judgment"]["timeout_seconds"],
-        conversation_style=ConversationStyle(config["conversation_style"]),
     )
     states = ConversationStateStore(
         session_backend or InMemorySessionStore(),
@@ -335,6 +335,10 @@ async def execute_needu(store, run, stop=None, *, settings=None, client=None, ca
 
     def record(output, snapshot, ok=True, error=None):
         nonlocal current
+        if "queries" in snapshot and run["manifest"].get("persona"):
+            snapshot["query_review"] = review_queries(
+                run["manifest"]["persona"], snapshot["queries"], snapshot.get("exclusions", [])
+            )
         sample = jsonable_encoder(
             {
                 **current,
@@ -357,7 +361,7 @@ async def execute_needu(store, run, stop=None, *, settings=None, client=None, ca
         begin("시작 인사", "", "opening", 0)
         opening = await chat.create_session(user_id=1, conversation_room_id=1)
         session = opening.state
-        record(opening.greeting, {"conversation_style": config["conversation_style"]})
+        record(opening.greeting, {})
         for index in range(1, planned_turns + 1):
             if session.status != SessionStatus.ACTIVE:
                 stop_reason = f"서비스 종료 정책: {session.status.value}"
@@ -385,7 +389,6 @@ async def execute_needu(store, run, stop=None, *, settings=None, client=None, ca
             session = result.state
             snapshot = profile_snapshot(session)
             snapshot.update(
-                conversation_style=session.conversation_style.value,
                 extraction_failed=result.extraction_failed,
                 session_status=session.status.value,
                 readiness=jsonable_encoder(result.readiness),
@@ -455,6 +458,14 @@ async def execute_needu(store, run, stop=None, *, settings=None, client=None, ca
         summary = summarize(samples, time.perf_counter() - started, run["spec"]["requests"])
         turn_samples = [s for s in samples if s["stage"] == "turn"]
         summary.update(
+            query_review=next(
+                (
+                    s["pipeline"]["query_review"]
+                    for s in reversed(samples)
+                    if "query_review" in s["pipeline"]
+                ),
+                None,
+            ),
             planned_turns=planned_turns,
             dialogue_mode="simulated" if simulated else "fixed",
             executed_turns=len(turn_samples),
