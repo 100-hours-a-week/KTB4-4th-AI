@@ -1,0 +1,169 @@
+name: AI ECS Deploy
+
+on:
+  workflow_call:
+    inputs:
+      deploy_env:
+        description: Deployment environment
+        required: true
+        type: string
+
+      image_sha:
+        description: Git SHA of Docker image
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: need-u/ai
+  ECS_CONTAINER_NAME: ai
+
+jobs:
+  deploy:
+    name: Deploy AI to ECS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    environment: ${{ inputs.deploy_env }}
+
+    concurrency:
+      group: ai-ecs-${{ inputs.deploy_env }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Validate Inputs
+        env:
+          DEPLOY_ENV: ${{ inputs.deploy_env }}
+          IMAGE_SHA: ${{ inputs.image_sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$DEPLOY_ENV" =~ ^(dev|staging|prod)$ ]]; then
+            echo "Unsupported environment: $DEPLOY_ENV"
+            exit 1
+          fi
+
+          if [[ ! "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid image SHA"
+            exit 1
+          fi
+
+          echo "DEPLOY_ENV=$DEPLOY_ENV" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=v2-$IMAGE_SHA" >> "$GITHUB_ENV"
+
+          echo "ECS_CLUSTER_NAME=needu-$DEPLOY_ENV-cluster" >> "$GITHUB_ENV"
+          echo "ECS_SERVICE_NAME=needu-$DEPLOY_ENV-ai" >> "$GITHUB_ENV"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CD_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve ECR Image URI
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID=$(aws sts get-caller-identity \
+            --query Account \
+            --output text)
+
+          IMAGE_URI="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG"
+
+          echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
+
+      - name: Load Base Task Definition
+        run: |
+          set -euo pipefail
+
+          PARAMETER_NAME="/needu/v2/$DEPLOY_ENV/ecs/ai/base-task-definition-arn"
+
+          BASE_TASK_DEFINITION_ARN=$(aws ssm get-parameter \
+            --name "$PARAMETER_NAME" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          if [[ -z "$BASE_TASK_DEFINITION_ARN" || "$BASE_TASK_DEFINITION_ARN" == "None" ]]; then
+            echo "Base Task Definition ARN not found"
+            exit 1
+          fi
+
+          aws ecs describe-task-definition \
+            --task-definition "$BASE_TASK_DEFINITION_ARN" \
+            --query 'taskDefinition' \
+            --output json > task-definition.json
+
+      - name: Prepare Task Definition
+        run: |
+          set -euo pipefail
+
+          MATCH_COUNT=$(jq \
+            --arg NAME "$ECS_CONTAINER_NAME" \
+            '[.containerDefinitions[] | select(.name == $NAME)] | length' \
+            task-definition.json)
+
+          if [[ "$MATCH_COUNT" -ne 1 ]]; then
+            echo "Container not found: $ECS_CONTAINER_NAME"
+            exit 1
+          fi
+
+          jq \
+            --arg IMAGE "$IMAGE_URI" \
+            --arg NAME "$ECS_CONTAINER_NAME" \
+            '
+            .containerDefinitions |= map(
+              if .name == $NAME
+              then .image = $IMAGE
+              else .
+              end
+            )
+            | del(
+                .taskDefinitionArn,
+                .revision,
+                .status,
+                .requiresAttributes,
+                .compatibilities,
+                .registeredAt,
+                .registeredBy,
+                .deregisteredAt
+              )
+            ' task-definition.json > new-task-definition.json
+
+      - name: Register Task Definition
+        run: |
+          set -euo pipefail
+
+          NEW_TASK_DEFINITION_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          echo "NEW_TASK_DEFINITION_ARN=$NEW_TASK_DEFINITION_ARN" >> "$GITHUB_ENV"
+
+          echo "Registered: $NEW_TASK_DEFINITION_ARN"
+
+      - name: Update ECS Service
+        run: |
+          set -euo pipefail
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --service "$ECS_SERVICE_NAME" \
+            --task-definition "$NEW_TASK_DEFINITION_ARN"
+
+      - name: Wait for Deployment
+        run: |
+          set -euo pipefail
+
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER_NAME" \
+            --services "$ECS_SERVICE_NAME"
+
+          echo "Deployment completed successfully"

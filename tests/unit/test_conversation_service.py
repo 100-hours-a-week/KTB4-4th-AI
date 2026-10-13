@@ -567,13 +567,14 @@ def test_summary_includes_stored_tastes_beyond_exposure_limit_grouped_by_axis() 
         "혼자 가는 캠핑",
         "혼자 보는 영화",
     ]
+    assert content["tastes"][0]["items"][0]["target"] == "캠핑"
+    assert not any("context" in item for group in content["tastes"] for item in group["items"])
     assert content["tastes"][1] == {
         "axis": "장소/밀집도",
         "items": [
             {
                 "kind": "좋아하는 방식과 스타일",
                 "value": "사람 없는 계곡",
-                "context": "사람 없는 계곡",
             }
         ],
     }
