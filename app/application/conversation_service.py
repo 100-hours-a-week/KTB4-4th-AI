@@ -40,29 +40,20 @@ from app.domain.conversation.models import (
     ConversationGoal,
     ConversationMove,
     ConversationState,
-    ConversationStyle,
     ConversationTurn,
     GoalDecision,
     ReadinessResult,
     SessionStatus,
 )
 from app.domain.conversation.policy import (
-    MAX_TURNS,
-    advance_thread,
-    apply_goal_assessment,
     conversation_progress,
     decide_goal,
-    fields_for_goal,
     known_query_values,
     recommendation_readiness,
     record_companion_turn,
-    record_goal_attempt,
-    record_interest_progress,
-    reflection_clues,
 )
 from app.domain.profile.merger import MergeResult, ProfileMerger, normalize_text
 from app.domain.profile.models import (
-    AssessmentStatus,
     DeferralReason,
     DropRef,
     EvidenceType,
@@ -152,7 +143,6 @@ class ExtractionDeltaPayload(_ExtractionModel):
     items: list[ExtractedItemPayload] = Field(default_factory=list, max_length=MAX_EXTRACTED_ITEMS)
     axes: list[AxisValue] = Field(default_factory=list, max_length=3)
     drop: list[DropRefPayload] = Field(default_factory=list, max_length=3)
-    none_answer: bool = False
 
 
 def _repair_item(raw: Mapping[str, object]) -> dict[str, object]:
@@ -231,7 +221,6 @@ def parse_extraction(raw: object) -> tuple[ExtractionDelta, list[str]]:
         items=tuple(items),
         axes=tuple(axes[:3]),
         drop=tuple(drops[:3]),
-        none_answer=raw.get("noneAnswer") is True,
     )
     return delta, dropped
 
@@ -270,7 +259,6 @@ class ConversationService:
         judgment_gateway: JudgmentGateway | None = None,
         judgment_model: str | None = None,
         judgment_timeout_seconds: float = 10.0,
-        conversation_style: ConversationStyle = ConversationStyle.EXPLORE,
     ) -> None:
         self._model_gateway = model_gateway
         self._extraction_model = extraction_model
@@ -280,7 +268,6 @@ class ConversationService:
         self._judgment_gateway = judgment_gateway
         self._judgment_model = judgment_model
         self._judgment_timeout_seconds = judgment_timeout_seconds
-        self._conversation_style = conversation_style
 
     def prepare_session(
         self,
@@ -299,14 +286,8 @@ class ConversationService:
             conversation_room_id=conversation_room_id,
             created_at=resolved_now,
             last_active_at=resolved_now,
-            conversation_style=self._conversation_style,
         )
-        return PreparedSession(
-            state=state,
-            messages=tuple(
-                build_opening_messages(now=resolved_now, style=self._conversation_style)
-            ),
-        )
+        return PreparedSession(state=state, messages=tuple(build_opening_messages()))
 
     def record_opening(
         self,
@@ -315,9 +296,7 @@ class ConversationService:
         *,
         now: datetime | None = None,
     ) -> str:
-        greeting = self.guard_reply(
-            raw_greeting, ConversationGoal.OPENING, style=state.conversation_style
-        )
+        greeting = self.guard_reply(raw_greeting, ConversationGoal.OPENING)
         resolved_now = now or utc_now()
         state.history.append(
             ConversationTurn(role="assistant", content=greeting, created_at=resolved_now)
@@ -338,19 +317,8 @@ class ConversationService:
         )
         return PreparedTurn(decision=decision, messages=tuple(messages))
 
-    def guard_reply(
-        self,
-        reply: str,
-        goal: ConversationGoal,
-        *,
-        style: ConversationStyle = ConversationStyle.EXPLORE,
-    ) -> str:
-        return sanitize_response(
-            reply,
-            goal,
-            concise=style == ConversationStyle.REFLECTIVE,
-            companion=style == ConversationStyle.COMPANION,
-        )
+    def guard_reply(self, reply: str, goal: ConversationGoal) -> str:
+        return sanitize_response(reply, goal)
 
     async def extract(
         self,
@@ -530,10 +498,7 @@ class ConversationService:
         resolved_completion_reason = completion_reason
         if goal == ConversationGoal.WRAP and resolved_completion_reason is None:
             resolved_completion_reason = decide_goal(state, utterance).completion_reason
-        reply = self.guard_reply(raw_reply, goal, style=state.conversation_style)
-        # 되비추기에 쓴 단서. 이번 턴 병합 전 상태로 프롬프트와 같은 것을 고른다.
-        reflecting = goal == ConversationGoal.REFLECT or move == ConversationMove.REFLECT_BACK
-        clues = reflection_clues(state) if reflecting else []
+        reply = self.guard_reply(raw_reply, goal)
         if extraction is None:
             extraction = await self._extract(state, utterance)
         delta, extraction_failed = extraction
@@ -547,33 +512,21 @@ class ConversationService:
             context_utterances=state.user_turns()[-EXTRACTION_CONTEXT_USER_TURNS:],
         )
         state.profile = merge_result.profile
-        record_interest_progress(state, known_values, merge_result.accepted)
-        record_goal_attempt(state, goal)
-        apply_goal_assessment(state, goal, _assess_goal(goal, delta, merge_result))
         new_interests = [
             signal.value
             for signal in merge_result.accepted
             if signal.link_role == LinkRole.QUERY
             and normalize_text(signal.value) not in known_values
         ]
-        advance_thread(
-            state,
-            goal,
-            new_interests=new_interests,
-            answer_depth=delta.answer_depth,
-        )
         # history에 이번 발화를 넣기 전에 기록해야 평균 길이와 비교된다.
         record_companion_turn(
             state,
             utterance=utterance,
-            reply=reply,
             move=move,
             scene=scene,
             answer_depth=delta.answer_depth,
             new_interests=new_interests,
         )
-        if reflecting:
-            state.reflection_values = [signal.value for signal in clues]
 
         state.history.append(
             ConversationTurn(role="user", content=utterance, created_at=resolved_now)
@@ -599,12 +552,7 @@ class ConversationService:
             state.history[-1] = ConversationTurn(
                 role="assistant", content=reply, created_at=resolved_now
             )
-        # 되비추기 질문을 방금 했으면 답을 들어야 하므로 이번 턴에는 잠그지 않는다.
-        # 최대 턴에 도달했으면 더 받을 수 없으므로 되비추기 차례였어도 잠근다.
-        reached_max_turns = state.turn_count >= MAX_TURNS
-        if next_decision.goal == ConversationGoal.WRAP and (
-            goal != ConversationGoal.REFLECT or reached_max_turns
-        ):
+        if next_decision.goal == ConversationGoal.WRAP:
             state.status = SessionStatus.INPUT_LOCKED
             state.completion_reason = next_decision.completion_reason
             # 종료가 판정되면 최대 턴에 도달했어도 방금 만든 질문 대신 종료 멘트를 보낸다.
@@ -614,8 +562,7 @@ class ConversationService:
                     role="assistant", content=reply, created_at=resolved_now
                 )
 
-        if state.conversation_style == ConversationStyle.COMPANION:
-            state.progress_floor = conversation_progress(state)
+        state.progress_floor = conversation_progress(state)
 
         return CompletedTurn(
             reply=reply,
@@ -625,16 +572,3 @@ class ConversationService:
             next_decision=next_decision,
             extraction_failed=extraction_failed,
         )
-
-
-def _assess_goal(
-    goal: ConversationGoal,
-    delta: ExtractionDelta,
-    merge_result: MergeResult,
-) -> AssessmentStatus:
-    """이번 턴에 목표 영역의 신호가 들어왔는지로 목표 달성 여부를 판단한다."""
-    if any(signal.field in fields_for_goal(goal) for signal in merge_result.accepted):
-        return AssessmentStatus.FOUND
-    if delta.none_answer:
-        return AssessmentStatus.CONFIRMED_NONE
-    return AssessmentStatus.UNRESOLVED

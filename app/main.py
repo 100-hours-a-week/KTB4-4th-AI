@@ -24,7 +24,6 @@ from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
-from app.domain.conversation.models import ConversationStyle
 from app.infrastructure.embedding import OpenAICompatibleEmbedder
 from app.infrastructure.model_gateway import (
     OpenAICompatibleModelGateway,
@@ -125,7 +124,6 @@ def create_app(
             judgment_gateway=resolved_judgment_gateway,
             judgment_model=resolved_settings.judgment_model_name,
             judgment_timeout_seconds=resolved_settings.judgment_model_timeout_seconds,
-            conversation_style=ConversationStyle(resolved_settings.conversation_style),
         )
         application.state.conversation_state_store = state_store
         application.state.chat_use_cases = ChatUseCases(

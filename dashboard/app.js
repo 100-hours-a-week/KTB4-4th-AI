@@ -125,7 +125,7 @@ function connectionRows() {
 function runTable(runs, withCheck = false) {
   if (!runs.length)
     return `<div class="empty"><span class="empty-icon">◎</span><strong>아직 실행한 실험이 없어요</strong>모델을 연결하고 첫 테스트를 시작해보세요.</div>`;
-  return `<div class="table-wrap"><table><thead><tr>${withCheck ? "<th>비교</th>" : ""}<th>실험 / 모델</th><th>상태</th><th>완료 / 계획</th><th>지연 p95</th><th>실행 시각</th></tr></thead><tbody>${runs.map((r) => `<tr>${withCheck ? `<td><input type="checkbox" data-compare="${e(r.id)}" aria-label="${e(r.connection.name)} ${date(r.created_at)} ${r.id.slice(0, 8)} 비교 선택" ${state.compare.has(r.id) ? "checked" : ""}></td>` : ""}<td><button class="link" data-action="detail" data-id="${e(r.id)}">${e(modeLabel(r.spec.mode))}</button><small>${e(r.connection.model)} · ${e(r.connection.environment)}</small>${r.manifest.pipeline ? `<small>${e(r.manifest.pipeline.conversation_style)} · ${e(r.manifest.pipeline.recommendation_stage)} · ${r.id.slice(0, 8)}</small>` : ""}</td><td>${pill(r.status)}</td><td>${r.completed ?? r.samples?.length ?? 0} / ${r.spec.requests}</td><td>${ms(r.summary?.latency_p95_ms)}</td><td>${date(r.created_at)}</td></tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr>${withCheck ? "<th>비교</th>" : ""}<th>실험 / 모델</th><th>상태</th><th>완료 / 계획</th><th>지연 p95</th><th>실행 시각</th></tr></thead><tbody>${runs.map((r) => `<tr>${withCheck ? `<td><input type="checkbox" data-compare="${e(r.id)}" aria-label="${e(r.connection.name)} ${date(r.created_at)} ${r.id.slice(0, 8)} 비교 선택" ${state.compare.has(r.id) ? "checked" : ""}></td>` : ""}<td><button class="link" data-action="detail" data-id="${e(r.id)}">${e(modeLabel(r.spec.mode))}</button><small>${e(r.connection.model)} · ${e(r.connection.environment)}</small>${r.manifest.pipeline ? `<small>${e(r.manifest.pipeline.recommendation_stage)} · ${r.id.slice(0, 8)}</small>` : ""}</td><td>${pill(r.status)}</td><td>${r.completed ?? r.samples?.length ?? 0} / ${r.spec.requests}</td><td>${ms(r.summary?.latency_p95_ms)}</td><td>${date(r.created_at)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function runStatusChart() {
@@ -249,17 +249,7 @@ function chatPage() {
   const draft = state.chatDraft;
   const persona = session?.persona || state.personas.find((p) => p.id === draft.persona_id);
   const disabled = state.chatBusy ? "disabled" : "";
-  const setup = `<section class="card"><h2>새 대화의 모델 설정</h2><p class="persona-help">등록한 Ollama·LM Studio 연결을 응답·추출에 각각 선택하세요. 세션 시작 시 설정을 고정합니다.</p><form id="chat-create-form">${field("대화 이름", "title", draft.title || "로컬 모델 대화 테스트", "text", 'maxlength="80" required')}${selectField(
-    "대화 스타일",
-    "conversation_style",
-    [
-      ["environment", `환경변수 기본 · ${state.service?.conversation_style || "미확인"}`],
-      ["companion", "companion · 사람을 알아가는 대화"],
-      ["reflective", "reflective"],
-      ["explore", "explore"],
-    ],
-    draft.conversation_style || "environment",
-  )}${selectField("응답·요약 모델", "response_connection_id", roleOptions("response"), draft.response_connection_id || "")}${selectField("취향 추출 모델", "extraction_connection_id", roleOptions("extraction"), draft.extraction_connection_id || "")}${selectField(
+  const setup = `<section class="card"><h2>새 대화의 모델 설정</h2><p class="persona-help">등록한 Ollama·LM Studio 연결을 응답·추출에 각각 선택하세요. 세션 시작 시 설정을 고정합니다.</p><form id="chat-create-form">${field("대화 이름", "title", draft.title || "로컬 모델 대화 테스트", "text", 'maxlength="80" required')}${selectField("응답·요약 모델", "response_connection_id", roleOptions("response"), draft.response_connection_id || "")}${selectField("취향 추출 모델", "extraction_connection_id", roleOptions("extraction"), draft.extraction_connection_id || "")}${selectField(
     "판단 모델",
     "judgment_mode",
     [
@@ -439,14 +429,13 @@ function roleOptions(role) {
   ];
 }
 
-function servicePreview(style, judgment) {
+function servicePreview(judgment) {
   if (!state.service)
     return `<div class="note error">${e(state.serviceError || "서비스 설정을 읽지 못했습니다.")}</div>`;
-  const selected = style === "environment" ? state.service.conversation_style : style;
-  const messages = state.service.styles.find((s) => s.id === selected)?.opening_messages || [];
+  const messages = state.service.opening_messages || [];
   const judged = judgment !== "disabled" && !!state.service.judgment.base_url;
   const extraction = state.service.extraction_prompts[judged ? "judgment" : "direct"];
-  return `<div class="note">${e(state.service.source)}<br>CONVERSATION_STYLE=${e(state.service.conversation_style)} · 이번 선택 ${e(selected)}<br>취향 추출 경로: ${judged ? "후보 추출 → System One 판단" : "직접 구조화 추출"}</div><details class="sample"><summary>실제 대화 시스템 프롬프트 · ${e(selected)}</summary><div class="sample-body"><pre>${e(
+  return `<div class="note">${e(state.service.source)}<br>취향 추출 경로: ${judged ? "후보 추출 → System One 판단" : "직접 구조화 추출"}</div><details class="sample"><summary>실제 대화 시스템 프롬프트</summary><div class="sample-body"><pre>${e(
     messages
       .filter((m) => m.role === "system")
       .map((m) => m.content)
@@ -456,7 +445,6 @@ function servicePreview(style, judgment) {
 
 function needuPage() {
   const draft = state.draft || {};
-  const style = draft.conversation_style || "environment";
   const judgment = draft.judgment_mode || "environment";
   const simulated = draft.dialogue_mode === "simulated";
   return (
@@ -492,18 +480,6 @@ function needuPage() {
       "persona_id",
       [["", "페르소나 선택"], ...state.personas.map((p) => [p.id, `${p.name} · ${p.tag}`])],
       draft.persona_id || "",
-    ) +
-    selectField(
-      "대화 시스템 프롬프트",
-      "conversation_style",
-      [
-        ["environment", `환경변수 기본 · ${state.service?.conversation_style || "미확인"}`],
-        ["companion", "companion · 사람을 알아가는 대화"],
-        ["reflective", "reflective · 되비추기형"],
-        ["explore", "explore · 탐색형"],
-      ],
-      style,
-      "기본 companion은 경험·가치관·관계·미래 계획까지 대화합니다. 다른 스타일은 비교용으로 선택할 수 있습니다.",
     ) +
     selectField(
       "응답·요약 모델",
@@ -570,7 +546,7 @@ function needuPage() {
       "text",
       'maxlength="1000" placeholder="비교 목적·페르소나·기대 결과"',
     ) +
-    `<div class="note" id="run-budget"></div><div class="actions"><button type="submit" class="btn primary">니쥬 파이프라인 실행 ↗</button><span class="muted subtitle">${state.overview.worker.online ? "워커 준비됨" : "워커 시작 필요"}</span></div><small class="muted">격리된 테스트 세션을 사용하며 .env와 운영 세션을 수정하지 않습니다.</small></form></section><div><section class="card"><div class="card-head"><h2>프롬프트와 환경 설정</h2><span class="pill">SERVICE SOURCE</span></div><div id="service-preview">${servicePreview(style, judgment)}</div></section><section class="card prose"><h2>대화와 추출의 역할</h2><p>companion은 취미나 퇴근 후 루틴에 한정하지 않고 경험·가치관·관계·선택의 이유·미래 계획을 따라갑니다. 취향이 나오지 않아도 화제를 강제로 바꾸거나 추천 항목을 채우려 묻지 않습니다.</p><p>대화 이력은 넓게 이어가고, 추출기는 현재 스키마에 맞는 근거 있는 취향·관심사만 별도로 읽습니다. 모든 가치관과 계획이 프로필 필드로 저장되는 것은 아닙니다.</p></section><section class="card prose"><h2>실행 후 확인할 결과</h2><p>각 턴의 AI 답변, 실제 모델 요청 메시지·추출 스키마와 응답, 프로필 병합 결과, 검색 쿼리 및 제외·선호 문장을 확인합니다.</p><p>검색 쿼리는 서비스의 규칙 기반 생성 로직을 그대로 사용합니다. 실제 임베딩·상품 추천을 선택하면 해당 외부 모델과 DB도 호출합니다.</p><p>대화·프로필·검색 쿼리의 정답 평가는 이 실험에 포함되지 않습니다. 모델 품질은 출력과 추출 근거를 검토하세요.</p></section>${baselineGuide()}</div></div>`
+    `<div class="note" id="run-budget"></div><div class="actions"><button type="submit" class="btn primary">니쥬 파이프라인 실행 ↗</button><span class="muted subtitle">${state.overview.worker.online ? "워커 준비됨" : "워커 시작 필요"}</span></div><small class="muted">격리된 테스트 세션을 사용하며 .env와 운영 세션을 수정하지 않습니다.</small></form></section><div><section class="card"><div class="card-head"><h2>프롬프트와 환경 설정</h2><span class="pill">SERVICE SOURCE</span></div><div id="service-preview">${servicePreview(judgment)}</div></section><section class="card prose"><h2>대화와 추출의 역할</h2><p>니쥬 대화는 취미나 퇴근 후 루틴에 한정하지 않고 경험·가치관·관계·선택의 이유·미래 계획을 따라갑니다. 취향이 나오지 않아도 화제를 강제로 바꾸거나 추천 항목을 채우려 묻지 않습니다.</p><p>대화 이력은 넓게 이어가고, 추출기는 현재 스키마에 맞는 근거 있는 취향·관심사만 별도로 읽습니다. 모든 가치관과 계획이 프로필 필드로 저장되는 것은 아닙니다.</p></section><section class="card prose"><h2>실행 후 확인할 결과</h2><p>각 턴의 AI 답변, 실제 모델 요청 메시지·추출 스키마와 응답, 프로필 병합 결과, 검색 쿼리 및 제외·선호 문장을 확인합니다.</p><p>검색 쿼리는 서비스의 규칙 기반 생성 로직을 그대로 사용합니다. 실제 임베딩·상품 추천을 선택하면 해당 외부 모델과 DB도 호출합니다.</p><p>대화·프로필·검색 쿼리의 정답 평가는 이 실험에 포함되지 않습니다. 모델 품질은 출력과 추출 근거를 검토하세요.</p></section>${baselineGuide()}</div></div>`
   );
 }
 
@@ -657,7 +633,6 @@ function comparePage() {
     "concurrency",
     "timeout_seconds",
     "duration_seconds",
-    "conversation_style",
     "response_connection_id",
     "extraction_connection_id",
     "judgment_mode",
@@ -682,7 +657,6 @@ function comparePage() {
           ? `서비스 토큰 상한: 응답 ${r.manifest.pipeline.response.max_tokens} / 추출 ${r.manifest.pipeline.extraction.max_tokens} · ${r.spec.requests}단계`
           : `온도 ${r.spec.temperature} · 최대 ${r.spec.max_tokens}토큰 · ${r.spec.requests}요청`,
     ],
-    ["대화 스타일", (r) => r.manifest.pipeline?.conversation_style || "해당 없음"],
     [
       "사용자 대화 방식",
       (r) =>
@@ -804,9 +778,9 @@ function updateBudget() {
     $("#run-budget").textContent =
       `${data.get("dialogue_mode") === "simulated" ? `최대 ${data.get("max_turns")}턴 Gemini 자동 대화 (${state.service?.persona?.model || "미설정"})` : `${turns}개 고정 사용자 턴`} + 시작 인사·최종 분석. 응답: ${roleModel("response")} / 추출: ${roleModel("extraction")}. 외부 모델 호출은 사용량에 따라 과금될 수 있습니다.`;
     const preview = $("#service-preview");
-    const key = `${data.get("conversation_style")}:${data.get("judgment_mode")}`;
+    const key = data.get("judgment_mode");
     if (preview.dataset.selection !== key) {
-      preview.innerHTML = servicePreview(data.get("conversation_style"), data.get("judgment_mode"));
+      preview.innerHTML = servicePreview(data.get("judgment_mode"));
       preview.dataset.selection = key;
     }
     return;
@@ -995,7 +969,6 @@ main.addEventListener("click", async (event) => {
         max_turns: 10,
         prompt: p.turns.join("\n"),
         note: `${p.name} · ${p.tag} · 기대 결과는 수동 검토`,
-        conversation_style: "companion",
       };
       state.mode = "needu";
       location.hash = "experiments";

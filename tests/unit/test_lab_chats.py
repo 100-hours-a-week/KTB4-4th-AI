@@ -16,7 +16,6 @@ def configured():
         extraction_model_base_url="http://test/extraction/v1",
         extraction_model_name="extraction-model",
         judgment_model_base_url=None,
-        conversation_style="companion",
         model_api_key="test-secret",
     )
 
@@ -46,7 +45,6 @@ def model_handler(seen, broken=False):
                     ],
                     "axes": [],
                     "drop": [],
-                    "noneAnswer": False,
                 },
                 ensure_ascii=False,
             )

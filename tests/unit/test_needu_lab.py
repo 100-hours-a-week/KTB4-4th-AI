@@ -9,7 +9,7 @@ from admin_api.main import create_app
 from admin_api.models import RunSpec
 from admin_api.service_config import pipeline_configuration, service_configuration
 from admin_api.store import Store
-from app.application.conversation_prompts import SYSTEM_COMPANION, SYSTEM_REFLECTIVE
+from app.application.conversation_prompts import SYSTEM_COMPANION
 from app.core.config import Settings
 from app.domain.recommendation import CatalogProduct, CatalogSearchResult, ProductKey
 from benchmarks.needu import execute_needu
@@ -22,7 +22,6 @@ def settings(**overrides):
         extraction_model_base_url="http://test/extract/v1",
         extraction_model_name="extract-real",
         judgment_model_base_url=None,
-        conversation_style="companion",
         embedding_base_url="http://test/embedding/v1",
         embedding_dimensions=2,
         catalog_database_url=None,
@@ -59,7 +58,6 @@ def extraction(prompt):
         ],
         "axes": [],
         "drop": [],
-        "noneAnswer": False,
     }
 
 
@@ -106,19 +104,15 @@ def enqueue(store, configured, **overrides):
 
 
 def test_service_configuration_hides_secrets_and_selects_actual_prompt():
-    configured = settings(
-        conversation_style="reflective",
-        catalog_database_url="postgresql://user:db-secret@host/catalog",
-    )
+    configured = settings(catalog_database_url="postgresql://user:db-secret@host/catalog")
     result = service_configuration(configured)
     serialized = json.dumps(result, ensure_ascii=False)
     assert "synthetic-model-key" not in serialized
     assert "synthetic-embedding-key" not in serialized
     assert "db-secret" not in serialized
     assert "postgresql://" not in serialized
-    assert result["conversation_style"] == "reflective"
-    assert result["styles"][1]["id"] == "reflective"
-    assert result["styles"][1]["opening_messages"][0]["content"] == SYSTEM_REFLECTIVE
+    assert "conversation_style" not in result
+    assert result["opening_messages"][0]["content"] == SYSTEM_COMPANION
     assert "items" in result["extraction_prompts"]["direct"]["schema"]["properties"]
 
 
@@ -176,7 +170,6 @@ def test_role_overrides_route_same_model_name_to_separate_endpoints(tmp_path):
     run = enqueue(
         store,
         configured,
-        conversation_style="reflective",
         response_connection_id="response",
         extraction_connection_id="extract",
     )
@@ -193,7 +186,7 @@ def test_role_overrides_route_same_model_name_to_separate_endpoints(tmp_path):
     asyncio.run(exercise())
     assert store.run(run["id"])["status"] == "completed"
     assert all(data["model"] == "same-local-model" for _, data in seen)
-    assert seen[0][1]["messages"][0]["content"] == SYSTEM_REFLECTIVE
+    assert seen[0][1]["messages"][0]["content"] == SYSTEM_COMPANION
     assert any("/extract/" in path for path, _ in seen)
 
 
@@ -272,7 +265,7 @@ def test_failed_extraction_keeps_service_fallback_visible(tmp_path):
 def test_changed_service_environment_stops_before_model_call(tmp_path):
     store = Store(tmp_path / "lab.db")
     run = enqueue(store, settings())
-    changed = settings(conversation_style="explore")
+    changed = settings(response_model_name="response-changed")
     asyncio.run(execute_needu(store, run, settings=changed))
     assert store.run(run["id"])["status"] == "failed"
     assert store.run(run["id"])["samples"] == []
@@ -374,14 +367,13 @@ def test_api_service_run_snapshots_environment_and_overrides(tmp_path):
                     json={
                         "mode": "needu",
                         "prompt": "캠핑을 좋아해요.\n커피도 좋아요.",
-                        "conversation_style": "explore",
                         "judgment_mode": "disabled",
                     },
                 )
                 assert response.status_code == 201
                 body = response.json()
                 assert body["spec"]["requests"] == 4
-                assert body["manifest"]["pipeline"]["conversation_style"] == "explore"
+                assert "conversation_style" not in body["manifest"]["pipeline"]
                 assert not body["manifest"]["pipeline"]["judgment_enabled"]
                 assert "synthetic-model-key" not in response.text
                 profile = await client.get("/api/service-config")

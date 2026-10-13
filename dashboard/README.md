@@ -145,23 +145,22 @@ Hugging Face Hub는 가중치 저장소다. 이 연결은 Hugging Face의 라우
 환경변수를 읽는다. 프로세스 환경변수가 우선하며, 선택 사항은 해당 실험에만 적용되고 `.env`는
 수정하지 않는다.
 
-기본 `companion`은 취미·일상 루틴뿐 아니라 경험·가치관·관계·선택의 이유·생활의 변화·미래 계획과
-기대도 이야기한다. 사용자가 꺼낸 내용이 우선이며, 모든 응답에 질문을 붙이지 않는다. 새 관심사가
+니쥬 대화는 취미·일상 루틴뿐 아니라 경험·가치관·관계·선택의 이유·생활의 변화·미래 계획과 기대도
+이야기한다. 사용자가 꺼낸 내용이 우선이며, 짧게 공감한 뒤 궁금한 것 하나를 묻는다. 새 관심사가
 추출되지 않았다는 이유로 화제를 바꾸거나 부족한 추천 항목을 채우는 소재를 우선하지 않는다. 누적 추출
 결과로 성격·가치관을 확인하도록 강제하는 것도 제거했다.
 
 대화 이력과 취향 추출의 역할을 분리한다. 추출기는 기존 스키마에 맞는 근거 있는 취향만 추출하므로
 모든 가치관·관계·미래 계획이 별도 프로필 필드로 저장되지는 않는다. 종료 의사·최대 턴·세션 종료
-정책은 유지한다. reflective·explore는 기존 비교 스타일로 남아 있으며 이 완화는 companion에 적용한다.
+정책은 유지한다. 대화 방식은 하나(companion)만 남겼고 화면에서 고르지 않는다.
 
-| 화면 설정            | 사용하는 서비스 설정                                                                                |
-| -------------------- | --------------------------------------------------------------------------------------------------- |
-| 대화 시스템 프롬프트 | `CONVERSATION_STYLE`: companion / reflective / explore                                              |
-| 응답·요약 모델       | `RESPONSE_MODEL_BASE_URL`, `RESPONSE_MODEL_NAME` 또는 등록된 연결                                   |
-| 취향 추출 모델       | `EXTRACTION_MODEL_BASE_URL`, `EXTRACTION_MODEL_NAME` 또는 등록된 연결                               |
-| 취향 판단 경로       | `JUDGMENT_MODEL_BASE_URL`, `JUDGMENT_MODEL_NAME`; 이번 실험에서 끄기 가능                           |
-| 실제 임베딩          | `EMBEDDING_BASE_URL`, `EMBEDDING_QUERY_MODEL_NAME`, `EMBEDDING_SPACE_ID`, `EMBEDDING_DIMENSIONS` 등 |
-| 실제 상품 추천       | `CATALOG_DATABASE_URL_RO` 우선, 없으면 `CATALOG_DATABASE_URL`                                       |
+| 화면 설정      | 사용하는 서비스 설정                                                                                |
+| -------------- | --------------------------------------------------------------------------------------------------- |
+| 응답·요약 모델 | `RESPONSE_MODEL_BASE_URL`, `RESPONSE_MODEL_NAME` 또는 등록된 연결                                   |
+| 취향 추출 모델 | `EXTRACTION_MODEL_BASE_URL`, `EXTRACTION_MODEL_NAME` 또는 등록된 연결                               |
+| 취향 판단 경로 | `JUDGMENT_MODEL_BASE_URL`, `JUDGMENT_MODEL_NAME`; 이번 실험에서 끄기 가능                           |
+| 실제 임베딩    | `EMBEDDING_BASE_URL`, `EMBEDDING_QUERY_MODEL_NAME`, `EMBEDDING_SPACE_ID`, `EMBEDDING_DIMENSIONS` 등 |
+| 실제 상품 추천 | `CATALOG_DATABASE_URL_RO` 우선, 없으면 `CATALOG_DATABASE_URL`                                       |
 
 로컬 모델을 비교하려면 응답과 추출 각각 등록된 LM Studio·Ollama 연결을 선택한다. 판단 경로는
 환경변수 기본값이므로 `JUDGMENT_MODEL_BASE_URL`이 원격이면 로컬 추출 모델을 선택해도 판단은 원격에서
