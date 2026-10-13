@@ -18,7 +18,6 @@ from app.domain.conversation.models import (
     ConversationGoal,
     ConversationMove,
     ConversationState,
-    ConversationStyle,
     ConversationTurn,
     ReadinessResult,
     SessionStatus,
@@ -29,7 +28,6 @@ from app.domain.conversation.policy import (
     MAX_TURNS,
     conversation_progress,
     decide_goal,
-    recommendation_readiness,
     record_companion_turn,
 )
 
@@ -40,7 +38,6 @@ def companion_state(*, turn_count: int = 0) -> ConversationState:
     return ConversationState(
         user_id=1,
         conversation_room_id=1,
-        conversation_style=ConversationStyle.COMPANION,
         turn_count=turn_count,
     )
 
@@ -98,13 +95,6 @@ def test_default_move_is_follow() -> None:
     assert decision.move == ConversationMove.FOLLOW
 
 
-def test_question_streak_does_not_stop_follow_questions() -> None:
-    state = companion_state(turn_count=3)
-    state.question_streak = 4
-
-    assert decide_goal(state, "영화 보는 거 좋아해요").move == ConversationMove.FOLLOW
-
-
 def test_unsure_answer_asks_with_a_suggestion() -> None:
     state = companion_state(turn_count=2)
     card = build_reply_messages(
@@ -122,7 +112,6 @@ def test_puzzled_reply_is_not_treated_as_asking_back() -> None:
 
 def test_user_asking_back_is_followed_and_answered() -> None:
     state = companion_state(turn_count=3)
-    state.question_streak = 2
 
     decision = decide_goal(state, "니쥬는 뭐 좋아해요?")
     assert decision.move == ConversationMove.FOLLOW
@@ -149,7 +138,6 @@ def test_low_energy_twice_lightens_with_play_then_return() -> None:
 
 def test_stays_on_topic_while_energy_is_high() -> None:
     state = companion_state(turn_count=6)
-    state.turns_since_new_interest = 5
     state.energy = 0.9
     state.peak_energy = 0.9
     state.user_length_avg = 20.0
@@ -160,7 +148,6 @@ def test_stays_on_topic_while_energy_is_high() -> None:
 
 def test_no_new_interest_does_not_force_a_topic_change() -> None:
     state = companion_state(turn_count=6)
-    state.turns_since_new_interest = 3
     state.energy = 0.5
     state.peak_energy = 0.9
     state.user_length_avg = 20.0
@@ -187,20 +174,6 @@ def test_conversation_scene_does_not_depend_on_missing_recommendation_fields(mon
 
     assert scenes[0] is not None
     assert scenes[0] == scenes[1]
-
-
-def test_question_break_does_not_turn_into_a_profile_assessment(monkeypatch) -> None:
-    state = companion_state(turn_count=5)
-    state.question_streak = 2
-
-    def unexpected_reflection(_):
-        raise AssertionError("Extracted clues must not force a personality assessment")
-
-    monkeypatch.setattr(policy, "reflection_clues", unexpected_reflection)
-    assert (
-        decide_goal(state, "다음에는 다른 도시에서 잠깐 살아보고 싶어요").move
-        == ConversationMove.FOLLOW
-    )
 
 
 # ---- 종료 ----
@@ -249,14 +222,6 @@ def test_wraps_at_max_turns_and_after_lock() -> None:
     assert decide_goal(state, "").goal == ConversationGoal.WRAP
 
 
-def test_companion_readiness_does_not_require_dislikes() -> None:
-    state = companion_state()
-    assert "exclusion" not in recommendation_readiness(state).missing_signals
-
-    state.conversation_style = ConversationStyle.EXPLORE
-    assert "exclusion" in recommendation_readiness(state).missing_signals
-
-
 def test_progress_never_goes_down() -> None:
     state = companion_state()
     state.progress_floor = 40
@@ -267,26 +232,23 @@ def test_progress_never_goes_down() -> None:
 # ---- 턴 기록 ----
 
 
-def test_record_turn_tracks_questions_moves_and_scenes() -> None:
+def test_record_turn_tracks_moves_and_scenes() -> None:
     state = companion_state()
 
     record_companion_turn(
         state,
         utterance="주말에 혼자 캠핑 갔어요",
-        reply="혼캠이라니 멋있어요. 제일 좋았던 밤은요?",
         move=ConversationMove.FOLLOW,
         scene=None,
         answer_depth=None,
         new_interests=["캠핑"],
     )
-    assert state.question_streak == 1
     assert state.best_topic == "캠핑"
     assert state.user_length_avg == len("주말에 혼자 캠핑 갔어요")
 
     record_companion_turn(
         state,
         utterance="음",
-        reply="갑자기 밸런스 게임이요. 산 vs 바다? 저는 바다요.",
         move=ConversationMove.PLAY,
         scene="이번 주말에 하고 싶은 것",
         answer_depth=None,
@@ -295,13 +257,11 @@ def test_record_turn_tracks_questions_moves_and_scenes() -> None:
     record_companion_turn(
         state,
         utterance="바다요",
-        reply="바다파 반가워요. 파도 소리는 그냥 무료 명상이에요.",
         move=ConversationMove.ADD,
         scene=None,
         answer_depth=None,
         new_interests=[],
     )
-    assert state.question_streak == 0
     assert state.move_history == ["follow", "play", "add"]
     assert state.used_scenes == ["이번 주말에 하고 싶은 것"]
 
@@ -322,21 +282,21 @@ def test_move_card_and_memo_replace_state_json() -> None:
     assert messages[-1] == {"role": "user", "content": "요즘 뜨개질 해요"}
 
 
-def test_bridge_card_carries_scene() -> None:
+def test_play_card_carries_scene() -> None:
     state = companion_state(turn_count=5)
     card = build_reply_messages(
         state,
         ConversationGoal.CHAT,
         "그렇죠",
-        move=ConversationMove.BRIDGE,
-        scene="요즘 장바구니에 담아 둔 것",
+        move=ConversationMove.PLAY,
+        scene="요즘 자주 먹는 것",
     )[-2]["content"]
 
-    assert "요즘 장바구니에 담아 둔 것" in card
+    assert "요즘 자주 먹는 것" in card
 
 
 def test_opening_uses_companion_prompt() -> None:
-    messages = build_opening_messages(now=NOW, style=ConversationStyle.COMPANION)
+    messages = build_opening_messages()
 
     assert messages[0]["content"] == SYSTEM_COMPANION
     assert "바로 답할 수 있게" in messages[1]["content"]
@@ -347,32 +307,27 @@ def test_opening_uses_companion_prompt() -> None:
 
 def test_companion_reply_keeps_statement_and_short_tail_after_question() -> None:
     no_question = "불 끄고 혼자 보는 영화는 거의 의식이에요. 저는 잔잔한 쪽이 진리라고 봐요."
-    assert sanitize_response(no_question, ConversationGoal.CHAT, companion=True) == no_question
+    assert sanitize_response(no_question, ConversationGoal.CHAT) == no_question
 
     play = "평생 영화관 vs 평생 빔프로젝터, 뭐 골라요? 저는 빔프요, 잠옷이 허락되니까."
-    assert sanitize_response(play, ConversationGoal.CHAT, companion=True) == play
+    assert sanitize_response(play, ConversationGoal.CHAT) == play
 
     rambling = (
         "제일 좋았던 밤은요? 저는 그런 밤이면 별 보면서 노래 듣고 "
         "핫초코 마시고 담요 덮고 있고 싶어요."
     )
-    assert (
-        sanitize_response(rambling, ConversationGoal.CHAT, companion=True) == "제일 좋았던 밤은요?"
-    )
+    assert sanitize_response(rambling, ConversationGoal.CHAT) == "제일 좋았던 밤은요?"
 
 
 def test_companion_reply_drops_label_line_breaks_and_imitated_next_turn() -> None:
     raw = "니쥬: 와, 드디어 해방이네요.\n\n끝나자마자 뭐 했어요?\n사용자: 그냥 잤어요"
     assert (
-        sanitize_response(raw, ConversationGoal.CHAT, companion=True)
+        sanitize_response(raw, ConversationGoal.CHAT)
         == "와, 드디어 해방이네요. 끝나자마자 뭐 했어요?"
     )
 
     leaked = "그럴 때 있죠. 오늘은 쉬는 날이에요? [말투] 또래 친구와 메신저로"
-    assert (
-        sanitize_response(leaked, ConversationGoal.CHAT, companion=True)
-        == "그럴 때 있죠. 오늘은 쉬는 날이에요?"
-    )
+    assert sanitize_response(leaked, ConversationGoal.CHAT) == "그럴 때 있죠. 오늘은 쉬는 날이에요?"
 
 
 # ---- 서비스 ----
@@ -386,11 +341,9 @@ def test_service_records_move_and_energy() -> None:
     service = ConversationService(
         model_gateway=Gateway(),  # type: ignore[arg-type]
         extraction_model="extraction-model",
-        conversation_style=ConversationStyle.COMPANION,
     )
     prepared = service.prepare_session(user_id=1, conversation_room_id=1, now=NOW)
     state = prepared.state
-    assert state.conversation_style == ConversationStyle.COMPANION
 
     turn = service.prepare_turn(state, "주말에 혼자 캠핑 다녀왔어요 ㅋㅋ")
     assert turn.decision.move == ConversationMove.FOLLOW
@@ -420,7 +373,6 @@ def test_companion_state_round_trips_through_storage() -> None:
     state.progress_floor = 30
 
     restored = ConversationState.from_dict(state.to_dict())
-    assert restored.conversation_style == ConversationStyle.COMPANION
     assert restored.last_move == ConversationMove.ADD
     assert restored.energy == 0.7
     assert restored.best_topic == "캠핑"

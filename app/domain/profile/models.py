@@ -65,12 +65,6 @@ class SignalStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
-class AssessmentStatus(StrEnum):
-    FOUND = "found"
-    CONFIRMED_NONE = "confirmed_none"
-    UNRESOLVED = "unresolved"
-
-
 @dataclass(slots=True, frozen=True)
 class ExtractedItem:
     field: TasteField
@@ -99,7 +93,6 @@ class ExtractionDelta:
     axes: tuple[str, ...] = ()
     drop: tuple[DropRef, ...] = ()
     # 사용자가 직전 AI 질문에 해당하는 게 없다고 명확히 답했는지. 목표 판정은 코드가 한다.
-    none_answer: bool = False
     # 판단 모델이 본 이번 답의 깊이(0 짧게 넘김 ~ 2 이유나 느낌을 담음). 판단하지 않았으면 None.
     answer_depth: float | None = None
 

@@ -64,7 +64,6 @@ class FakeModelGateway:
             ],
             "axes": [],
             "drop": [],
-            "noneAnswer": False,
         }
 
 
@@ -225,7 +224,6 @@ def test_analysis_patch_directly_updates_summary_and_keywords() -> None:
                 ],
                 "axes": [],
                 "drop": [],
-                "noneAnswer": False,
             },
         ],
     )
@@ -424,7 +422,6 @@ def test_analysis_keywords_are_ordered_by_score_and_patch_keeps_that_order() -> 
                 ],
                 "axes": [],
                 "drop": [],
-                "noneAnswer": False,
             },
         ],
     )
@@ -478,7 +475,7 @@ def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
             "그렇군요. 다른 이야기도 해볼까요?",
             "다시 만나서 반가워요!",
         ],
-        structured_results=[{"items": [], "axes": [], "drop": [], "noneAnswer": True}],
+        structured_results=[{"items": [], "axes": [], "drop": []}],
     )
     app = create_app(
         Settings(app_env="test", service_token="test-token", redis_url=None),

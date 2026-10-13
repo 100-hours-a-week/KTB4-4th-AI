@@ -14,7 +14,6 @@ from app.application.conversation_prompts import (
 from app.application.conversation_service import ExtractionDeltaPayload
 from app.application.taste_judgment import CandidateDeltaPayload
 from app.core.config import Settings
-from app.domain.conversation.models import ConversationStyle
 
 
 def load_service_settings():
@@ -35,7 +34,6 @@ def public_url(value):
 
 def environment_snapshot(settings):
     return {
-        "conversation_style": settings.conversation_style,
         "response": {
             "base_url": public_url(settings.response_model_base_url),
             "model": settings.response_model_name,
@@ -106,18 +104,7 @@ def service_configuration(settings):
     snapshot = environment_snapshot(settings)
     snapshot.pop("catalog_destination")
     snapshot["source"] = ".env + 프로세스 환경변수 (환경변수 우선)"
-    snapshot["styles"] = [
-        {
-            "id": style.value,
-            "label": {
-                "companion": "사람을 알아가는 대화",
-                "reflective": "되비추기형",
-                "explore": "탐색형",
-            }[style.value],
-            "opening_messages": build_opening_messages(style=style),
-        }
-        for style in ConversationStyle
-    ]
+    snapshot["opening_messages"] = build_opening_messages()
     snapshot["extraction_prompts"] = {
         "direct": {
             "system": EXTRACTION_SYSTEM,
@@ -139,11 +126,6 @@ def service_configuration(settings):
 def pipeline_configuration(settings, spec, store):
     snapshot = environment_snapshot(settings)
     snapshot.pop("catalog_destination")
-    snapshot["conversation_style"] = (
-        settings.conversation_style
-        if spec.conversation_style == "environment"
-        else spec.conversation_style
-    )
     for role, connection_id in [
         ("response", spec.response_connection_id),
         ("extraction", spec.extraction_connection_id),

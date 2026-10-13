@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
-from app.domain.conversation.models import ConversationGoal, ConversationState, ConversationStyle
+from app.domain.conversation.models import ConversationState
 from app.domain.profile.merger import normalize_text
 from app.domain.profile.models import (
     DeferralReason,
@@ -46,7 +46,6 @@ MIN_TASTE_STANCE_CONFIDENCE = 0.5
 MIN_DEFERRAL_CONFIDENCE = 0.6
 HABITUAL_THRESHOLD = 0.5
 EXPLICIT_THRESHOLD = 0.5
-NONE_ANSWER_THRESHOLD = 0.7
 # 취향·관심사로 볼 만한지(material)와 분류(축, 분야) 판단을 받아들이는 confidence.
 MIN_MATERIAL_CONFIDENCE = 0.6
 MIN_TAXONOMY_CONFIDENCE = 0.5
@@ -359,11 +358,6 @@ def correction_targets(state: ConversationState, utterance: str) -> list[Profile
     ]
     text = normalize_text(" ".join([*previous_users, utterance]))
     stored = state.profile.stored_signals()
-    # 직전 AI 턴이 되비추기였으면 그때 짚은 항목이 "아니에요"의 대상이다.
-    reflected: list[ProfileSignal] = []
-    if state.last_goal == ConversationGoal.REFLECT:
-        values = {normalize_text(value) for value in state.reflection_values}
-        reflected = [signal for signal in stored if signal.normalized_value in values]
 
     def mentioned_in_text(signal: ProfileSignal) -> bool:
         value = signal.normalized_value
@@ -379,7 +373,7 @@ def correction_targets(state: ConversationState, utterance: str) -> list[Profile
         reverse=True,
     )
     targets: list[ProfileSignal] = []
-    for signal in [*reflected, *mentioned, *recent]:
+    for signal in [*mentioned, *recent]:
         if signal not in targets:
             targets.append(signal)
     return targets[:MAX_CORRECTION_TARGETS]
@@ -446,14 +440,6 @@ def build_judgment_request(
         "user_message": utterance,
     }
     questions: dict[str, dict[str, Any]] = {}
-    if previous_ai:
-        questions["none_answer"] = {
-            "type": "noul",
-            "instructions": (
-                "Does `user_message` clearly answer that nothing applies to the question in "
-                "`previous_ai_message`, such as 'nothing in particular' or 'there wasn't any'?"
-            ),
-        }
     for index, candidate in enumerate(candidates):
         subject = candidate.subject
         questions[f"stance_{index}"] = {
@@ -552,12 +538,8 @@ def build_judgment_request(
                 },
                 "criteria": {f"s{position}": text for position, text in enumerate(sentences)},
             }
-    if previous_ai and state.conversation_style in {
-        ConversationStyle.REFLECTIVE,
-        ConversationStyle.COMPANION,
-    }:
-        # 대화 속도 조절용. reflective는 짧게 넘기는 답이면 가볍게 돌아오고,
-        # companion은 사용자 에너지 추정에 더한다.
+    if previous_ai:
+        # 대화 속도 조절용. 사용자 에너지 추정에 더한다.
         questions["answer_depth"] = {
             "type": "score",
             "instructions": (
@@ -677,7 +659,6 @@ def judgment_delta(
         items=tuple(items),
         axes=tuple(axes),
         drop=tuple(dict.fromkeys(drops)),
-        none_answer=_noul(answers, "none_answer") >= NONE_ANSWER_THRESHOLD,
         answer_depth=_score(answers.get("answer_depth")),
     )
     return delta, judgments

@@ -118,7 +118,7 @@ def test_judgment_request_asks_questions_that_fit_each_kind() -> None:
     assert request.state["previous_ai_message"] == "요즘 즐겨 하는 운동 있어요?"
     assert request.sentences == ("러닝은 진짜 싫어요.", "에어팟 맥스는 갖고 싶어요")
     assert set(request.questions) == {
-        "none_answer",
+        "answer_depth",
         "stance_0",
         "material_0",
         "interest_category_0",
@@ -165,7 +165,6 @@ def test_judgment_maps_stance_and_kind_to_profile_fields() -> None:
         "explicit_3": noul(0.2),
         "stance_4": choice("other_person"),
         "stance_5": choice("like", 0.44),
-        "none_answer": noul(0.1),
     }
 
     delta, judgments = judgment_delta(candidates, answers, sentences)
@@ -182,7 +181,6 @@ def test_judgment_maps_stance_and_kind_to_profile_fields() -> None:
     assert by_value["고소한 커피"].aspect == PreferenceAspect.SENSORY
     assert by_value["고소한 커피"].target == "커피"
     assert by_value["고소한 커피"].evidence_type == EvidenceType.INFERRED
-    assert delta.none_answer is False
     assert [judgment.field for judgment in judgments][4:] == [None, None]
 
 
@@ -197,13 +195,6 @@ def test_wished_activity_becomes_low_confidence_interest() -> None:
     assert item.field == TasteField.INTERESTS
     assert item.confidence == 0.5
     assert item.evidence_type == EvidenceType.INFERRED
-
-
-def test_none_answer_comes_from_judgment() -> None:
-    delta, _ = judgment_delta([], {"none_answer": noul(0.93)}, ("딱히 없어요",))
-
-    assert delta.items == ()
-    assert delta.none_answer is True
 
 
 def test_reason_or_feeling_candidate_is_not_stored() -> None:
