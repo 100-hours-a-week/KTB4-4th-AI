@@ -10,7 +10,7 @@ from app.domain.conversation.policy import MAX_TURNS
 class Connection(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     provider: Literal["lmstudio", "ollama", "openai", "huggingface"] = "lmstudio"
-    environment: Literal["local", "runpod", "other"] = "local"
+    environment: Literal["local", "runpod", "colab", "other"] = "local"
     base_url: str = Field(min_length=8, max_length=500)
     model: str = Field(default="", max_length=200)
     revision: str = Field(default="", max_length=200)

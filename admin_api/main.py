@@ -301,6 +301,14 @@ def create_app(db_path: Path | None = None, transport=None, service_settings=Non
             headers={"Content-Disposition": f'attachment; filename="ai-lab-{run_id}.{format}"'},
         )
 
+    @app.get("/api/colab/notebook", include_in_schema=False)
+    async def colab_notebook():
+        return FileResponse(
+            ROOT / "notebooks/ai_lab_colab.ipynb",
+            media_type="application/x-ipynb+json",
+            filename="ai_lab_colab.ipynb",
+        )
+
     app.mount("/assets", StaticFiles(directory=ROOT / "dashboard"), name="assets")
 
     @app.get("/", include_in_schema=False)

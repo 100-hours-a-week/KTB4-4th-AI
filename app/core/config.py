@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     model_api_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
     hf_token: SecretStr | None = None
+    ai_lab_colab_key: SecretStr | None = None
     response_model_name: str = "response-model"
     extraction_model_name: str = "extraction-model"
 
@@ -69,9 +70,10 @@ class Settings(BaseSettings):
     judgment_model_timeout_seconds: float = Field(default=10.0, gt=0)
     # 취향 요약이 3~4문장으로 길어져서 5초로는 잘릴 수 있다.
     summary_model_timeout_seconds: float = Field(default=10.0, gt=0)
-    # AI Lab의 사용자 시뮬레이터. 미설정이면 서비스의 Gemini 연결을 재사용한다.
+    # AI Lab의 사용자 시뮬레이터. 명시하면 응답·추출 모델과 독립적으로 유지한다.
     persona_model_base_url: AnyHttpUrl | None = None
     persona_model_name: str | None = None
+    persona_model_api_key_env: str = Field(default="", pattern=r"^$|^[A-Za-z_][A-Za-z0-9_]*$")
     # 카탈로그 문서 생성용 로컬 LLM. LM Studio 기본값은 http://127.0.0.1:1234/v1 이다.
     document_model_base_url: AnyHttpUrl | None = None
     document_model_name: str = "document-model"

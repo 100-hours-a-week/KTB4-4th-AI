@@ -87,7 +87,8 @@ def persona_configuration(settings):
     return {
         "base_url": public_url(base_url),
         "model": model,
-        "credential_source": "service",
+        "credential_source": "connection" if settings.persona_model_api_key_env else "service",
+        "api_key_env": settings.persona_model_api_key_env,
         "max_tokens": 768,
         "timeout_seconds": 60,
         "temperature": 0.7,
@@ -181,6 +182,8 @@ def pipeline_configuration(settings, spec, store):
                 "페르소나용 Gemini 연결이 없습니다. 기존 Gemini 서비스 설정 또는 "
                 "PERSONA_MODEL_BASE_URL / PERSONA_MODEL_NAME을 설정하세요."
             )
+        if not model_key(snapshot["persona"], settings):
+            raise ValueError("페르소나 API 키를 설정하세요.")
     if spec.recommendation_stage == "recommendation" and not snapshot["catalog_configured"]:
         raise ValueError(
             "실제 상품 추천에는 CATALOG_DATABASE_URL_RO 또는 CATALOG_DATABASE_URL이 필요합니다."
