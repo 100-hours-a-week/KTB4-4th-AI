@@ -20,6 +20,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "jsonschema>=4.23,<5",
   "pytest>=8.3,<9.0",
   "ruff>=0.9,<1.0",
 ]
@@ -33,6 +34,8 @@ testpaths = ["tests"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# 코랩 셀 단위로 실행하는 노트북. 같은 API 코드는 notebooks/colab_transformers_api.py에서 검사한다.
+extend-exclude = ["notebooks/*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

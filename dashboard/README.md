@@ -82,6 +82,52 @@ Hugging Face API는 모델 품질 후보를 넓히는 데 유용하지만, 최�
 Hugging Face Hub는 가중치 저장소다. 이 연결은 Hugging Face의 라우터를 통해 제휴 업체의 추론 서버를
 호출한다. Hub 원본의 특정 커밋을 직접 다운로드해 서빙하는 것과 구분한다.
 
+## Colab GPU 모델 연결
+
+코랩은 Transformers로 모델을 GPU에 직접 로드하고, FastAPI + ngrok 연결만 유지한다. vLLM을 설치하거나
+실행하지 않는다. 테스트 입력·니쥬 프롬프트·대화·추출·평가·결과 저장은 로컬 AI Lab에서 처리하고,
+추론은 코랩 GPU에서 실행한다. 모델 로드만으로 로컬에서 코랩의 Python 객체에 접근할 수는 없으므로
+작은 API 연결이 필요하다.
+
+1. 모델 연결 화면에서 **코랩 노트북 다운로드**를 누르고 Colab에 업로드한다. 원본은
+   [`notebooks/ai_lab_colab.ipynb`](../notebooks/ai_lab_colab.ipynb)이다. 기존 노트북에 Secrets를
+   등록했다면 수정본의 셀을 기존 노트북에 복사해도 된다. 저장소 파일 변경은 Drive의 노트북을 자동
+   변경하지 않는다.
+2. GPU 런타임을 선택하고 Secrets의 `NGROK_AUTHTOKEN`, `AI_LAB_COLAB_KEY`, `HF_TOKEN`에 노트북 접근을
+   허용한다. 로컬 `.env`의 `AI_LAB_COLAB_KEY`는 코랩과 같아야 한다. 키 값은 코드·출력·연결 SQLite에
+   넣지 않는다. 관리 API·워커를 로컬에서 재시작한다.
+3. `MODEL_IDS`를 설정한 뒤 **라이브러리·Secrets 준비 → 모델 로드 → API 연결** 셀을 실행한다. 기본
+   Qwen3-8B를 유지한다. 두 모델 예시는 주석으로 제공하며 VRAM을 확인한 뒤 선택한다.
+   모델·토크나이저는 실제 Hub commit으로 고정한다. 모델 로딩은 2번 셀에서 한 번만 진행하고 3번 셀은
+   이미 로드된 객체를 사용한다. 원본 BF16/FP16용이며 AWQ 등의 양자화 모델은 별도 로더가 필요하다.
+4. **Colab GPU 연결**에 출력된 `base_url`, `model`, `revision`, `precision`, `hardware`를 저장한다.
+   URL은 `https://.../v1`이며 Colab 노트북 URL이 아니다. 여러 모델을 로드하면 같은 API URL로 연결을
+   각각 등록하고 모델 ID를 구분한다. 연결 저장 → 연결 검사 후 응답·추출 역할에서 선택한다.
+5. 모델 추론만 코랩에 두려면 판단 끄기를 선택하고 추천 범위를 쿼리 생성으로 둔다. 페르소나 자동
+   대화의 사용자 역할은 기존 별도 모델 설정을 사용한다.
+
+API는 Bearer 키로 모든 경로를 보호하며 `/v1/models`, `/v1/chat/completions`만 제공한다. 일반 응답과
+SSE 스트리밍·usage를 지원한다. JSON Schema는 프롬프트에 추가하고 생성 완료 후 검증한다. 실패를
+오류로 반환하며 토큰 생성을 스키마로 강제하지 않는다. 실제 니쥬 스키마로 테스트해야 한다. API 원본
+코드는 [`notebooks/colab_transformers_api.py`](../notebooks/colab_transformers_api.py)이며 배포 파일
+없이 사용할 수 있도록 같은 코드가 노트북에 포함돼 있다.
+
+모델별 요청은 한 번에 하나씩 처리하며, 서로 다른 모델은 같은 GPU를 각 스레드에서 공유한다.
+Transformers 방식으로 품질·속도를 측정하므로 최적화된 배포 런타임의 처리량을 확정하지 않는다. 응답의
+`timings.server_first_token_ms`는 서버의 첫 생성 토큰까지의 시간이며, 단어 단위로 모일 수 있는
+클라이언트 첫 내용 청크와 다르다. 현재 AI Lab 서비스 경로는 이 서버 timing을 저장하지 않는다. GPU
+사용률·컴퓨팅 단위·비용은 자동 수집하지 않는다. 실제 A100 로딩·추론은 코랩에서 검증한다.
+
+`stop_colab_api()`는 API·터널만 종료하고 모델은 GPU에 남긴다. 모델을 다시 로드하거나 자원을
+반환하려면 Colab에서 런타임을 다시 시작하거나 연결 해제 및 런타임 삭제를 선택한다. 런타임·터널
+재시작 후에는 출력 URL을 기존 연결에 다시 저장하고 새 대화·실험을 만든다. 이력의 이전 스냅샷은
+유지한다.
+
+공식 참고: [Transformers 채팅 템플릿](https://huggingface.co/docs/transformers/en/chat_templating),
+[스트리밍 안내](https://huggingface.co/docs/transformers/en/internal/generation_utils#streamers),
+[ngrok Colab 연결](https://ngrok.com/docs/using-ngrok-with/googleColab),
+[Colab 사용 조건](https://research.google.com/colaboratory/faq.html).
+
 ## 직접 채팅 실행
 
 1. 모델 연결에서 Ollama 또는 LM Studio의 실제 모델 ID를 저장한다.
@@ -112,12 +158,16 @@ Hugging Face Hub는 가중치 저장소다. 이 연결은 Hugging Face의 라우
 사실과 니쥬의 실제 응답만 본다. 기대 추출·추천 상품·쿼리 정답과 니쥬의 내부 프로필은 사용자 역할
 모델에 전달하지 않는다. 알려진 사실은 반드시 공개해야 하는 대본이 아니다.
 
-사용자 모델은 `.env`의 Gemini 추출 연결(없으면 Gemini 응답 연결)과 기존 모델 API 키를 재사용하며,
-니쥬 모델을 LM Studio로 선택해도 사용자 역할은 Gemini를 유지한다. 별도 지정은
-`PERSONA_MODEL_BASE_URL` / `PERSONA_MODEL_NAME`으로 한다. 발화는 500자 이하이고, 사용자가 종료하거나
-서비스가 종료하면 조기 중단한다. 요청 실패·형식 오류 시 실행 실패를 기록하며 고정 대본으로 대체하지
-않는다. 기존 실행 취소·전체 시간 상한을 적용한다. 사용자 모델의 호출도 `persona` 역할로
-프롬프트·응답·토큰·지연을 기록하고 실행 manifest에 프롬프트 버전을 보존한다.
+사용자 역할은 `.env`의 `PERSONA_MODEL_BASE_URL` / `PERSONA_MODEL_NAME`으로 별도 고정한다. 현재
+예시는 OpenRouter의 `google/gemini-3.5-flash-lite`이며,
+`PERSONA_MODEL_API_KEY_ENV=OPENROUTER_API_KEY`로 기존 OpenRouter 키를 직접 사용한다. 응답·추출
+역할의 코랩 연결·로드 모델·`MODEL_API_KEY`를 바꿔도 사용자 역할의 API 주소·모델·키는 유지된다. 전용
+키가 없으면 코랩 키로 대체하지 않고 설정 오류를 반환한다. 페르소나 설정을 생략한 기존 환경에서는
+응답·추출 중 Gemini 연결을 찾는 이전 동작을 유지한다. 코랩으로 옮길 때는 전용 설정을 명시한다.
+발화는 500자 이하이고, 사용자가 종료하거나 서비스가 종료하면 조기 중단한다. 요청 실패·형식 오류 시
+실행 실패를 기록하며 고정 대본으로 대체하지 않는다. 기존 실행 취소·전체 시간 상한을 적용한다. 사용자
+모델의 호출도 `persona` 역할로 프롬프트·응답·토큰·지연을 기록하고 실행 manifest에 프롬프트 버전을
+보존한다.
 
 합성 대화는 자연스러운 흐름을 탐색하기 위한 평가 보조다. 고정 입력 비교와 구분해서 보고, 추출 평가는
 페르소나가 실제 공개한 발화만 근거로 한다. Gemini가 설정을 지켰는지도 함께 검토한다. 자동 품질

@@ -199,3 +199,129 @@ def test_cancel_in_flight_persona_call(tmp_path):
     asyncio.run(exercise())
     assert cancelled
     assert store.run(run["id"])["status"] == "cancelled"
+
+
+def test_persona_api_stays_pinned_when_service_model_defaults_change(tmp_path, monkeypatch):
+    from admin_api.service_config import model_key, persona_configuration
+
+    monkeypatch.setenv("PERSONA_TEST_API_KEY", "synthetic-persona-key")
+    dedicated = dict(
+        persona_model_base_url="https://persona.example/v1",
+        persona_model_name="google/gemini-test",
+        persona_model_api_key_env="PERSONA_TEST_API_KEY",
+    )
+    api_settings = settings(**dedicated, model_api_key="synthetic-service-key")
+    local_settings = settings(
+        **dedicated,
+        response_model_base_url="https://colab.example/v1",
+        response_model_name="colab-response",
+        extraction_model_base_url="https://colab.example/v1",
+        extraction_model_name="colab-extract",
+        model_api_key="synthetic-colab-key",
+    )
+    assert persona_configuration(api_settings) == persona_configuration(local_settings)
+    assert (
+        model_key(persona_configuration(local_settings), local_settings) == "synthetic-persona-key"
+    )
+    store = Store(tmp_path / "lab.db")
+    spec = RunSpec(dialogue_mode="simulated", persona_id="p01", max_turns=1)
+    config = pipeline_configuration(local_settings, spec, store)
+    assert config["persona"]["base_url"] == "https://persona.example/v1"
+    assert config["persona"]["model"] == "google/gemini-test"
+    assert "synthetic-persona-key" not in json.dumps(config)
+
+
+def test_persona_and_colab_calls_use_independent_endpoints_and_keys(tmp_path, monkeypatch):
+    monkeypatch.setenv("PERSONA_TEST_API_KEY", "synthetic-persona-key")
+    monkeypatch.setenv("AI_LAB_COLAB_KEY", "synthetic-colab-key")
+    store = Store(tmp_path / "lab.db")
+    connection = dict(
+        name="Colab",
+        provider="openai",
+        environment="colab",
+        base_url="https://colab.example/v1",
+        model="loaded-colab-model",
+        revision="",
+        precision="BF16",
+        hardware="A100",
+        api_key_env="AI_LAB_COLAB_KEY",
+    )
+    store.save_connection("colab", connection)
+    configured = settings(
+        model_api_key="unrelated-service-key",
+        persona_model_base_url="https://persona.example/v1",
+        persona_model_name="google/gemini-test",
+        persona_model_api_key_env="PERSONA_TEST_API_KEY",
+    )
+    spec = RunSpec(
+        dialogue_mode="simulated",
+        persona_id="p01",
+        max_turns=1,
+        response_connection_id="colab",
+        extraction_connection_id="colab",
+        judgment_mode="disabled",
+    )
+    persona = persona_snapshot("p01")
+    config = pipeline_configuration(configured, spec, store)
+    store.create_run(
+        spec.model_dump(),
+        {"model": "service"},
+        {
+            "pipeline": config,
+            "persona": persona,
+            "persona_simulator": {
+                "prompt_version": PROMPT_VERSION,
+                "system": persona_system(persona),
+            },
+        },
+    )
+    run = store.claim()
+    # A new loaded model changes the next experiment, without touching the persona API.
+    store.save_connection("colab", {**connection, "model": "next-colab-model"})
+    assert pipeline_configuration(configured, spec, store)["persona"] == config["persona"]
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append(request.url.host)
+        if request.url.host == "persona.example":
+            assert request.headers["Authorization"] == "Bearer synthetic-persona-key"
+            assert payload["model"] == "google/gemini-test"
+            output = json.dumps({"message": "주말마다 캠핑을 가요.", "end_conversation": True})
+        else:
+            assert request.url.host == "colab.example"
+            assert request.headers["Authorization"] == "Bearer synthetic-colab-key"
+            assert payload["model"] == "loaded-colab-model"
+            output = (
+                json.dumps(extraction(payload["messages"][-1]["content"]))
+                if "response_format" in payload
+                else "캠핑할 때 어떤 순간이 좋아요?"
+            )
+        return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            await execute_needu(store, run, settings=configured, client=client)
+
+    asyncio.run(exercise())
+    saved = store.run(run["id"])
+    assert saved["status"] == "completed"
+    assert {"persona.example", "colab.example"} <= set(seen)
+    assert "synthetic-persona-key" not in json.dumps(saved)
+    assert "synthetic-colab-key" not in json.dumps(saved)
+
+
+def test_missing_dedicated_persona_key_does_not_fall_back_to_colab_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("PERSONA_MISSING_KEY", raising=False)
+    configured = settings(
+        model_api_key="synthetic-colab-key",
+        persona_model_base_url="https://persona.example/v1",
+        persona_model_name="google/gemini-test",
+        persona_model_api_key_env="PERSONA_MISSING_KEY",
+    )
+    with pytest.raises(ValueError, match="PERSONA_MISSING_KEY"):
+        pipeline_configuration(
+            configured,
+            RunSpec(dialogue_mode="simulated", persona_id="p01"),
+            Store(tmp_path / "lab.db"),
+        )
