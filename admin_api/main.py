@@ -13,6 +13,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from admin_api.chat import LabChats, public_chat
 from admin_api.client import probe, resolve_huggingface_model
+from admin_api.model_evaluations import model_evaluations, service_evaluations
 from admin_api.models import ChatSpec, Connection, RunSpec
 from admin_api.provenance import code_revision, source_hash
 from admin_api.service_config import (
@@ -65,10 +66,14 @@ def create_app(db_path: Path | None = None, transport=None, service_settings=Non
     @app.get("/api/overview")
     async def overview(request: Request):
         store = request.app.state.store
+        connections, runs = store.connections(), store.runs()
+        samples = store.overview_samples()
         return {
             "worker": store.worker_status(),
-            "connections": store.connections(),
-            "runs": store.runs(),
+            "connections": connections,
+            "runs": runs,
+            "model_evaluations": model_evaluations(connections, runs, samples, store.chats()),
+            "service_evaluations": service_evaluations(runs, samples),
         }
 
     @app.get("/api/connections")
