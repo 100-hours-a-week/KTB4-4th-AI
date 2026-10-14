@@ -8,6 +8,7 @@ const state = {
   page: "overview",
   mode: "needu",
   connectionId: "lmstudio",
+  connectionDraft: null,
   activeRun: null,
   detail: null,
   compare: new Set(),
@@ -188,7 +189,9 @@ function personaCards() {
   const filtered = state.personas.filter(
     (p) =>
       (!state.personaCategory || p.category === state.personaCategory) &&
-      `${p.name} ${p.occupation} ${p.context} ${p.lifestyle || ""} ${p.values} ${p.future} ${p.tag} ${p.query_targets.join(" ")}`.includes(state.personaSearch),
+      `${p.name} ${p.occupation} ${p.context} ${p.lifestyle || ""} ${p.values} ${p.future} ${p.tag} ${p.query_targets.join(" ")}`.includes(
+        state.personaSearch,
+      ),
   );
   return `<div class="persona-grid">${
     filtered
@@ -292,20 +295,21 @@ function field(label, name, value = "", type = "text", extra = "", hint = "") {
 
 function connectionsPage() {
   const connection = state.overview.connections.find((c) => c.id === state.connectionId);
-  const c = connection || {
-    name: "",
-    provider: "openai",
-    environment: "runpod",
-    base_url: "",
-    model: "",
-    api_key_env: "",
-  };
+  const c = connection ||
+    state.connectionDraft || {
+      name: "",
+      provider: "openai",
+      environment: "runpod",
+      base_url: "",
+      model: "",
+      api_key_env: "",
+    };
   return (
     heading(
       "ENDPOINT REGISTRY",
       "모델 연결",
       "모델을 실행한 서버의 API 주소와 실제 모델 ID를 등록하세요.",
-      `<div class="actions"><button class="btn" data-action="hf-connection">Hugging Face API</button><button class="btn" data-action="openrouter-connection">OpenRouter API</button><button class="btn" data-action="new-connection">+ 연결 추가</button></div>`,
+      `<div class="actions"><button class="btn" data-action="colab-connection">Colab GPU 연결</button><button class="btn" data-action="hf-connection">Hugging Face API</button><button class="btn" data-action="openrouter-connection">OpenRouter API</button><button class="btn" data-action="new-connection">+ 연결 추가</button></div>`,
     ) +
     `<div class="grid-two"><section class="card"><div class="card-head"><h2>${connection ? e(c.name) : "새 연결"}</h2><span class="pill">${e(c.environment)}</span></div><form id="connection-form">` +
     field("연결 이름", "name", c.name, "text", 'required maxlength="80"') +
@@ -324,6 +328,7 @@ function connectionsPage() {
       )}</select></div><div class="field"><label for="environment">실행 환경</label><select id="environment" name="environment">${[
       ["local", "로컬"],
       ["runpod", "RunPod"],
+      ["colab", "Google Colab"],
       ["other", "기타 원격"],
     ]
       .map(
@@ -336,7 +341,9 @@ function connectionsPage() {
       "base_url",
       c.base_url,
       "url",
-      'required placeholder="http://127.0.0.1:1234/v1"',
+      c.environment === "colab"
+        ? 'required placeholder="https://코랩에서-출력한-주소.ngrok-free.app/v1"'
+        : 'required placeholder="http://127.0.0.1:1234/v1"',
       "OpenAI 호환 API의 /v1까지 입력",
     ) +
     field(
@@ -364,8 +371,12 @@ function connectionsPage() {
       "선택 사항 · 키 값은 관리 서버와 워커의 환경변수로 설정",
     ) +
     `<div class="actions"><button class="btn primary" type="submit">연결 저장</button>${connection ? `<button class="btn" type="button" data-action="probe" data-id="${e(c.id)}">연결 검사 · 모델 목록</button>` : ""}</div><div id="probe-result">${probeResult(c)}</div></form></section>` +
-    `<div><section class="card"><div class="card-head"><h2>등록된 연결</h2></div>${state.overview.connections.map((entry) => `<div class="connection-row"><div class="connection-content"><strong>${e(entry.name)}</strong><small>${e(entry.base_url)}</small></div><button class="btn small" data-action="edit-connection" data-id="${e(entry.id)}">선택</button></div>`).join("")}</section>${huggingfaceGuide(c)}<section class="card prose"><h2>모델 실행 → API 연결 → 테스트</h2><div class="steps"><div class="step"><div><h3>모델 API 준비</h3><p>로컬은 LM Studio·Ollama 서버를 실행하고, 호스팅 API는 토큰과 사용 가능한 모델을 준비하세요.</p></div></div><div class="step"><div><h3>주소를 저장하고 연결 검사</h3><p>서버가 반환하는 모델 ID를 선택하고 다시 저장하세요.</p></div></div><div class="step"><div><h3>같은 조건으로 후보 비교</h3><p>제공업체와 실행 조건을 함께 기록하세요. 호스팅 API 속도는 Runpod GPU 성능과 구분합니다.</p></div></div></div></section></div></div>`
+    `<div>${colabGuide()}<section class="card"><div class="card-head"><h2>등록된 연결</h2></div>${state.overview.connections.map((entry) => `<div class="connection-row"><div class="connection-content"><strong>${e(entry.name)}</strong><small>${e(entry.base_url)}</small></div><button class="btn small" data-action="edit-connection" data-id="${e(entry.id)}">선택</button></div>`).join("")}</section>${huggingfaceGuide(c)}<section class="card prose"><h2>모델 실행 → API 연결 → 테스트</h2><div class="steps"><div class="step"><div><h3>모델 API 준비</h3><p>로컬은 LM Studio·Ollama 서버를 실행하고, 호스팅 API는 토큰과 사용 가능한 모델을 준비하세요.</p></div></div><div class="step"><div><h3>주소를 저장하고 연결 검사</h3><p>서버가 반환하는 모델 ID를 선택하고 다시 저장하세요.</p></div></div><div class="step"><div><h3>같은 조건으로 후보 비교</h3><p>제공업체와 실행 조건을 함께 기록하세요. 호스팅 API 속도는 Runpod GPU 성능과 구분합니다.</p></div></div></div></section></div></div>`
   );
+}
+
+function colabGuide() {
+  return `<section class="card prose"><div class="card-head"><div><div class="eyebrow">COLAB GPU → AI LAB</div><h2>코랩에서 모델 실행, 여기서 테스트</h2></div></div><p>코랩은 Transformers로 모델을 로드하고 API 연결만 제공합니다. vLLM 설치는 필요 없습니다. 대화·취향 추출·페르소나 실험과 결과 비교는 이 보드에서 실행하세요.</p><div class="actions"><a class="btn primary" href="/api/colab/notebook" download>코랩 노트북 다운로드</a><a class="btn" href="https://colab.research.google.com/" target="_blank" rel="noopener noreferrer">Colab 열기 ↗</a></div><ol><li>노트북을 Colab에 업로드하고 런타임 → 런타임 유형 변경에서 A100 GPU를 선택하세요.</li><li>Colab Secrets에 <code>NGROK_AUTHTOKEN</code>과 <code>AI_LAB_COLAB_KEY</code>를 등록하고 노트북 접근을 허용하세요. 직접 정한 모델 연결 키를 로컬 .env에도 같은 값으로 설정하세요.</li><li>로컬 <code>.env</code>에도 같은 <code>AI_LAB_COLAB_KEY</code> 값을 설정한 뒤 관리 API와 워커를 재시작하세요.</li><li>노트북의 모델 ID를 정하고 라이브러리·Secrets 준비 → 모델 로드 → API 연결 셀을 실행하세요. 기본 예시는 Qwen3-8B이며 변경할 수 있습니다.</li><li><strong>Colab GPU 연결</strong> 버튼을 누르고 출력된 API Base URL·모델 ID·revision·정밀도·하드웨어를 입력하세요. 연결 저장 → 연결 검사로 모델 목록을 확인합니다.</li><li>대화 테스트 또는 테스트 실행에서 응답·추출 모델로 선택하세요. 같은 코랩 모델을 두 역할에 선택할 수 있습니다. 판단 끄기를 선택하면 판단 모델의 별도 호출을 생략합니다.</li></ol><details class="sample"><summary>재연결·측정 안내</summary><div class="sample-body"><p>런타임이나 터널이 종료되면 호출이 실패합니다. 다시 실행한 뒤 출력된 주소를 기존 연결에 저장하고 새 대화·실험을 시작하세요.</p><p>컴퓨팅 단위 잔액이 있어도 A100 할당과 실행 시간은 보장되지 않습니다. 노트북이 실제 GPU와 VRAM을 확인합니다. 종료할 때는 stop_colab_api()로 연결을 종료하고 모델·GPU 자원 반환은 Colab 런타임 연결 해제 및 삭제로 진행하세요.</p><p>연결 검사는 모델 목록 조회입니다. JSON Schema는 생성 후 검증하며 생성을 강제하지 않습니다. 추출 성공은 실제 테스트로 확인하세요. 측정 지연에는 네트워크·터널 시간이 포함되며 잔액·GPU 사용률·비용은 자동 수집하지 않습니다.</p><p>페르소나 자동 대화는 전용 Gemini API와 키를 사용합니다. 코랩의 로드 모델·응답·추출 연결을 바꿔도 사용자 역할은 유지됩니다.</p><p><a href="https://research.google.com/colaboratory/faq.html" target="_blank" rel="noopener noreferrer">Colab 자원·사용 조건</a> · <a href="https://ngrok.com/docs/using-ngrok-with/googleColab" target="_blank" rel="noopener noreferrer">ngrok 연결 안내</a></p></div></details></section>`;
 }
 
 function huggingfaceGuide(connection) {
@@ -533,7 +544,7 @@ function needuPage() {
           draft.max_turns || 10,
           "number",
           'min="1" max="20" required',
-          `사용자 역할: ${state.service?.persona?.model || "Gemini 환경 설정 필요"} · 각 발화 500자 이하 · 사용자가 대화를 마치면 조기 종료`,
+          `사용자 역할 · 독립 API: ${state.service?.persona?.model || "Gemini 환경 설정 필요"} · 각 발화 500자 이하 · 사용자가 대화를 마치면 조기 종료`,
         )
       : `<div class="field"><label for="prompt">고정 사용자 발화 · 한 줄에 한 턴</label><textarea id="prompt" name="prompt" maxlength="12000" rows="6" required>${e(draft.prompt || "")}</textarea><small>최대 20턴. 같은 입력으로 추출·쿼리를 비교합니다.</small></div>`) +
     field(
@@ -932,6 +943,7 @@ main.addEventListener("submit", async (event) => {
         { method: state.connectionId ? "PUT" : "POST", body: JSON.stringify(data) },
       );
       state.connectionId = c.id;
+      state.connectionDraft = null;
       await refresh(true);
       notice(
         c.provider === "huggingface"
@@ -1119,6 +1131,21 @@ main.addEventListener("click", async (event) => {
       state.serviceError = null;
       render();
       notice("서비스 환경 설정을 다시 읽었습니다. .env는 수정하지 않았습니다.");
+    } else if (action === "colab-connection") {
+      const connection = state.overview.connections.find((c) => c.environment === "colab");
+      state.connectionId = connection?.id || null;
+      state.connectionDraft = {
+        name: "Colab · Qwen3-8B",
+        provider: "openai",
+        environment: "colab",
+        base_url: "",
+        model: "Qwen/Qwen3-8B",
+        api_key_env: "AI_LAB_COLAB_KEY",
+        precision: "BF16",
+        hardware: "",
+      };
+      render();
+      $("#base_url").focus();
     } else if (action === "hf-connection") {
       const connection = state.overview.connections.find((c) => c.provider === "huggingface");
       if (!connection) throw new Error("Hugging Face 연결을 불러오려면 관리 API를 재시작하세요.");
@@ -1131,6 +1158,7 @@ main.addEventListener("click", async (event) => {
       render();
     } else if (action === "new-connection" || action === "edit-connection") {
       state.connectionId = action === "new-connection" ? null : id;
+      state.connectionDraft = null;
       render();
     } else if (action === "probe") {
       const result = await api(`/connections/${id}/probe`, { method: "POST" });
