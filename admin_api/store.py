@@ -199,6 +199,18 @@ class Store:
             ]
             return data
 
+    def overview_samples(self):
+        """Read results for the same latest 100 runs used by the overview."""
+        with self.db() as db:
+            return [
+                {**json.loads(row["data"]), "run_id": row["run_id"]}
+                for row in db.execute(
+                    "SELECT run_id, data FROM samples WHERE run_id IN "
+                    "(SELECT id FROM runs ORDER BY created_at DESC LIMIT 100) "
+                    "ORDER BY run_id, ordinal"
+                )
+            ]
+
     def claim(self):
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")

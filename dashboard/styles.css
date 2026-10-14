@@ -876,6 +876,194 @@ footer {
 }
 
 /* Persona registry and interactive service chat */
+.model-registry {
+  padding-bottom: 14px;
+}
+.model-table {
+  min-width: 1000px;
+}
+.model-card-grid {
+  display: none;
+}
+.model-result-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  min-width: 0;
+}
+.model-result-card.selected-model {
+  background: var(--soft);
+  border-color: var(--accent);
+}
+.model-result-card .card-head {
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.model-result-card .pill {
+  flex-shrink: 0;
+}
+.model-result-card button.link,
+.evaluation-example button.link,
+.evaluation-foot button.link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  min-height: 44px;
+}
+.model-result-card button.link:hover,
+.evaluation-example button.link:hover,
+.evaluation-foot button.link:hover {
+  text-decoration: underline;
+}
+.model-result-card p {
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.model-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.model-card-metrics > div {
+  padding: 10px;
+  border-radius: 6px;
+  background: var(--bg);
+}
+.model-card-metrics dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.model-card-metrics dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 1300px) {
+  .model-card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .model-table-wrap {
+    display: none;
+  }
+}
+@media (max-width: 1000px) {
+  .model-card-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.service-result-table {
+  min-width: 1000px;
+}
+.service-result-table td:first-child {
+  min-width: 260px;
+  max-width: 400px;
+  overflow-wrap: anywhere;
+}
+.model-table td {
+  vertical-align: top;
+  font-variant-numeric: tabular-nums;
+}
+.model-table td:first-child {
+  width: 30%;
+}
+.model-name {
+  text-align: left;
+  overflow-wrap: anywhere;
+  min-height: 44px;
+}
+.model-table tr.selected-model {
+  background: var(--soft);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.model-detail h2 {
+  overflow-wrap: anywhere;
+}
+.evaluation-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.evaluation-metrics .metric {
+  margin: 0;
+  box-shadow: none;
+  background: var(--bg);
+}
+.evaluation-metrics .value {
+  font-size: 25px;
+}
+.evaluation-examples {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.evaluation-example {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.evaluation-example h3 {
+  margin: 0;
+}
+.evaluation-example .label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.example-input p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+  margin: 7px 0 14px;
+}
+.example-output {
+  background: var(--soft);
+  border-radius: 8px;
+  padding: 14px;
+}
+.example-output pre {
+  margin: 8px 0 0;
+  font-family: inherit;
+  font-size: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow: auto;
+}
+.evaluation-foot {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.evaluation-scope {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 850px) {
+  .evaluation-examples {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .evaluation-metrics {
+    grid-template-columns: 1fr;
+  }
+  .model-detail > .card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
 .stat-strip {
   display: grid;
   grid-template-columns: repeat(6, 1fr);

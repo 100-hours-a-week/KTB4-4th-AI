@@ -6,6 +6,10 @@ const state = {
   service: null,
   serviceError: null,
   page: "overview",
+  selectedModel: null,
+  modelSearch: "",
+  modelFilter: "tested",
+  modelExamplesOpen: false,
   mode: "needu",
   connectionId: "lmstudio",
   connectionDraft: null,
@@ -115,43 +119,10 @@ function metric(label, value, hint) {
   return `<div class="card metric"><div class="label">${label}</div><div class="value">${value}</div><div class="hint">${hint}</div></div>`;
 }
 
-function connectionRows() {
-  return state.overview.connections
-    .map(
-      (c) =>
-        `<div class="connection-row"><span class="provider-icon">${c.provider === "ollama" ? "o" : c.provider === "lmstudio" ? "lm" : "↗"}</span><div class="connection-content"><strong>${e(c.name)}</strong><small>${e(c.model || "모델 ID 선택 필요")}</small></div><span class="pill ${c.probe?.ok ? "ok" : c.probe ? "bad" : ""}">${c.probe?.ok ? "연결 확인" : c.probe ? "미연결" : "미검사"}</span></div>`,
-    )
-    .join("");
-}
-
 function runTable(runs, withCheck = false) {
   if (!runs.length)
     return `<div class="empty"><span class="empty-icon">◎</span><strong>아직 실행한 실험이 없어요</strong>모델을 연결하고 첫 테스트를 시작해보세요.</div>`;
   return `<div class="table-wrap"><table><thead><tr>${withCheck ? "<th>비교</th>" : ""}<th>실험 / 모델</th><th>상태</th><th>완료 / 계획</th><th>지연 p95</th><th>실행 시각</th></tr></thead><tbody>${runs.map((r) => `<tr>${withCheck ? `<td><input type="checkbox" data-compare="${e(r.id)}" aria-label="${e(r.connection.name)} ${date(r.created_at)} ${r.id.slice(0, 8)} 비교 선택" ${state.compare.has(r.id) ? "checked" : ""}></td>` : ""}<td><button class="link" data-action="detail" data-id="${e(r.id)}">${e(modeLabel(r.spec.mode))}</button><small>${e(r.connection.model)} · ${e(r.connection.environment)}</small>${r.manifest.pipeline ? `<small>${e(r.manifest.pipeline.recommendation_stage)} · ${r.id.slice(0, 8)}</small>` : ""}</td><td>${pill(r.status)}</td><td>${r.completed ?? r.samples?.length ?? 0} / ${r.spec.requests}</td><td>${ms(r.summary?.latency_p95_ms)}</td><td>${date(r.created_at)}</td></tr>`).join("")}</tbody></table></div>`;
-}
-
-function runStatusChart() {
-  const runs = state.overview.runs;
-  const groups = [
-    ["실행 완료", runs.filter((r) => r.status === "completed").length, "#3b82f6"],
-    ["진행·대기", runs.filter(active).length, "#14b8a6"],
-    [
-      "실패·중단",
-      runs.filter((r) => ["failed", "timed_out", "interrupted"].includes(r.status)).length,
-      "#f59e0b",
-    ],
-    ["취소", runs.filter((r) => r.status === "cancelled").length, "#94a3b8"],
-  ];
-  let offset = 0;
-  const circles = groups
-    .map(([label, count, color]) => {
-      const size = runs.length ? (count / runs.length) * 100 : 0;
-      const circle = `<circle cx="80" cy="80" r="60" fill="none" stroke="${color}" stroke-width="18" pathLength="100" stroke-dasharray="${size} ${100 - size}" stroke-dashoffset="${-offset}" transform="rotate(-90 80 80)"/>`;
-      offset += size;
-      return circle;
-    })
-    .join("");
-  return `<section class="card"><div class="card-head"><h2>실험 상태 분포</h2><small>실행 상태 기준</small></div><svg class="donut" viewBox="0 0 160 160" role="img" aria-label="총 ${runs.length}개 실험의 실행 상태"><circle cx="80" cy="80" r="60" fill="none" stroke="#edf2f8" stroke-width="18"/>${circles}<text x="80" y="74" text-anchor="middle" font-size="11">기록된 실험</text><text x="80" y="97" text-anchor="middle" font-size="21" font-weight="600">${runs.length}건</text></svg><div class="chart-legend">${groups.map(([label, count, color]) => `<div class="legend-line"><span><svg width="8" height="8" aria-hidden="true"><circle cx="4" cy="4" r="3" fill="${color}"/></svg> ${label}</span><strong>${count}건</strong></div>`).join("")}</div></section>`;
 }
 
 function avatar(persona, index = 0) {
@@ -203,40 +174,130 @@ function personaCards() {
   }</div>`;
 }
 
-function overviewPage() {
-  const { runs, connections } = state.overview;
-  const count = (status) => runs.filter((r) => r.status === status).length;
-  const stats = [
-    ["페르소나", state.personas.length],
-    ["모델 연결 확인", connections.filter((c) => c.probe?.ok).length],
-    ["누적 실험 · 최근 100개", runs.length],
-    ["진행 중", runs.filter(active).length],
-    ["실행 완료", count("completed")],
-    [
-      "실패·중단",
-      runs.filter((r) => ["failed", "interrupted", "timed_out"].includes(r.status)).length,
-    ],
+function focusOverviewControl(action, id) {
+  [...main.querySelectorAll(`[data-action="${action}"][data-id="${id}"]`)]
+    .find((node) => node.getClientRects().length)
+    ?.focus({ preventScroll: true });
+}
+
+function modelStatus(model) {
+  if (!model.attempted) return ["미검증", ""];
+  if (model.failed || (model.quality.count && model.quality.exact_match_rate < 1))
+    return ["검토 필요", "bad"];
+  return ["결과 확인", "ok"];
+}
+
+function modelFilters() {
+  return `<div class="filters"><div class="field search-field"><label for="model-search">모델 검색</label><input id="model-search" type="search" value="${e(state.modelSearch)}" placeholder="모델 ID 또는 연결 이름"></div><div class="field"><label for="model-filter">검증 상태</label><select id="model-filter">${[
+    ["all", "전체 모델"],
+    ["tested", "결과 있는 모델"],
+    ["attention", "검토 필요"],
+    ["untested", "미검증"],
+  ]
+    .map(
+      ([key, text]) =>
+        `<option value="${key}" ${state.modelFilter === key ? "selected" : ""}>${text}</option>`,
+    )
+    .join("")}</select></div><a class="btn" href="#connections">모델 연결 관리</a></div>`;
+}
+
+function visibleModels() {
+  return (state.overview.model_evaluations || []).filter(
+    (m) =>
+      `${m.model} ${m.name}`.toLowerCase().includes(state.modelSearch.toLowerCase()) &&
+      (state.modelFilter === "all" ||
+        (state.modelFilter === "tested" && m.attempted > 0) ||
+        (state.modelFilter === "untested" && !m.attempted) ||
+        (state.modelFilter === "attention" && modelStatus(m)[1] === "bad")),
+  );
+}
+
+function modelTable(models) {
+  if (!models.length)
+    return `<div class="empty"><strong>${state.overview.model_evaluations?.length ? "표시할 실험 결과가 없습니다" : "검증할 모델을 연결해 주세요"}</strong><p>실험을 실행하거나 검증 상태를 전체 모델로 바꿔 등록된 모델을 확인하세요.</p><a class="btn" href="#connections">모델 연결하기</a></div>`;
+  return `<div class="model-card-grid">${models.map(modelResultCard).join("")}</div><div class="table-wrap model-table-wrap"><table class="model-table"><thead><tr><th>모델 / 실행 조건</th><th>검증 상태</th><th>실험 / 대화</th><th>호출 성공률</th><th>응답 p95</th><th>추출 p95</th><th>추출 파싱 성공</th><th>고정 평가 정답 일치</th></tr></thead><tbody>${models
+    .map((m) => {
+      const [label, cls] = modelStatus(m);
+      const response = m.roles.response;
+      const extraction = m.roles.extraction;
+      return `<tr class="${state.selectedModel === m.id ? "selected-model" : ""}"><td><button class="link model-name" data-action="select-model" data-id="${e(m.id)}" aria-pressed="${state.selectedModel === m.id}">${e(m.model)}</button><small>${e(m.name)} · ${e(m.precision || "정밀도 미기록")}</small><small>${e(
+        Object.keys(m.roles)
+          .map((r) => (r === "response" ? "응답" : "추출"))
+          .join(" + ") || "사용 이력 없음",
+      )}${m.revision ? ` · ${e(m.revision.slice(0, 8))}` : ""}</small></td><td><span class="pill ${cls}">${label}</span>${m.probe_ok === false ? `<small>연결 검사 실패</small>` : ""}</td><td><strong>${m.run_count} / ${m.chat_count}</strong><small>호출 ${num(m.attempted)}회</small></td><td>${pct(m.success_rate)}<small>${m.failed ? `실패 ${num(m.failed)}회` : m.attempted ? "기록된 호출 오류 없음" : "호출 전"}</small></td><td>${ms(response?.latency_p95_ms)}<small>성공한 응답·요약 호출</small></td><td>${ms(extraction?.latency_p95_ms)}<small>성공한 추출 호출</small></td><td>${pct(extraction?.structured_success_rate)}<small>${extraction?.structured_count ? `${num(extraction.structured_count)}회 · 내용 정확도 별도` : "서비스 추출 미측정"}</small></td><td>${pct(m.quality.exact_match_rate)}<small>${m.quality.count}개 평가 · JSON ${pct(m.quality.schema_rate)}</small></td></tr>`;
+    })
+    .join("")}</tbody></table></div>`;
+}
+
+function modelResultCard(m) {
+  const [label, cls] = modelStatus(m);
+  const extraction = m.roles.extraction;
+  const values = [
+    ["호출 성공률", pct(m.success_rate)],
+    ["응답 p95", ms(m.roles.response?.latency_p95_ms)],
+    ["추출 p95", ms(extraction?.latency_p95_ms)],
+    ["추출 파싱 성공", pct(extraction?.structured_success_rate)],
+    ["고정 평가 정답 일치", pct(m.quality.exact_match_rate)],
+    ["호출 실패", `${m.failed} / ${m.attempted}회`],
   ];
-  const p = state.personas.find((p) => p.id === state.selectedPersona);
+  return `<article class="model-result-card ${state.selectedModel === m.id ? "selected-model" : ""}"><div class="card-head"><button class="link model-name" data-action="select-model" data-id="${e(m.id)}" aria-pressed="${state.selectedModel === m.id}">${e(m.model)}</button><span class="pill ${cls}">${label}</span></div><p class="muted">${e(m.name)} · ${e(m.precision || "정밀도 미기록")}<br>실험 ${m.run_count}개 · 대화 ${m.chat_count}개 · 고정 평가 ${m.quality.count}개</p><dl class="model-card-metrics">${values.map(([name, value]) => `<div><dt>${name}</dt><dd>${value}</dd></div>`).join("")}</dl></article>`;
+}
+
+function modelSourceButton(source) {
+  return `<button class="link" data-action="${source.kind === "chat" ? "evaluation-chat" : "detail"}" data-id="${e(source.id)}">${source.kind === "chat" ? "대화 원본" : "실험 원본"} ↗</button>`;
+}
+
+function modelExample(example, title) {
+  return `<section class="evaluation-example"><div class="card-head"><h3>${title}</h3>${example ? modelSourceButton(example) : ""}</div>${example ? `<div class="example-input"><span class="label">입력 · 최대 800자</span><p>${e(example.input || "시작 인사 / 분석 요청")}</p></div><div class="example-output"><span class="label">${example.ok ? "실제 출력" : "실패한 호출"} · ${ms(example.latency_ms)}</span><pre>${e(example.output || example.error || "출력 없음")}</pre></div>${example.output.length >= 1600 ? `<small class="muted">긴 출력은 앞 1,600자만 표시합니다. 원본에서 전체 내용을 확인하세요.</small>` : ""}${!example.ok && example.output ? `<p class="note error">${e(example.error || "호출 또는 파싱 실패")}</p>` : ""}` : `<div class="empty">아직 기록된 ${title}이 없습니다.</div>`}</section>`;
+}
+
+function modelDetail(model) {
+  if (!model) return "";
+  const response = model.roles.response;
+  const extraction = model.roles.extraction;
+  const [label, cls] = modelStatus(model);
+  return `<section class="card model-detail"><div class="card-head"><div><div class="eyebrow">MODEL INSPECTION</div><h2>${e(model.model)}</h2><small>${e(model.hardware || "하드웨어 미기록")} · ${e(model.precision || "정밀도 미기록")}</small></div><span class="pill ${cls}">${label}</span></div><div class="evaluation-metrics">${metric("응답 호출 성공률", pct(response?.success_rate), `${num(response?.attempted || 0)}회 중 실패 ${num(response?.failed || 0)}회`)}${metric("응답 지연 p95", ms(response?.latency_p95_ms), `중앙 ${ms(response?.latency_p50_ms)} · 성공 호출 기준`)}${metric("추출 호출 성공률", pct(extraction?.success_rate), `${num(extraction?.attempted || 0)}회 중 실패 ${num(extraction?.failed || 0)}회`)}${metric("추출 지연 p95", ms(extraction?.latency_p95_ms), `중앙 ${ms(extraction?.latency_p50_ms)} · 성공 호출 기준`)}${metric("서비스 추출 파싱 성공", pct(extraction?.structured_success_rate), `${num(extraction?.structured_count || 0)}회 · 취향 정확도는 별도 검토`)}${metric("초기 추출 정답 일치", pct(model.quality.exact_match_rate), `${model.quality.count}개 고정 평가 · JSON ${pct(model.quality.schema_rate)}`)}</div><div class="note">대화 응답 ${model.response_style.count}개 관찰 · 길이 중앙 ${model.response_style.median_chars == null ? "미측정" : `${num(model.response_style.median_chars)}자`} · 질문 포함 ${pct(model.response_style.question_rate)}. 문체 관찰이며 품질 점수가 아닙니다.</div><details id="evaluation-originals" class="sample" ${state.modelExamplesOpen ? "open" : ""}><summary>근거 확인 · 실제 응답과 추출 원본</summary><div class="sample-body evaluation-examples">${modelExample(model.examples.response, "최근 응답·요약")}${modelExample(model.examples.extraction, "최근 추출 결과")}</div></details><div class="evaluation-foot"><span>최근 기록 ${date(model.last_at)} · 연결 검사 ${model.probe_ok === null ? "미검사 / 과거 실행 조건" : model.probe_ok ? "확인" : "실패"}</span><div class="actions">${model.sources.slice(0, 3).map(modelSourceButton).join("")}</div></div></section>`;
+}
+
+function serviceResults(models) {
+  const names = new Set(models.map((m) => m.model));
+  const groups = (state.overview.service_evaluations || []).filter(
+    (g) => names.has(g.response_model) || names.has(g.extraction_model),
+  );
+  if (!groups.length) return "";
+  return `<section class="card"><div class="card-head"><div><h2>서비스 조합별 검증</h2><small>대화부터 취향 추출·추천 쿼리까지 실행한 결과</small></div><span class="pill">${groups.length}개 조합</span></div><div class="table-wrap"><table class="service-result-table"><thead><tr><th>응답 / 추출 모델</th><th>완료 / 실행</th><th>기대 조건 반영</th><th>제외 조건 반영</th><th>주의 쿼리</th><th>추출 실패 턴</th><th>턴 지연 p95</th><th>근거</th></tr></thead><tbody>${groups.map((g) => `<tr><td><strong>${e(g.response_model)}</strong><small>추출: ${e(g.extraction_model)}</small><small>${e(g.response_precision || "정밀도 미기록")} / ${e(g.extraction_precision || "정밀도 미기록")} · 판단 ${g.judgment_enabled ? "켜짐" : "꺼짐"} · ${e(g.recommendation_stage)}</small></td><td>${g.completed} / ${g.run_ids.length}<small>완료 ${g.reviewed_runs}개 조건 평가</small></td><td>${pct(g.condition_rate)}</td><td>${pct(g.exclusion_rate)}</td><td>${g.reviewed_runs ? `${g.forbidden_count}개` : "미측정"}</td><td>${pct(g.extraction_failure_rate)}<small>기록된 ${g.turn_count}턴 기준</small></td><td>${ms(g.turn_latency_p95_ms)}<small>서비스 전체 턴</small></td><td>${modelSourceButton({ kind: "run", id: g.run_ids[0] })}</td></tr>`).join("")}</tbody></table></div><p class="persona-help">기대·제외 조건은 평가 기준이 있는 완료 실험만 집계합니다. 조건 유사도는 추천 쿼리의 표현 일치이며 취향 정확도의 정답 점수가 아닙니다. 응답·추출·판단 설정을 함께 사용한 결과이므로 단일 모델의 성적으로 해석하지 않습니다.</p></section>`;
+}
+
+function overviewResults() {
+  const models = visibleModels();
+  if (!models.some((m) => m.id === state.selectedModel))
+    state.selectedModel = models[0]?.id || null;
+  return `<section class="card model-registry"><div class="card-head"><div><h2>모델별 검증 결과</h2><small>모델을 선택하면 역할별 결과 지표와 검증 근거를 확인할 수 있습니다.</small></div><span class="pill">${models.length}개 실행 조건</span></div>${modelTable(models)}<p class="persona-help">모델·서버·revision·정밀도·하드웨어가 다른 기록은 별도로 표시합니다. 호출 성공은 답변 품질의 합격 판정이 아니며, 서로 다른 입력의 지연을 순위로 해석하지 않습니다.</p></section>${serviceResults(models)}${modelDetail(models.find((m) => m.id === state.selectedModel))}`;
+}
+
+function overviewPage() {
+  const { runs, model_evaluations: models = [] } = state.overview;
+  const tested = models.filter((m) => m.attempted);
+  const stats = [
+    ["등록·실행 모델 조건", models.length],
+    ["결과 있는 모델", tested.length],
+    ["미검증 모델", models.length - tested.length],
+    ["검토 필요 모델", models.filter((m) => modelStatus(m)[1] === "bad").length],
+    ["기록된 모델 호출", num(models.reduce((n, m) => n + m.attempted, 0))],
+    ["진행 중 실험", runs.filter(active).length],
+  ];
   return (
     heading(
-      "NEED U / MODEL OPERATIONS",
-      "모델 검증 대시보드",
-      "실제 대화와 페르소나 시나리오로, 니쥬에 맞는 모델을 선택하세요.",
+      "NEED U / MODEL EVALUATION",
+      "모델 실험 결과",
+      "실험한 모델의 성공률·지연·추출 결과를 한눈에 비교하세요.",
       `<a class="btn" href="#chat">대화 테스트</a><a class="btn primary" href="#experiments">새 실험 시작</a>`,
     ) +
-    `<div class="filters"><div class="field"><label for="persona-category">평가 주제</label><select id="persona-category"><option value="">전체 주제</option>${[...new Set(state.personas.map((p) => p.category))].map((category) => `<option ${category === state.personaCategory ? "selected" : ""}>${e(category)}</option>`).join("")}</select></div><div class="field search-field"><label for="persona-search">페르소나 검색</label><input id="persona-search" value="${e(state.personaSearch)}" placeholder="이름, 가치관, 미래 계획으로 검색"></div><a class="btn" href="#history">실험 이력</a></div>` +
     `<div class="stat-strip">${stats.map(([label, value]) => `<div><small>${label}</small><strong>${value}</strong></div>`).join("")}</div>` +
-    `<div class="dashboard-layout"><section class="card"><div class="card-head"><h2>페르소나별 검증</h2><span class="pill">합성 페르소나 ${state.personas.length}개</span></div><div id="persona-cards">${personaCards()}</div><p class="persona-help">실행 횟수와 상태는 실제 이력 기준입니다. 기대 쿼리의 조건 유사도와 제외 조건을 실행 결과에서 확인하세요.</p></section><aside>${runStatusChart()}<section class="card"><div class="card-head"><h2>모델 연결</h2><a class="link" href="#connections">관리</a></div>${connectionRows()}<div class="note">${state.overview.worker.online ? "시나리오 워커 실행 중" : "시나리오 실행은 워커 시작 필요"}<br>직접 채팅은 관리 API만으로 실행합니다.</div></section><section class="card"><div class="card-head"><h2>최근 실행</h2><a class="link" href="#history">더 보기</a></div>${
-      runs
-        .slice(0, 4)
-        .map(
-          (r) =>
-            `<div class="connection-row"><div class="connection-content"><strong>${e(state.personas.find((p) => p.id === r.spec.persona_id)?.name || modeLabel(r.spec.mode))}</strong><small>${date(r.created_at)}</small></div>${pill(r.status)}</div>`,
-        )
-        .join("") || `<div class="empty">아직 실행한 실험이 없습니다.</div>`
-    }</section><section class="card"><h2>운영 자원</h2><p class="persona-help">GPU·VRAM·콜드스타트·비용은 수집기 연결 전까지 미수집입니다.</p></section></aside></div>` +
-    `<section class="card persona-detail"><div class="card-head"><h2>선택한 페르소나 · ${e(p?.name || "")}</h2><div class="actions"><button class="btn" data-action="persona-chat" data-id="${e(p?.id)}">이 페르소나로 직접 대화</button><button class="btn primary" data-action="persona-run" data-id="${e(p?.id)}">시나리오로 실험</button></div></div>${personaGuide(p)}</section>`
+    modelFilters() +
+    `<div id="model-results">${overviewResults()}</div>` +
+    `<section class="card"><div class="card-head"><h2>최근 실험</h2><a class="link" href="#history">전체 이력</a></div>${runTable(runs.slice(0, 5))}</section>` +
+    `<p class="evaluation-scope">최근 실험 100개 · 최근 생성한 대화 50개 기준. 응답 길이·질문 포함률은 대화 출력의 문체 관찰이며, 자연스러움·취향 정확도·thinking 여부는 자동 채점하지 않습니다.</p>`
   );
 }
 
@@ -248,7 +309,8 @@ function personasPage() {
       "페르소나 시나리오",
       `기존 인물과 20~26세·27~34세 추가 인물을 포함한 ${state.personas.length}명의 생활·취향과 기대 추천 쿼리를 검토합니다.`,
     ) +
-    `<div class="dashboard-layout"><div>${personaCards()}</div><section class="card persona-detail">${personaGuide(p)}<div class="actions"><button class="btn" data-action="persona-chat" data-id="${p.id}">직접 대화</button><button class="btn primary" data-action="persona-run" data-id="${p.id}">시나리오 실험</button></div></section></div>`
+    `<div class="filters"><div class="field"><label for="persona-category">평가 주제</label><select id="persona-category"><option value="">전체 주제</option>${[...new Set(state.personas.map((p) => p.category))].map((category) => `<option ${category === state.personaCategory ? "selected" : ""}>${e(category)}</option>`).join("")}</select></div><div class="field search-field"><label for="persona-search">페르소나 검색</label><input id="persona-search" value="${e(state.personaSearch)}" placeholder="이름, 가치관, 미래 계획으로 검색"></div></div>` +
+    `<div class="dashboard-layout"><div id="persona-cards">${personaCards()}</div><section class="card persona-detail">${personaGuide(p)}<div class="actions"><button class="btn" data-action="persona-chat" data-id="${p.id}">직접 대화</button><button class="btn primary" data-action="persona-run" data-id="${p.id}">시나리오 실험</button></div></section></div>`
   );
 }
 
@@ -1020,7 +1082,20 @@ main.addEventListener("submit", async (event) => {
   }
 });
 
+main.addEventListener(
+  "toggle",
+  (event) => {
+    if (event.target.id === "evaluation-originals") state.modelExamplesOpen = event.target.open;
+  },
+  true,
+);
+
 main.addEventListener("input", (event) => {
+  if (event.target.id === "model-search") {
+    state.modelSearch = event.target.value;
+    $("#model-results").innerHTML = overviewResults();
+    return;
+  }
   if (event.target.id === "persona-search") {
     state.personaSearch = event.target.value;
     $("#persona-cards").innerHTML = personaCards();
@@ -1029,6 +1104,11 @@ main.addEventListener("input", (event) => {
   updateBudget();
 });
 main.addEventListener("change", (event) => {
+  if (event.target.id === "model-filter") {
+    state.modelFilter = event.target.value;
+    $("#model-results").innerHTML = overviewResults();
+    return;
+  }
   if (
     ["dialogue_mode", "persona_id"].includes(event.target.id) &&
     event.target.closest("#run-form")
@@ -1070,7 +1150,18 @@ main.addEventListener("click", async (event) => {
   const { action, id, mode } = button.dataset;
   button.disabled = true;
   try {
-    if (action === "persona") {
+    if (action === "select-model") {
+      state.selectedModel = id;
+      state.modelExamplesOpen = false;
+      $("#model-results").innerHTML = overviewResults();
+      focusOverviewControl("select-model", id);
+    } else if (action === "evaluation-chat") {
+      if (state.chatBusy) return;
+      state.chatDetail = await api(`/chats/${id}`);
+      sessionStorage.setItem("needu-active-chat", id);
+      state.chatMessage = "";
+      location.hash = "chat";
+    } else if (action === "persona") {
       state.selectedPersona = id;
       render();
     } else if (action === "persona-run") {
@@ -1280,8 +1371,15 @@ setInterval(async () => {
   try {
     const oldDetail = state.detail;
     await refresh(false);
-    if (state.page === "overview") render();
-    else if (state.page === "compare") render();
+    if (state.page === "overview") {
+      if (!main.contains(document.activeElement)) render();
+      else if (!["model-search", "model-filter"].includes(document.activeElement.id)) {
+        const focusId = document.activeElement.dataset.id;
+        const focusAction = document.activeElement.dataset.action;
+        render();
+        if (focusAction && focusId) focusOverviewControl(focusAction, focusId);
+      }
+    } else if (state.page === "compare") render();
     else if (
       state.page === "history" &&
       state.detail &&
