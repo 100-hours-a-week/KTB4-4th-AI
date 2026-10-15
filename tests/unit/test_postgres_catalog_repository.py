@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from app.domain.recommendation import VectorSpace
+from app.domain.catalog.subcategories import SUBCATEGORY_MIN_CONFIDENCE
+from app.domain.recommendation import CatalogExclusion, VectorSpace
 from app.infrastructure.persistence import postgres_catalog_repository as module
 from app.infrastructure.persistence.postgres_catalog_repository import PostgresCatalogRepository
 
@@ -46,6 +47,8 @@ def _row(external_id: str, similarity: float) -> dict[str, Any]:
         "price": Decimal(30000),
         "category": "sports",
         "gift_available": True,
+        "subcategory": "camping",
+        "content_document": "레저·스포츠 캠핑 용품.",
         "similarity": similarity,
     }
 
@@ -68,6 +71,8 @@ def test_search_maps_rows_to_results() -> None:
     assert results[0].product.price == Decimal(30000)
     assert results[0].product.category == "sports"
     assert results[0].product.gift_available is True
+    assert results[0].product.subcategory == "camping"
+    assert results[0].product.content_document == "레저·스포츠 캠핑 용품."
 
 
 def test_search_passes_vector_as_pgvector_literal() -> None:
@@ -83,15 +88,27 @@ def test_search_passes_vector_as_pgvector_literal() -> None:
         )
     )
 
-    vector_arg, space_arg, model_arg, limit_arg, categories_arg, gift_only_arg = (
-        pool.connection.args
-    )
+    (
+        vector_arg,
+        space_arg,
+        model_arg,
+        limit_arg,
+        categories_arg,
+        gift_only_arg,
+        excluded_categories_arg,
+        excluded_subcategories_arg,
+        min_confidence_arg,
+    ) = pool.connection.args
     assert json.loads(vector_arg) == [0.1, 0.2]
     assert space_arg == "gift"
     assert model_arg == "solar-embedding-2"
     assert limit_arg == 10
     assert categories_arg is None
     assert gift_only_arg is False
+    # 제외 조건이 없으면 빈 배열이라 아무것도 빼지 않는다.
+    assert excluded_categories_arg == []
+    assert excluded_subcategories_arg == []
+    assert min_confidence_arg == SUBCATEGORY_MIN_CONFIDENCE
 
 
 def test_search_passes_category_and_gift_available_filters() -> None:
@@ -109,11 +126,38 @@ def test_search_passes_category_and_gift_available_filters() -> None:
         )
     )
 
-    *_, categories_arg, gift_only_arg = pool.connection.args
+    categories_arg, gift_only_arg = pool.connection.args[4:6]
     assert categories_arg == ["beauty", "living"]
     assert gift_only_arg is True
     assert "p.category = ANY($5::text[])" in module._SEARCH_SQL
     assert "(NOT $6::boolean OR p.gift_available)" in module._SEARCH_SQL
+
+
+def test_search_passes_onboarding_exclusion_as_structural_filters() -> None:
+    pool = FakePool([])
+    repository = PostgresCatalogRepository(pool=pool)
+
+    asyncio.run(
+        repository.search(
+            vector=[0.1, 0.2],
+            space=VectorSpace.CONTENT,
+            embedding_space_id="solar-embedding-2",
+            limit=10,
+            exclusion=CatalogExclusion(
+                categories=frozenset({"voucher", "food"}),
+                subcategories=frozenset({"health:", "beauty:fragrance"}),
+                name_terms=("와인",),
+            ),
+        )
+    )
+
+    excluded_categories_arg, excluded_subcategories_arg = pool.connection.args[6:8]
+    assert excluded_categories_arg == ["food", "voucher"]
+    assert excluded_subcategories_arg == ["beauty:fragrance", "health:"]
+    assert "NOT (COALESCE(p.category, '') = ANY($7::text[]))" in module._SEARCH_SQL
+    # 확신이 낮은 세부 카테고리는 빈 값으로 보고 "health:" 같은 키에 걸리게 한다.
+    assert "WHEN p.subcategory_confidence >= $9 THEN p.subcategory" in module._SEARCH_SQL
+    assert "|| ':' || COALESCE(s.subcategory, '') = ANY($8::text[])" in module._SEARCH_SQL
 
 
 def test_search_converts_distance_to_similarity() -> None:

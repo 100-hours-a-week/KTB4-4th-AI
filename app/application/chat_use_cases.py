@@ -10,7 +10,7 @@ from app.application.conversation_prompts import build_friend_summary_messages
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.ports.model_gateway import ModelGateway
-from app.domain.conversation.guards import stable_reply_prefix
+from app.domain.conversation.guards import fix_summary_intro, stable_reply_prefix
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
@@ -25,6 +25,7 @@ from app.domain.profile.merger import (
     taste_rank_score,
 )
 from app.domain.profile.models import ProfileState, TasteField
+from app.domain.profile.onboarding import OnboardingProfile
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,13 @@ class ChatUseCases:
             )
             raise ResponseModelUnavailableError(getattr(error, "reason", "unexpected")) from error
 
-    async def create_session(self, *, user_id: int, conversation_room_id: int) -> StartedSession:
+    async def create_session(
+        self,
+        *,
+        user_id: int,
+        conversation_room_id: int,
+        onboarding: OnboardingProfile | None = None,
+    ) -> StartedSession:
         lock = self._lock(conversation_room_id)
         async with lock:
             if await self._states.load(conversation_room_id) is not None:
@@ -192,6 +199,7 @@ class ChatUseCases:
             prepared = self._conversations.prepare_session(
                 user_id=user_id,
                 conversation_room_id=conversation_room_id,
+                onboarding=onboarding,
             )
             greeting = await self._complete(
                 prepared.messages,
@@ -470,13 +478,19 @@ class ChatUseCases:
 
             safe_values = friend_summary_values(state.profile)
             summary = None
+            name = state.onboarding.display_name if state.onboarding else None
+            address = state.onboarding.address_name if state.onboarding else None
             if any(safe_values.values()):
                 try:
-                    summary = await self._complete(
-                        build_friend_summary_messages(state.profile),
-                        timeout_seconds=self._summary_timeout_seconds,
-                        purpose="summary",
-                        session_id=session_id,
+                    summary = fix_summary_intro(
+                        await self._complete(
+                            build_friend_summary_messages(state.profile, name=name),
+                            timeout_seconds=self._summary_timeout_seconds,
+                            purpose="summary",
+                            session_id=session_id,
+                        ),
+                        name=name,
+                        address=address,
                     )
                 except ResponseModelUnavailableError:
                     summary = None

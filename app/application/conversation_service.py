@@ -65,6 +65,7 @@ from app.domain.profile.models import (
     TasteField,
     utc_now,
 )
+from app.domain.profile.onboarding import OnboardingProfile
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,7 @@ class ConversationService:
         *,
         user_id: int,
         conversation_room_id: int,
+        onboarding: OnboardingProfile | None = None,
         now: datetime | None = None,
     ) -> PreparedSession:
         invalid_user_id = isinstance(user_id, bool) or user_id <= 0
@@ -286,8 +288,10 @@ class ConversationService:
             conversation_room_id=conversation_room_id,
             created_at=resolved_now,
             last_active_at=resolved_now,
+            onboarding=onboarding,
         )
-        return PreparedSession(state=state, messages=tuple(build_opening_messages()))
+        name = onboarding.address_name if onboarding else None
+        return PreparedSession(state=state, messages=tuple(build_opening_messages(name=name)))
 
     def record_opening(
         self,

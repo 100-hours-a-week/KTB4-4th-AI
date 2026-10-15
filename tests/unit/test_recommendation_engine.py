@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.application.recommendation_engine import RecommendationEngine
 from app.domain.profile.models import TasteField, Visibility
 from app.domain.recommendation import (
+    CatalogExclusion,
     CatalogProduct,
     CatalogSearchResult,
     ProductKey,
@@ -46,6 +47,7 @@ class FakeCatalog:
         limit: int,
         categories: Sequence[str] | None = None,
         gift_available_only: bool = False,
+        exclusion: CatalogExclusion | None = None,
     ) -> Sequence[CatalogSearchResult]:
         self.calls.append((space, embedding_space_id, limit))
         self.filters.append((space, categories, gift_available_only))
@@ -147,6 +149,7 @@ class GuideCatalog:
         limit,
         categories=None,
         gift_available_only=False,
+        exclusion=None,
     ):
         # 선물 전용 gift 쿼리는 이 테스트의 관심사가 아니다.
         if space == VectorSpace.GIFT:
@@ -189,3 +192,88 @@ def test_engine_excludes_disliked_products_and_boosts_preferred_ones() -> None:
         ["향수 관련 제품", "향수에 관심 있는 사람이 받으면 좋은 선물", "강한 향", "무향"]
     ]
     assert [item.product.key.external_id for item in result.self] == ["light"]
+
+
+class OnboardingCatalog:
+    """검색마다 같은 후보를 돌려주고, 검색에 넘어온 제외 조건을 남긴다."""
+
+    def __init__(self, products: Sequence[CatalogProduct]) -> None:
+        self.products = products
+        self.exclusions: list[tuple[VectorSpace, CatalogExclusion | None]] = []
+
+    async def ping(self) -> bool:
+        return True
+
+    async def search(
+        self,
+        *,
+        vector,
+        space,
+        embedding_space_id,
+        limit,
+        categories=None,
+        gift_available_only=False,
+        exclusion=None,
+    ):
+        self.exclusions.append((space, exclusion))
+        return [CatalogSearchResult(product=product, similarity=0.9) for product in self.products]
+
+
+def _product(external_id: str, name: str, category: str, subcategory: str | None, document=None):
+    return CatalogProduct(
+        key=ProductKey(platform="kakao", external_id=external_id),
+        name=name,
+        price=Decimal("10000.00"),
+        category=category,
+        subcategory=subcategory,
+        gift_available=True,
+        content_document=document,
+    )
+
+
+def test_engine_passes_onboarding_exclusion_to_search_and_drops_term_matches() -> None:
+    from app.domain.profile.onboarding import Allergy, GiftExclusion
+    from app.domain.recommendation import build_catalog_exclusion
+
+    catalog = OnboardingCatalog(
+        [
+            _product("americano", "아이스 아메리카노 T 2잔", "voucher", "cafe_drink"),
+            # 카페 교환권이지만 케이크에 넛츠가 들어 있다. content 문서에서 걸러야 한다.
+            _product(
+                "nut_cake",
+                "아메리카노 T + 얼 그레이 케이크",
+                "voucher",
+                "cafe_drink",
+                "교환권 카페 음료. 카라멜 넛츠 케이크와 아메리카노 세트다.",
+            ),
+            _product("wine_glass", "크리스탈 와인잔 2P 세트", "living", "kitchen"),
+            _product("mug", "커피 머그컵", "living", "kitchen"),
+        ]
+    )
+    engine = RecommendationEngine(embedder=FakeEmbedder(), catalog=catalog)
+    now = datetime(2026, 10, 15, tzinfo=UTC)
+    exclusion = build_catalog_exclusion(
+        allergies=[Allergy.PEANUT, Allergy.NUTS], gift_exclusions=[GiftExclusion.ALCOHOL]
+    )
+
+    result = asyncio.run(
+        engine.recommend(
+            [
+                RecommendationSignal(
+                    field=TasteField.INTERESTS,
+                    value="커피",
+                    confidence=0.9,
+                    visibility=Visibility.FRIENDS,
+                    updated_at=now,
+                )
+            ],
+            now=now,
+            guide=RecommendationGuide(catalog_exclusion=exclusion),
+        )
+    )
+
+    # 대분류·세부 카테고리 필터는 쿼리 검색마다 SQL로 넘어간다.
+    assert catalog.exclusions
+    assert all(passed is exclusion for _, passed in catalog.exclusions)
+    assert {item.product.key.external_id for item in result.self} == {"americano", "mug"}
+    assert {item.product.key.external_id for item in result.gift} == {"americano", "mug"}

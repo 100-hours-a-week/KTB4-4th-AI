@@ -9,6 +9,7 @@ from datetime import datetime
 from app.application.ports.catalog_repository import CatalogRepository
 from app.application.ports.embedder import Embedder
 from app.domain.recommendation import (
+    CatalogExclusion,
     CatalogSearchResult,
     ProductKey,
     RankedRecommendation,
@@ -63,8 +64,12 @@ class RecommendationEngine:
         limit: int = 20,
         guide: RecommendationGuide | None = None,
         categories: Sequence[str] | None = None,
+        recipient_name: str | None = None,
     ) -> RecommendationBatch:
-        """categories 를 주면 그 카테고리 안에서만 찾는다(v2 카테고리 탭)."""
+        """categories 를 주면 그 카테고리 안에서만 찾는다(v2 카테고리 탭).
+
+        recipient_name 은 선물 목록 추천 이유에 넣는 받는 사람 이름이다.
+        """
         queries = build_search_queries(signals)
         if not queries:
             return RecommendationBatch(self=(), gift=())
@@ -95,6 +100,7 @@ class RecommendationEngine:
                         # top_k 를 선물 목록 밖 상품에 쓰지 않는다. gift 문서는 gift_available
                         # 상품에만 만들지만, false 로 바뀐 상품의 예전 문서가 남아 있을 수 있다.
                         gift_available_only=query.modes == {RecommendationMode.GIFT},
+                        exclusion=guide.catalog_exclusion,
                     )
                     for query, vector in zip(queries, query_vectors, strict=True)
                 )
@@ -128,7 +134,9 @@ class RecommendationEngine:
             for query, results in zip(queries, searches, strict=True)
             for result in results
         ]
-        excluded = _excluded_keys(matches, guide.exclusions, exclusion_searches)
+        excluded = _excluded_keys(
+            matches, guide.exclusions, exclusion_searches, guide.catalog_exclusion
+        )
         boosts = _preference_boosts(preference_searches)
         return RecommendationBatch(
             self=rank_recommendations(
@@ -146,6 +154,7 @@ class RecommendationEngine:
                 limit=limit,
                 excluded=excluded,
                 boosts=boosts,
+                recipient_name=recipient_name,
             ),
         )
 
@@ -157,6 +166,7 @@ class RecommendationEngine:
         *,
         categories: Sequence[str] | None = None,
         gift_available_only: bool = False,
+        exclusion: CatalogExclusion | None = None,
     ) -> Sequence[CatalogSearchResult]:
         return await self._catalog.search(
             vector=vector,
@@ -165,6 +175,7 @@ class RecommendationEngine:
             limit=limit,
             categories=categories,
             gift_available_only=gift_available_only,
+            exclusion=exclusion,
         )
 
 
@@ -172,8 +183,12 @@ def _excluded_keys(
     matches: Iterable[VectorMatch],
     exclusions: Sequence[str],
     searches: Sequence[Sequence[CatalogSearchResult]],
+    catalog_exclusion: CatalogExclusion,
 ) -> frozenset[ProductKey]:
-    """싫어하는 것과 의미가 가깝거나 상품명에 그대로 들어간 후보를 고른다."""
+    """싫어하는 것과 의미가 가깝거나 상품명에 그대로 들어간 후보를 고른다.
+
+    온보딩 제외 조건은 검색이 대분류·세부 카테고리로 이미 걸렀고, 여기서 단어 조건을 본다.
+    """
     excluded = {
         result.product.key
         for results in searches
@@ -183,7 +198,7 @@ def _excluded_keys(
     terms = [_normalize(term) for term in exclusions if _normalize(term)]
     for match in matches:
         name = _normalize(match.product.name)
-        if any(term in name for term in terms):
+        if any(term in name for term in terms) or catalog_exclusion.blocks(match.product):
             excluded.add(match.product.key)
     return frozenset(excluded)
 
