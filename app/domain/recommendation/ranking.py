@@ -61,21 +61,28 @@ def _match_contribution(
     return contribution
 
 
-def _reason(best: ScoredMatch, mode: RecommendationMode) -> str:
+def _reason(
+    best: ScoredMatch,
+    mode: RecommendationMode,
+    recipient_name: str | None = None,
+) -> str:
+    """추천 이유 문구. 선물 목록은 친구가 보므로 받는 사람 이름이 있으면 넣는다."""
     signal = best.match.query.signal
+    owner = f"{recipient_name}님의 " if recipient_name else ""
     if signal.field == TasteField.PREFERENCES:
         # 취향 쿼리로 찾은 상품. 취향은 친구 공개 항목이라 선물 목록에서도 그대로 보여 준다.
         if mode == RecommendationMode.SELF:
             return f"{signal.value} 취향과 잘 맞는 상품이에요."
-        return f"{signal.value} 취향에 맞춰 선물하기 좋은 상품이에요."
+        return f"{owner}{signal.value} 취향에 맞춰 선물하기 좋은 상품이에요."
     if mode == RecommendationMode.SELF:
         return f"{signal.value}에 대한 관심과 잘 맞는 상품이에요."
     if signal.field in {TasteField.INTERESTS, TasteField.HOBBIES} and signal.visibility in {
         Visibility.FRIENDS,
         Visibility.PUBLIC,
     }:
-        return f"{signal.value}에 관심 있는 분에게 선물하기 좋은 상품이에요."
-    return "평소 관심사와 잘 맞아 선물하기 좋은 상품이에요."
+        recipient = f"{recipient_name}님" if recipient_name else "분"
+        return f"{signal.value}에 관심 있는 {recipient}에게 선물하기 좋은 상품이에요."
+    return f"{owner}평소 관심사와 잘 맞아 선물하기 좋은 상품이에요."
 
 
 def _select_with_query_diversity(
@@ -124,7 +131,9 @@ def rank_recommendations(
     min_score: float | None = None,
     excluded: frozenset[ProductKey] = frozenset(),
     boosts: Mapping[ProductKey, float] | None = None,
+    recipient_name: str | None = None,
 ) -> tuple[RankedRecommendation, ...]:
+    """recipient_name 은 선물 목록 추천 이유에 넣는 받는 사람 이름이다. self 목록은 쓰지 않는다."""
     if not 1 <= limit <= DEFAULT_LIMIT:
         raise ValueError(f"limit must be between 1 and {DEFAULT_LIMIT}")
     threshold = DEFAULT_MIN_SCORE[mode] if min_score is None else min_score
@@ -175,7 +184,7 @@ def rank_recommendations(
             mode=mode,
             rank=rank,
             score=round(score, 6),
-            reason=_reason(scored_matches[0], mode),
+            reason=_reason(scored_matches[0], mode, recipient_name),
             matches=scored_matches,
         )
         for rank, (key, score, scored_matches) in enumerate(selected)

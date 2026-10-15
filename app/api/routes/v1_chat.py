@@ -207,6 +207,17 @@ def recommendation_profile(result: ProfileAnalysis) -> dict[str, Any]:
     }
 
 
+def recommendation_payload(result: ProfileAnalysis) -> dict[str, Any]:
+    """추천 서비스 요청. 온보딩 값이 있으면 알레르기·선물 제외 조건과 관심 카테고리도 넘긴다."""
+    payload: dict[str, Any] = {
+        "userId": result.state.user_id,
+        "profile": recommendation_profile(result),
+    }
+    if result.state.onboarding is not None:
+        payload["onboarding"] = result.state.onboarding.recommendation_payload()
+    return payload
+
+
 def _scored_keywords(analysis: ProfileAnalysis) -> ScoredProfileKeywords:
     def scored(keywords: tuple[str, ...]) -> list[dict[str, object]]:
         # 분석 이전 버전에서 저장된 세션에는 점수가 없으므로 0점으로 내려준다.
@@ -247,6 +258,7 @@ async def create_chat_session(
         started = await use_cases.create_session(
             user_id=body.user_id,
             conversation_room_id=body.conversation_room_id,
+            onboarding=body.user_profile.to_domain() if body.user_profile else None,
         )
     except Exception as error:
         _raise_chat_error(error)
@@ -473,10 +485,7 @@ async def close_chat_session(
             user_id=body.user_id,
         )
         recommendation_result = await recommendation_service.recommend_lists(
-            {
-                "userId": closable.state.user_id,
-                "profile": recommendation_profile(closable),
-            }
+            recommendation_payload(closable)
         )
         recommendations = RecommendationLists.model_validate(recommendation_result)
         finalized = await use_cases.close_session(conversation_room_id, user_id=body.user_id)

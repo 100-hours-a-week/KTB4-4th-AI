@@ -125,3 +125,45 @@ def closing_reply(reply: str) -> str:
         cut = max(text.rfind(mark, 0, len(text) - 1) for mark in (".", "!", "~"))
         text = text[: cut + 1].strip() if cut >= 0 else ""
     return f"{text} {CLOSING_MESSAGE}".strip()
+
+
+SUMMARY_INTRO = "니쥬가 보기에"
+# 요약 첫 문장의 주어로 모델이 이름 대신 쓰곤 하는 말
+_GENERIC_SUBJECTS = ("사용자", "이분", "이 사람")
+
+
+def fix_summary_intro(
+    summary: str,
+    *,
+    name: str | None = None,
+    address: str | None = None,
+) -> str:
+    """요약 첫 문장을 "니쥬가 보기에 {name}님은"(이름이 없으면 "사용자는")으로 맞춘다.
+
+    name 은 username 원문, address 는 대화 호칭(성을 뗀 이름)이다. 모델이 첫 문장 주어를
+    "동휘님은", "사용자는", "서동휘 님이"처럼 바꿔 쓰거나 "니쥬가 보기에"를 빼면 바로잡는다.
+    주어를 알아볼 수 없는 문장은 고치다 문장이 깨질 수 있어서 그대로 둔다.
+    """
+    expected = f"{SUMMARY_INTRO} {name}님은" if name else f"{SUMMARY_INTRO} 사용자는"
+    text = summary.strip()
+    if name:
+        text = text.replace(f"{name}님님", f"{name}님")
+    if text.startswith(expected):
+        return text
+    subjects = {*_GENERIC_SUBJECTS, *(value for value in (name, address) if value)}
+    if name:
+        subjects.add(name.replace(" ", ""))
+    # 긴 이름부터 맞춰야 "서동휘"가 "동휘"보다 먼저 걸린다.
+    alternatives = "|".join(
+        re.escape(subject) for subject in sorted(subjects, key=len, reverse=True)
+    )
+    subject = rf"(?:{alternatives})\s*(?:님)?\s*(?:은|는|이|가)\s+"
+    for pattern in (
+        rf"^{SUMMARY_INTRO}[,\s]*{subject}",
+        rf"^{SUMMARY_INTRO}[,\s]+(?:{alternatives})(?:님)?,?\s+",
+        rf"^{subject}",
+    ):
+        fixed, count = re.subn(pattern, f"{expected} ", text, count=1)
+        if count:
+            return fixed
+    return text

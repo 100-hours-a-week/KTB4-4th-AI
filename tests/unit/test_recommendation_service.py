@@ -14,7 +14,7 @@ from app.domain.recommendation import (
 
 class FakeEngine:
     async def recommend(
-        self, signals, *, now=None, limit: int = 20, guide=None
+        self, signals, *, now=None, limit: int = 20, guide=None, recipient_name=None
     ) -> RecommendationBatch:
         assert [signal.value for signal in signals] == ["캠핑"]
         assert guide.exclusions == ("강한 향",)

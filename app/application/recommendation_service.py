@@ -6,10 +6,19 @@ from typing import Any
 
 from app.application.recommendation_engine import RecommendationEngine
 from app.domain.profile.models import DeferralReason, PreferenceAspect, TasteField, Visibility
+from app.domain.profile.onboarding import (
+    INTEREST_QUERY_TERMS,
+    INTEREST_TAXONOMY_KEYS,
+    Allergy,
+    GiftExclusion,
+    InterestCategory,
+)
+from app.domain.profile.taxonomy import INTEREST_CATEGORIES_BY_KEY
 from app.domain.recommendation import (
     RankedRecommendation,
     RecommendationGuide,
     RecommendationSignal,
+    build_catalog_exclusion,
 )
 
 _PROFILE_FIELDS = (
@@ -27,6 +36,11 @@ _BOOST_ASPECTS = {
     PreferenceAspect.SENSORY,
     PreferenceAspect.CRITERION,
 }
+
+
+# 온보딩 관심 카테고리의 쿼리 가중치. 쿼리 재료로 늘 쓰이도록 강한 신호 기준(0.55)은 넘기되,
+# 대화에서 구체적으로 나온 관심사(대개 0.7 이상)보다 앞서지 않게 둔다.
+ONBOARDING_INTEREST_WEIGHT = 0.6
 
 
 def _parse_datetime(value: object) -> datetime:
@@ -80,9 +94,48 @@ def _preference_signals(profile: Mapping[str, Any]) -> list[RecommendationSignal
 
 def recommendation_inputs(
     payload: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
 ) -> tuple[tuple[RecommendationSignal, ...], RecommendationGuide]:
-    """추천 엔진에 넘기는 신호와 가이드. 플레이그라운드도 같은 함수로 쿼리를 미리 본다."""
-    return _recommendation_signals(payload), _recommendation_guide(payload)
+    """추천 엔진에 넘기는 신호와 가이드. 플레이그라운드도 같은 함수로 쿼리를 미리 본다.
+
+    payload 의 onboarding 은 선택이다. 관심 카테고리는 신호가 되고, 알레르기와 선물 제외
+    조건은 가이드의 catalog_exclusion 이 된다.
+    """
+    onboarding = payload.get("onboarding") or {}
+    if not isinstance(onboarding, Mapping):
+        raise ValueError("onboarding must be an object")
+    signals = (
+        *_recommendation_signals(payload),
+        *_onboarding_signals(onboarding, now or datetime.now(UTC)),
+    )
+    return signals, _recommendation_guide(payload, onboarding)
+
+
+def _codes(onboarding: Mapping[str, Any], key: str, enum: type[Any]) -> tuple[Any, ...]:
+    """코드 배열을 enum 으로 바꾼다. 같은 코드가 두 번 와도 신호는 하나만 만든다."""
+    values = onboarding.get(key, [])
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        raise ValueError(f"onboarding {key} must be an array")
+    return tuple(dict.fromkeys(enum(str(value)) for value in values))
+
+
+def _onboarding_signals(
+    onboarding: Mapping[str, Any],
+    now: datetime,
+) -> list[RecommendationSignal]:
+    """사용자가 고른 관심 카테고리. 친구에게 보이는 화면 칩이라 공개 범위는 친구로 둔다."""
+    return [
+        RecommendationSignal(
+            field=TasteField.INTERESTS,
+            value=INTEREST_QUERY_TERMS[interest],
+            confidence=ONBOARDING_INTEREST_WEIGHT,
+            visibility=Visibility.FRIENDS,
+            updated_at=now,
+            taxonomy_path=INTEREST_CATEGORIES_BY_KEY[INTEREST_TAXONOMY_KEYS[interest]].path,
+        )
+        for interest in _codes(onboarding, "interestCategoryCodes", InterestCategory)
+    ]
 
 
 def _recommendation_signals(payload: Mapping[str, Any]) -> tuple[RecommendationSignal, ...]:
@@ -137,14 +190,31 @@ def _values(
     return tuple(values)
 
 
-def _recommendation_guide(payload: Mapping[str, Any]) -> RecommendationGuide:
+def _recommendation_guide(
+    payload: Mapping[str, Any],
+    onboarding: Mapping[str, Any],
+) -> RecommendationGuide:
+    catalog_exclusion = build_catalog_exclusion(
+        allergies=_codes(onboarding, "allergyCodes", Allergy),
+        gift_exclusions=_codes(onboarding, "giftExclusionCodes", GiftExclusion),
+    )
     profile = payload.get("profile")
     if not isinstance(profile, Mapping):
-        return RecommendationGuide()
+        return RecommendationGuide(catalog_exclusion=catalog_exclusion)
     return RecommendationGuide(
         exclusions=_values(profile, (TasteField.DISLIKES, TasteField.CONSTRAINTS)),
         preferences=_values(profile, (TasteField.PREFERENCES,), aspects=_BOOST_ASPECTS),
+        catalog_exclusion=catalog_exclusion,
     )
+
+
+def _recipient_name(payload: Mapping[str, Any]) -> str | None:
+    """선물 추천 이유에 넣을 이름. 대화방을 만들 때 받은 username 을 정리한 값이다."""
+    onboarding = payload.get("onboarding")
+    if not isinstance(onboarding, Mapping):
+        return None
+    name = onboarding.get("displayName")
+    return str(name) if name else None
 
 
 def _items(recommendations: Sequence[RankedRecommendation]) -> list[dict[str, object]]:
@@ -165,7 +235,9 @@ class V1RecommendationService:
 
     async def recommend_lists(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         signals, guide = recommendation_inputs(payload)
-        batch = await self._engine.recommend(signals, guide=guide)
+        batch = await self._engine.recommend(
+            signals, guide=guide, recipient_name=_recipient_name(payload)
+        )
         return {
             "generatedAt": datetime.now(UTC).isoformat(),
             "self": {"items": _items(batch.self)},
