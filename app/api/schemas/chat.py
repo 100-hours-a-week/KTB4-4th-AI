@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import Field
 
-from app.api.schemas.common import ApiModel, ConversationRoomId, UserId
+from app.api.schemas.common import ApiModel, ConversationRoomId, MessageId, UserId
 from app.api.schemas.profile import ProfileKeywords, ScoredProfileKeywords
 from app.api.schemas.recommendation import RecommendationLists
 
@@ -34,6 +34,24 @@ class ChatMessageResponse(ApiModel):
     progress: int = Field(ge=0, le=100)
     can_close: bool
     input_locked: bool
+
+
+class ChatMessageStreamRequest(ApiModel):
+    user_id: UserId
+    # BE가 저장한 사용자 메시지 ID. 같은 메시지를 다시 보낼 때 같은 값이다.
+    user_message_id: MessageId
+    message: str = Field(min_length=1, max_length=500)
+
+
+class ChatStreamDelta(ApiModel):
+    index: int = Field(ge=0)
+    text: str
+
+
+class ChatStreamError(ApiModel):
+    code: str
+    message: str
+    retryable: bool
 
 
 class ClientProfileAnalysis(ApiModel):
