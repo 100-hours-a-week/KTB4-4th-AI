@@ -254,9 +254,13 @@ def test_extraction_that_completes_readiness_closes_at_close_turn() -> None:
     assert completed.readiness.sufficient is True
     assert completed.state.turn_count == COMPANION_CLOSE_AFTER_TURN
     assert completed.next_decision.completion_reason == CompletionReason.SUFFICIENT
-    assert completed.state.status == SessionStatus.INPUT_LOCKED
-    assert completed.state.completion_reason == CompletionReason.SUFFICIENT
-    assert decide_goal(completed.state, "").completion_reason == CompletionReason.SUFFICIENT
+    # 이번 질문은 이미 나갔으므로 입력을 잠그지 않고 다음 턴을 마무리로 예약한다.
+    assert completed.reply == "사진은 주로 언제 찍으세요?"
+    assert completed.state.status == SessionStatus.ACTIVE
+    assert completed.state.pending_wrap == CompletionReason.SUFFICIENT
+    next_decision = decide_goal(completed.state, "풍경을 주로 찍어요")
+    assert next_decision.goal == ConversationGoal.WRAP
+    assert next_decision.completion_reason == CompletionReason.SUFFICIENT
 
 
 def _raw_item(**overrides: Any) -> dict[str, Any]:
@@ -351,10 +355,12 @@ def test_closing_reply_replaces_trailing_question_with_closing_message() -> None
     assert closing_reply("부모님 댁 가면 뭐 해요?") == CLOSING_MESSAGE
 
 
-def test_turn_that_completes_readiness_ends_with_closing_message() -> None:
+def test_turn_that_completes_readiness_closes_on_the_next_turn() -> None:
     from app.domain.conversation.guards import CLOSING_MESSAGE
 
-    gateway = FakeModelGateway([{"items": [_raw_item(value="사진", evidence="사진도 좋아해요")]}])
+    gateway = FakeModelGateway(
+        [{"items": [_raw_item(value="사진", evidence="사진도 좋아해요")]}, {"items": []}]
+    )
     service = ConversationService(model_gateway=gateway, extraction_model="extractor")
     state = ConversationState(user_id=1, conversation_room_id=101)
     state.profile.signals.extend(
@@ -379,9 +385,50 @@ def test_turn_that_completes_readiness_ends_with_closing_message() -> None:
         )
     )
 
-    assert completed.reply == f"사진 좋죠. {CLOSING_MESSAGE}"
-    assert completed.state.history[-1].content == completed.reply
+    # 질문은 그대로 두고 사용자의 답을 받는다.
+    assert completed.reply == "사진 좋죠. 주로 뭘 찍어요?"
+    assert completed.state.status == SessionStatus.ACTIVE
+
+    prepared = service.prepare_turn(completed.state, "꽃이요")
+    assert prepared.decision.goal == ConversationGoal.WRAP
+    closed = asyncio.run(
+        service.complete_turn(
+            completed.state,
+            utterance="꽃이요",
+            raw_reply="꽃 사진 예쁘죠. 어떤 꽃 좋아해요?",
+            goal=prepared.decision.goal,
+            completion_reason=prepared.decision.completion_reason,
+        )
+    )
+
+    # 마무리 턴은 모델 반응 뒤에 종료 멘트를 붙이고, 끝 질문은 뗀다.
+    assert closed.reply == f"꽃 사진 예쁘죠. {CLOSING_MESSAGE}"
+    assert closed.state.history[-1].content == closed.reply
+    assert closed.state.status == SessionStatus.INPUT_LOCKED
+    assert closed.state.completion_reason == CompletionReason.SUFFICIENT
+    assert closed.state.pending_wrap is None
+
+
+def test_wrap_turn_appends_closing_message_after_reaction() -> None:
+    from app.domain.conversation.guards import CLOSING_MESSAGE
+
+    gateway = FakeModelGateway([{"items": []}])
+    service = ConversationService(model_gateway=gateway, extraction_model="extractor")
+    state = ConversationState(user_id=1, conversation_room_id=101, turn_count=3)
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="이제 그만할래요",
+            raw_reply="네, 오늘 이야기 즐거웠어요!",
+            goal=ConversationGoal.WRAP,
+            completion_reason=CompletionReason.USER_EXIT,
+        )
+    )
+
+    assert completed.reply == f"네, 오늘 이야기 즐거웠어요! {CLOSING_MESSAGE}"
     assert completed.state.status == SessionStatus.INPUT_LOCKED
+    assert completed.state.completion_reason == CompletionReason.USER_EXIT
 
 
 def test_last_turn_at_max_turns_ends_with_closing_message() -> None:
@@ -392,12 +439,18 @@ def test_last_turn_at_max_turns_ends_with_closing_message() -> None:
     service = ConversationService(model_gateway=gateway, extraction_model="extractor")
     state = ConversationState(user_id=1, conversation_room_id=101, turn_count=MAX_TURNS - 1)
 
+    # 마지막 턴은 답변을 만들기 전에 마무리로 정해진다.
+    prepared = service.prepare_turn(state, "주말엔 그냥 쉬어요")
+    assert prepared.decision.goal == ConversationGoal.WRAP
+    assert prepared.decision.completion_reason == CompletionReason.MAX_CYCLES
+
     completed = asyncio.run(
         service.complete_turn(
             state,
             utterance="주말엔 그냥 쉬어요",
             raw_reply="쉬는 것도 중요하죠. 쉴 때는 주로 뭐 해요?",
-            goal=ConversationGoal.CHAT,
+            goal=prepared.decision.goal,
+            completion_reason=prepared.decision.completion_reason,
         )
     )
 

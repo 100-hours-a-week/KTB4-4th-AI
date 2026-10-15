@@ -103,6 +103,11 @@ class ConversationState:
     used_scenes: list[str] = field(default_factory=list)
     # 한 번 오른 진행률은 내리지 않는다.
     progress_floor: int = 0
+    # 턴을 기록한 뒤 종료로 판정되면 다음 턴을 마무리 턴으로 예약한다.
+    # 그 턴의 질문은 이미 사용자에게 흘려보냈으므로 바꾸지 않고, 답을 받은 뒤 마무리한다.
+    pending_wrap: CompletionReason | None = None
+    # 마지막으로 확정한 턴의 BE 사용자 메시지 ID. 같은 메시지 재요청이면 다시 생성하지 않는다.
+    last_user_message_id: int | None = None
 
     @property
     def last_move(self) -> ConversationMove | None:
@@ -147,12 +152,15 @@ class ConversationState:
             "returned_topics": list(self.returned_topics),
             "used_scenes": list(self.used_scenes),
             "progress_floor": self.progress_floor,
+            "pending_wrap": self.pending_wrap.value if self.pending_wrap else None,
+            "last_user_message_id": self.last_user_message_id,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ConversationState:
         created_at = datetime.fromisoformat(payload["created_at"])
         completion_reason = payload.get("completion_reason")
+        pending_wrap = payload.get("pending_wrap")
         return cls(
             user_id=int(payload["user_id"]),
             conversation_room_id=int(payload["conversation_room_id"]),
@@ -200,6 +208,12 @@ class ConversationState:
             returned_topics=list(payload.get("returned_topics", [])),
             used_scenes=list(payload.get("used_scenes", [])),
             progress_floor=int(payload.get("progress_floor", 0)),
+            pending_wrap=CompletionReason(pending_wrap) if pending_wrap else None,
+            last_user_message_id=(
+                int(payload["last_user_message_id"])
+                if payload.get("last_user_message_id") is not None
+                else None
+            ),
         )
 
 

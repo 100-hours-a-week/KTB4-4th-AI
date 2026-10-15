@@ -494,9 +494,11 @@ def build_reply_messages(
         )
     messages.extend(turn.to_dict() for turn in state.history[-MAX_HISTORY_MESSAGES:])
     if goal == ConversationGoal.WRAP:
+        # 정리하겠다는 안내는 응답 뒤에 고정 문장으로 붙는다(closing_reply).
         note = (
-            "이제 대화를 마무리한다. 오늘 이야기 중 기억에 남는 것 하나를 짚으며 즐겁게 인사하고, "
-            "들려준 이야기로 취향 카드를 만들어 보겠다고 말한다. 질문은 하지 않는다."
+            "이번이 마지막 응답이다. 방금 들은 말에 한두 문장으로 짧게 반응하고, "
+            "오늘 이야기가 즐거웠다는 인사를 덧붙여도 된다. 질문은 하지 않는다. "
+            "이야기를 정리하겠다거나 취향을 분석하겠다는 말은 하지 않는다."
         )
     else:
         note = _move_note(move or ConversationMove.FOLLOW, scene, utterance)
