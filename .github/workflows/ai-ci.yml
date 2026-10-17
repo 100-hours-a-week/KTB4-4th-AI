@@ -151,5 +151,6 @@ jobs:
     uses: ./.github/workflows/deploy.yml
 
     with:
-      deploy_env: dev
+      environment: dev
+      github_environment: dev
       image_sha: ${{ github.sha }}
