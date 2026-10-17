@@ -1,4 +1,4 @@
-name: AI Staging Deploy
+name: AI V2 Staging CD
 
 on:
   workflow_dispatch:
