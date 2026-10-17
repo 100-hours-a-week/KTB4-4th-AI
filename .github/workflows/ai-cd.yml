@@ -1,4 +1,4 @@
-name: AI V1 CD (Legacy EC2)
+name: AI V1 CD
 
 on:
   workflow_dispatch:

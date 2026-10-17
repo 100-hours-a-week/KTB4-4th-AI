@@ -1,4 +1,4 @@
-name: AI Production Deploy
+name: AI V2 Production CD
 
 on:
   workflow_dispatch:
