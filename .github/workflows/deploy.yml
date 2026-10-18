@@ -29,8 +29,6 @@ jobs:
     name: Deploy AI
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
-    # Prod에서는 GitHub Environment의 승인 정책 적용
     environment: ${{ inputs.github_environment }}
 
     permissions:
@@ -72,11 +70,12 @@ jobs:
             exit 1
           fi
 
-          echo "DEPLOY_ENVIRONMENT=$DEPLOY_ENVIRONMENT" >> "$GITHUB_ENV"
-          echo "IMAGE_SHA=$IMAGE_SHA" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=v2-$IMAGE_SHA" >> "$GITHUB_ENV"
+          {
+            echo "DEPLOY_ENVIRONMENT=$DEPLOY_ENVIRONMENT"
+            echo "IMAGE_SHA=$IMAGE_SHA"
+            echo "IMAGE_TAG=v2-$IMAGE_SHA"
+          } >> "$GITHUB_ENV"
 
-      # Prod에서만 Main 포함 여부 검증
       - name: Checkout for Prod SHA Verification
         if: inputs.environment == 'prod'
         uses: actions/checkout@v4
@@ -105,9 +104,8 @@ jobs:
             exit 1
           fi
 
-          echo "Main 포함 SHA 확인 완료: $IMAGE_SHA"
+          echo "Main 포함 SHA 검증 완료: $IMAGE_SHA"
 
-      # Prod에서만 동일 SHA의 Dev 배포 성공 이력 검증
       - name: Verify Successful Dev Deployment
         if: inputs.environment == 'prod'
         uses: actions/github-script@v7
@@ -205,10 +203,12 @@ jobs:
             exit 1
           fi
 
-          echo "ECR_IMAGE_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_ENV"
-          echo "ECS_CLUSTER=needu-$DEPLOY_ENVIRONMENT-cluster" >> "$GITHUB_ENV"
-          echo "ECS_SERVICE=needu-$DEPLOY_ENVIRONMENT-ai" >> "$GITHUB_ENV"
-          echo "BASE_TASK_DEFINITION_PARAMETER=/needu/v2/$DEPLOY_ENVIRONMENT/ecs/ai/base-task-definition-arn" >> "$GITHUB_ENV"
+          {
+            echo "ECR_IMAGE_URI=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG"
+            echo "ECS_CLUSTER=needu-$DEPLOY_ENVIRONMENT-cluster"
+            echo "ECS_SERVICE=needu-$DEPLOY_ENVIRONMENT-ai"
+            echo "BASE_TASK_DEFINITION_PARAMETER=/needu/v2/$DEPLOY_ENVIRONMENT/ecs/ai/base-task-definition-arn"
+          } >> "$GITHUB_ENV"
 
       - name: Verify ECR Image
         run: |
