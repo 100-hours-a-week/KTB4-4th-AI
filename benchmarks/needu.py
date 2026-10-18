@@ -111,8 +111,11 @@ class RoleGateway:
 class RecordingJudgment:
     def __init__(self, client, config, settings, calls):
         self.calls = calls
+        secret = settings.openrouter_api_key or settings.model_api_key
         self.gateway = SystemOneJudgmentGateway(
-            client=client, base_url=config["base_url"], api_key=model_key({}, settings)
+            client=client,
+            base_url=config["base_url"],
+            api_key=secret.get_secret_value() if secret else None,
         )
 
     async def decide(self, state, questions, *, model):

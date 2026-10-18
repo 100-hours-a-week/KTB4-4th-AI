@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI
+from pydantic import SecretStr
 from redis.asyncio import Redis
 
 from app.api.router import api_router
@@ -32,6 +33,10 @@ from app.infrastructure.model_gateway import (
 from app.infrastructure.persistence import InMemorySessionStore, RedisSessionStore
 
 
+def _secret_value(secret: SecretStr | None) -> str | None:
+    return secret.get_secret_value() if secret is not None else None
+
+
 def create_app(
     settings: Settings | None = None,
     *,
@@ -52,8 +57,14 @@ def create_app(
         catalog_pool: Any | None = None
 
         resolved_gateway = model_gateway
-        secret = resolved_settings.model_api_key or resolved_settings.openrouter_api_key
-        api_key = secret.get_secret_value() if secret is not None else None
+        # 응답·추출(RunPod vLLM)은 MODEL_API_KEY, OpenRouter로 가는 Jev는
+        # OPENROUTER_API_KEY를 쓴다. 한쪽만 있으면 V1처럼 그 키 하나로 모두 호출한다.
+        api_key = _secret_value(
+            resolved_settings.model_api_key or resolved_settings.openrouter_api_key
+        )
+        openrouter_api_key = _secret_value(
+            resolved_settings.openrouter_api_key or resolved_settings.model_api_key
+        )
         if resolved_gateway is None:
             http_client = httpx.AsyncClient(timeout=None)
             model_base_urls = {}
@@ -98,7 +109,7 @@ def create_app(
             resolved_judgment_gateway = SystemOneJudgmentGateway(
                 client=http_client,
                 base_url=str(resolved_settings.judgment_model_base_url),
-                api_key=api_key,
+                api_key=openrouter_api_key,
             )
 
         resolved_session_store = session_store
