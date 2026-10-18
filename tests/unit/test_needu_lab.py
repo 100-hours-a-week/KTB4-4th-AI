@@ -273,7 +273,10 @@ def test_changed_service_environment_stops_before_model_call(tmp_path):
 
 def test_environment_judgment_path_uses_candidate_schema_and_systemone(tmp_path):
     store = Store(tmp_path / "lab.db")
-    configured = settings(judgment_model_base_url="http://test/judge/v1")
+    configured = settings(
+        judgment_model_base_url="http://test/judge/v1",
+        openrouter_api_key="synthetic-openrouter-key",
+    )
     spec = RunSpec(mode="needu", prompt="주말마다 캠핑을 가요.")
     config = pipeline_configuration(configured, spec, store)
     store.create_run(spec.model_dump(), {"model": "service"}, {"pipeline": config})
@@ -283,6 +286,12 @@ def test_environment_judgment_path_uses_candidate_schema_and_systemone(tmp_path)
     def handle(request):
         data = json.loads(request.content)
         seen.append((request.url.path, data))
+        expected_key = (
+            "synthetic-openrouter-key"
+            if request.url.path.endswith("/systemone")
+            else "synthetic-model-key"
+        )
+        assert request.headers["Authorization"] == f"Bearer {expected_key}"
         if request.url.path.endswith("/systemone"):
             assert "stance_0" in data["questions"]
             return httpx.Response(

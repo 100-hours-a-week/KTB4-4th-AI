@@ -3,6 +3,7 @@ import io
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -83,6 +84,30 @@ def create_app(db_path: Path | None = None, transport=None, service_settings=Non
     @app.post("/api/connections", status_code=201)
     async def create_connection(body: Connection, request: Request):
         return await save_connection(uuid4().hex, body, request)
+
+    @app.post("/api/connections/runpod")
+    async def import_runpod_connections(request: Request):
+        settings = settings_for_run()
+        connections = []
+        for role, label in [("response", "응답"), ("extraction", "추출")]:
+            url = getattr(settings, f"{role}_model_base_url")
+            host = urlsplit(str(url)).hostname or ""
+            if not host.endswith(".proxy.runpod.net"):
+                raise HTTPException(422, f"{label} 모델의 RunPod Pod URL을 .env에 설정하세요.")
+            connections.append(
+                Connection(
+                    name=f"RunPod · Kanana {label}",
+                    provider="openai",
+                    environment="runpod",
+                    base_url=str(url),
+                    model=getattr(settings, f"{role}_model_name"),
+                    api_key_env="MODEL_API_KEY" if settings.model_api_key else "",
+                )
+            )
+        return [
+            await save_connection(f"runpod-{role}", connection, request)
+            for role, connection in zip(("response", "extraction"), connections, strict=True)
+        ]
 
     async def save_connection(connection_id, body, request):
         data = body.model_dump()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -16,6 +16,7 @@ class ModelGatewayError(RuntimeError):
     """Raised when an OpenAI-compatible model endpoint cannot produce a valid response.
 
     reason은 실패를 나눈 이름이다. timeout과 network는 상위 서버에 닿지 못한 것,
+    unavailable은 주소를 물어봤는데 지금 떠 있는 서버가 없는 것,
     http_status는 상위가 오류 코드로 답한 것, upstream_error는 200 응답 본문에 오류가 담긴 것,
     invalid_json, no_content, empty_content, invalid_structured는 응답 형식이 틀린 것이다.
     """
@@ -92,16 +93,21 @@ class OpenAICompatibleModelGateway:
         self,
         *,
         client: httpx.AsyncClient,
-        model_base_urls: Mapping[str, str],
+        model_base_urls: Mapping[str, str | Callable[[], str | None]],
         api_key: str | None = None,
         model_max_tokens: Mapping[str, int] | None = None,
         model_enable_thinking: Mapping[str, bool] | None = None,
         model_temperatures: Mapping[str, float] | None = None,
         model_stop_sequences: Mapping[str, Sequence[str]] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> None:
         self._client = client
+        # 폴백이 있는 1차 엔드포인트만 짧은 타임아웃을 건다. 없으면 클라이언트 설정을 따른다.
+        self._request_options: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
+        # 주소 대신 함수를 받으면 호출할 때마다 물어본다(RunPod Pod처럼 주소가 바뀌는 경우).
         self._model_base_urls = {
-            model: base_url.rstrip("/") for model, base_url in model_base_urls.items()
+            model: base_url if callable(base_url) else base_url.rstrip("/")
+            for model, base_url in model_base_urls.items()
         }
         self._api_key = api_key
         self._model_max_tokens = dict(model_max_tokens or {})
@@ -117,6 +123,13 @@ class OpenAICompatibleModelGateway:
             raise ModelGatewayError(
                 f"No endpoint is configured for model {model!r}", reason="no_endpoint"
             )
+        if callable(base_url):
+            base_url = base_url()
+            if base_url is None:
+                raise ModelGatewayError(
+                    f"No running endpoint for model {model!r}", reason="unavailable"
+                )
+            base_url = base_url.rstrip("/")
         return f"{base_url}/chat/completions"
 
     def _payload(self, model: str, **fields: Any) -> dict[str, Any]:
@@ -144,6 +157,7 @@ class OpenAICompatibleModelGateway:
                 self._url(model),
                 headers=self._headers(),
                 json=payload,
+                **self._request_options,
             )
             response.raise_for_status()
             body = response.json()
@@ -240,6 +254,7 @@ class OpenAICompatibleModelGateway:
                 self._url(model),
                 headers=self._headers(),
                 json=self._payload(model, messages=list(messages), stream=True),
+                **self._request_options,
             ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():

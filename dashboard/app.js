@@ -371,7 +371,7 @@ function connectionsPage() {
       "ENDPOINT REGISTRY",
       "모델 연결",
       "모델을 실행한 서버의 API 주소와 실제 모델 ID를 등록하세요.",
-      `<div class="actions"><button class="btn" data-action="colab-connection">Colab GPU 연결</button><button class="btn" data-action="hf-connection">Hugging Face API</button><button class="btn" data-action="openrouter-connection">OpenRouter API</button><button class="btn" data-action="new-connection">+ 연결 추가</button></div>`,
+      `<div class="actions"><button class="btn" data-action="runpod-connection">RunPod 서비스 연결</button><button class="btn" data-action="colab-connection">Colab GPU 연결</button><button class="btn" data-action="hf-connection">Hugging Face API</button><button class="btn" data-action="openrouter-connection">OpenRouter API</button><button class="btn" data-action="new-connection">+ 연결 추가</button></div>`,
     ) +
     `<div class="grid-two"><section class="card"><div class="card-head"><h2>${connection ? e(c.name) : "새 연결"}</h2><span class="pill">${e(c.environment)}</span></div><form id="connection-form">` +
     field("연결 이름", "name", c.name, "text", 'required maxlength="80"') +
@@ -1222,6 +1222,12 @@ main.addEventListener("click", async (event) => {
       state.serviceError = null;
       render();
       notice("서비스 환경 설정을 다시 읽었습니다. .env는 수정하지 않았습니다.");
+    } else if (action === "runpod-connection") {
+      const connections = await api("/connections/runpod", { method: "POST" });
+      state.connectionId = connections[0].id;
+      await refresh();
+      render();
+      notice(".env의 RunPod 응답·추출 연결을 등록했습니다. 연결 검사 후 테스트에서 선택하세요.");
     } else if (action === "colab-connection") {
       const connection = state.overview.connections.find((c) => c.environment === "colab");
       state.connectionId = connection?.id || null;

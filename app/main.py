@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import asyncio
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import httpx
 from fastapi import FastAPI
+from pydantic import SecretStr
 from redis.asyncio import Redis
 
 from app.api.router import api_router
@@ -26,10 +28,112 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
 from app.infrastructure.embedding import OpenAICompatibleEmbedder
 from app.infrastructure.model_gateway import (
+    FailoverModelGateway,
+    FallbackRoute,
     OpenAICompatibleModelGateway,
+    RunPodPodLocator,
     SystemOneJudgmentGateway,
 )
 from app.infrastructure.persistence import InMemorySessionStore, RedisSessionStore
+
+
+def _secret_value(secret: SecretStr | None) -> str | None:
+    return secret.get_secret_value() if secret is not None else None
+
+
+def _build_model_gateway(
+    settings: Settings,
+    client: httpx.AsyncClient,
+    *,
+    api_key: str | None,
+    fallback_api_key: str | None,
+    locator: RunPodPodLocator | None = None,
+) -> ModelGateway:
+    model_base_urls: dict[str, str | Callable[[], str | None]] = {}
+    if locator is not None:
+        # 응답·추출 1차 주소는 고정값 대신 지금 떠 있는 RunPod Pod에서 정한다.
+        model_base_urls[settings.response_model_name] = lambda: locator.base_url
+        model_base_urls[settings.extraction_model_name] = lambda: locator.base_url
+    else:
+        if settings.response_model_base_url is not None:
+            model_base_urls[settings.response_model_name] = str(settings.response_model_base_url)
+        if settings.extraction_model_base_url is not None:
+            model_base_urls[settings.extraction_model_name] = str(
+                settings.extraction_model_base_url
+            )
+    if settings.document_model_base_url is not None:
+        model_base_urls[settings.document_model_name] = str(settings.document_model_base_url)
+
+    fallbacks: dict[str, FallbackRoute] = {}
+    for primary_model, base_url, fallback_model, max_tokens in (
+        (
+            settings.response_model_name,
+            settings.response_fallback_model_base_url,
+            settings.response_fallback_model_name,
+            settings.response_model_max_tokens,
+        ),
+        (
+            settings.extraction_model_name,
+            settings.extraction_fallback_model_base_url,
+            settings.extraction_fallback_model_name,
+            settings.extraction_model_max_tokens,
+        ),
+    ):
+        if base_url is None or not fallback_model:
+            continue
+        fallbacks[primary_model] = FallbackRoute(
+            gateway=OpenAICompatibleModelGateway(
+                client=client,
+                model_base_urls={fallback_model: str(base_url)},
+                model_max_tokens={fallback_model: max_tokens},
+                api_key=fallback_api_key,
+            ),
+            model=fallback_model,
+        )
+
+    primary = OpenAICompatibleModelGateway(
+        client=client,
+        model_base_urls=model_base_urls,
+        model_max_tokens={
+            settings.response_model_name: settings.response_model_max_tokens,
+            settings.extraction_model_name: settings.extraction_model_max_tokens,
+            settings.document_model_name: settings.document_model_max_tokens,
+        },
+        api_key=api_key,
+        # 폴백이 없으면 기다리는 것 말고 할 수 있는 게 없으니 제한을 걸지 않는다.
+        timeout=(
+            httpx.Timeout(
+                None,
+                connect=settings.primary_model_connect_timeout_seconds,
+                read=settings.primary_model_read_timeout_seconds,
+            )
+            if fallbacks
+            else None
+        ),
+    )
+    if not fallbacks:
+        return primary
+    return FailoverModelGateway(
+        primary=primary,
+        fallbacks=fallbacks,
+        cooldown_seconds=settings.primary_model_cooldown_seconds,
+        max_cooldown_seconds=settings.primary_model_max_cooldown_seconds,
+        primary_ready=locator.is_ready if locator is not None else None,
+    )
+
+
+def _build_pod_locator(settings: Settings, client: httpx.AsyncClient) -> RunPodPodLocator | None:
+    api_key = _secret_value(settings.runpod_api_key)
+    if not settings.runpod_pod_name_prefix or api_key is None:
+        return None
+    return RunPodPodLocator(
+        client=client,
+        api_key=api_key,
+        name_prefix=settings.runpod_pod_name_prefix,
+        port=settings.runpod_pod_port,
+        api_base_url=str(settings.runpod_api_base_url),
+        interval_seconds=settings.runpod_lookup_interval_seconds,
+    )
 
 
 def create_app(
@@ -52,38 +156,28 @@ def create_app(
         catalog_pool: Any | None = None
 
         resolved_gateway = model_gateway
-        secret = resolved_settings.model_api_key or resolved_settings.openrouter_api_key
-        api_key = secret.get_secret_value() if secret is not None else None
+        # 응답·추출 1차(RunPod vLLM)는 MODEL_API_KEY, OpenRouter로 가는 Jev와 폴백은
+        # OPENROUTER_API_KEY를 쓴다. 한쪽만 있으면 V1처럼 그 키 하나로 모두 호출한다.
+        api_key = _secret_value(
+            resolved_settings.model_api_key or resolved_settings.openrouter_api_key
+        )
+        openrouter_api_key = _secret_value(
+            resolved_settings.openrouter_api_key or resolved_settings.model_api_key
+        )
+        locator_task: asyncio.Task[None] | None = None
         if resolved_gateway is None:
             http_client = httpx.AsyncClient(timeout=None)
-            model_base_urls = {}
-            if resolved_settings.response_model_base_url is not None:
-                model_base_urls[resolved_settings.response_model_name] = str(
-                    resolved_settings.response_model_base_url
-                )
-            if resolved_settings.extraction_model_base_url is not None:
-                model_base_urls[resolved_settings.extraction_model_name] = str(
-                    resolved_settings.extraction_model_base_url
-                )
-            if resolved_settings.document_model_base_url is not None:
-                model_base_urls[resolved_settings.document_model_name] = str(
-                    resolved_settings.document_model_base_url
-                )
-            resolved_gateway = OpenAICompatibleModelGateway(
-                client=http_client,
-                model_base_urls=model_base_urls,
-                model_max_tokens={
-                    resolved_settings.response_model_name: (
-                        resolved_settings.response_model_max_tokens
-                    ),
-                    resolved_settings.extraction_model_name: (
-                        resolved_settings.extraction_model_max_tokens
-                    ),
-                    resolved_settings.document_model_name: (
-                        resolved_settings.document_model_max_tokens
-                    ),
-                },
+            locator = _build_pod_locator(resolved_settings, http_client)
+            if locator is not None:
+                # 첫 요청부터 맞는 주소로 보내도록 시작할 때 한 번 찾고, 이후는 주기적으로 찾는다.
+                await locator.refresh()
+                locator_task = asyncio.create_task(locator.run())
+            resolved_gateway = _build_model_gateway(
+                resolved_settings,
+                http_client,
                 api_key=api_key,
+                fallback_api_key=_secret_value(resolved_settings.openrouter_api_key),
+                locator=locator,
             )
 
         # 모델 게이트웨이를 주입받았으면 판단 게이트웨이도 주입받은 것만 쓴다.
@@ -98,7 +192,7 @@ def create_app(
             resolved_judgment_gateway = SystemOneJudgmentGateway(
                 client=http_client,
                 base_url=str(resolved_settings.judgment_model_base_url),
-                api_key=api_key,
+                api_key=openrouter_api_key,
             )
 
         resolved_session_store = session_store
@@ -187,6 +281,10 @@ def create_app(
         try:
             yield
         finally:
+            if locator_task is not None:
+                locator_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await locator_task
             if redis_client is not None:
                 await redis_client.aclose()
             if http_client is not None:
