@@ -279,6 +279,20 @@ API·워커를 함께 재시작하고 업데이트된 페르소나로 새 실험
 
 ## 원격 서버와 키
 
+### RunPod 서비스 연결
+
+`.env`의 `RESPONSE_MODEL_BASE_URL`, `EXTRACTION_MODEL_BASE_URL`에 현재 Pod의 `/v1` 주소를,
+각 `*_MODEL_NAME`에 `/v1/models`가 반환하는 별칭을 설정한다. 현재 Kanana 서버는
+`kakaocorp/kanana-1.5-15.7b-a3b-instruct` 하나를 `kanana-response`, `kanana-extractor`로 제공한다.
+`MODEL_API_KEY`는 vLLM 서버의 키이며 RunPod 계정 관리용 API 키와 다르다.
+
+모델 연결의 **RunPod 서비스 연결** 버튼은 서비스 설정에서 응답·추출 연결 두 개를 등록하거나
+갱신한다. Pod 이전으로 주소가 바뀌면 `.env`를 갱신한 뒤 같은 버튼을 누른다. 각 연결의 **연결 검사**로
+모델 목록을 확인하고 대화 테스트·시나리오 실행의 응답/추출 모델에 각각 선택한다. 등록 연결은 해당
+RunPod를 직접 호출하므로 GPU 실패를 OpenRouter 성공으로 대체하지 않는다. 판단 끄기를 선택하면
+Kanana 직접 구조화 추출을, 환경변수 기본을 선택하면 Jev 판단 경로를 테스트한다. Jev에는 별도의
+`OPENROUTER_API_KEY`를 사용한다. GPU 시작·중지와 과금은 RunPod 콘솔에서 관리한다.
+
 OpenAI 호환 `/models`, `/chat/completions`가 노출된 RunPod 연결을 추가할 수 있다. RunPod job 기반
 native `/run` API는 이 어댑터의 대상이 아니다. 등록된 연결의 키는 서버와 워커의 환경변수로 설정하고
 UI에는 변수 이름만 입력한다. 서비스 모드의 환경변수 기본 모델은 `.env`/환경변수의 `MODEL_API_KEY`
