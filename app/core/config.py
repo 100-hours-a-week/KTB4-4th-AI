@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, RedisDsn, SecretStr
+from pydantic import AnyHttpUrl, Field, RedisDsn, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +60,28 @@ class Settings(BaseSettings):
     response_model_name: str = "response-model"
     extraction_model_name: str = "extraction-model"
 
+    # 응답·추출 1차 엔드포인트(RunPod vLLM)가 꺼졌거나 실패하면 넘길 엔드포인트(OpenRouter).
+    # 주소와 모델명을 함께 넣어야 켜지고, 키는 OPENROUTER_API_KEY를 쓴다. 비우면 1차만 쓴다.
+    response_fallback_model_base_url: AnyHttpUrl | None = None
+    response_fallback_model_name: str | None = None
+    extraction_fallback_model_base_url: AnyHttpUrl | None = None
+    extraction_fallback_model_name: str | None = None
+    # 폴백이 있을 때만 1차 호출에 거는 제한. read는 응답 바이트 사이의 대기 한도다.
+    primary_model_connect_timeout_seconds: float = Field(default=3.0, gt=0)
+    primary_model_read_timeout_seconds: float = Field(default=20.0, gt=0)
+    # 1차가 실패한 뒤 다시 시도하기 전까지 폴백으로만 보내는 시간. 실패가 이어지면 두 배씩
+    # 최대값까지 늘린다. 최대값은 GPU를 켠 뒤 1차로 돌아오기까지 걸리는 최대 지연이기도 하다.
+    primary_model_cooldown_seconds: float = Field(default=30.0, ge=0)
+    primary_model_max_cooldown_seconds: float = Field(default=120.0, ge=0)
+    # RunPod Pod 조회. 키와 이름 접두어를 함께 넣으면 응답·추출 1차 주소를 위의 BASE_URL 대신
+    # 이름이 접두어로 시작하는 RUNNING Pod에서 찾는다. Pod ID가 바뀌어도 재배포가 없다.
+    # 키는 RunPod 콘솔의 Restricted 키(Pod 읽기 전용)를 쓴다.
+    runpod_api_key: SecretStr | None = None
+    runpod_pod_name_prefix: str | None = None
+    runpod_pod_port: int = Field(default=8000, gt=0, le=65535)
+    runpod_api_base_url: AnyHttpUrl = AnyHttpUrl("https://api.runpod.io")
+    runpod_lookup_interval_seconds: float = Field(default=30.0, gt=0)
+
     # 취향 판단 모델(TypeSafe Jev). OpenRouter의 /systemone 으로 호출하고 키는 위와 같은 것을 쓴다.
     # base url이 없으면 판단 단계 없이 추출 모델 혼자 취향을 뽑는 기존 방식으로 돈다.
     judgment_model_base_url: AnyHttpUrl | None = None
@@ -96,6 +118,20 @@ class Settings(BaseSettings):
     embedding_batch_size: int = Field(default=100, ge=1, le=100)
     embedding_timeout_seconds: float = Field(default=30.0, gt=0)
     upstage_api_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def _fallback_needs_url_and_name(self) -> "Settings":
+        for role in ("response", "extraction"):
+            url = getattr(self, f"{role}_fallback_model_base_url")
+            name = getattr(self, f"{role}_fallback_model_name")
+            if (url is None) != (not name):
+                raise ValueError(
+                    f"{role.upper()}_FALLBACK_MODEL_BASE_URL and "
+                    f"{role.upper()}_FALLBACK_MODEL_NAME must be set together"
+                )
+        if self.runpod_pod_name_prefix and self.runpod_api_key is None:
+            raise ValueError("RUNPOD_POD_NAME_PREFIX needs RUNPOD_API_KEY")
+        return self
 
 
 @lru_cache

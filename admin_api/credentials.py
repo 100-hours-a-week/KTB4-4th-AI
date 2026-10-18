@@ -11,7 +11,7 @@ def connection_key(connection, settings=None):
     if not name:
         return None
     key = os.environ.get(name)
-    if not key and name in {"HF_TOKEN", "OPENROUTER_API_KEY", "AI_LAB_COLAB_KEY"}:
+    if not key and name in {"HF_TOKEN", "OPENROUTER_API_KEY", "AI_LAB_COLAB_KEY", "MODEL_API_KEY"}:
         configured = settings or Settings(_env_file=ROOT / ".env")
         secret = getattr(configured, name.lower())
         key = secret.get_secret_value() if secret else None
