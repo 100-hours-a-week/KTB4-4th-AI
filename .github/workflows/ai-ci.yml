@@ -14,8 +14,11 @@ env:
   ECR_REPOSITORY: need-u/ai
 
 jobs:
+  # =========================================================
+  # CI: Python Test
+  # =========================================================
   check:
-    name: Test
+    name: Python Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -23,18 +26,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+          enable-cache: true
 
       - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: uv sync --frozen
 
       - name: Run Tests
-        run: pytest
+        run: uv run --frozen pytest
 
   # =========================================================
   # V1: main Push -> SHA Image
@@ -68,7 +70,10 @@ jobs:
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_SHA: ${{ github.sha }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           docker build \
             -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA" \
             .
@@ -77,7 +82,10 @@ jobs:
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_SHA: ${{ github.sha }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           docker push \
             "$REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA"
 
@@ -113,7 +121,10 @@ jobs:
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_SHA: ${{ github.sha }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           docker build \
             -t "$REGISTRY/$ECR_REPOSITORY:v2-$IMAGE_SHA" \
             .
@@ -122,7 +133,10 @@ jobs:
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_SHA: ${{ github.sha }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           docker push \
             "$REGISTRY/$ECR_REPOSITORY:v2-$IMAGE_SHA"
 
