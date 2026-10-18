@@ -6,6 +6,7 @@ JAVA_LONG_MAX = 9_223_372_036_854_775_807
 JavaLongId = Annotated[int, Field(strict=True, ge=1, le=JAVA_LONG_MAX)]
 UserId = JavaLongId
 ConversationRoomId = JavaLongId
+MessageId = JavaLongId
 
 
 def to_camel(value: str) -> str:

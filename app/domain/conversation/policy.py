@@ -149,7 +149,12 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
             ConversationGoal.WRAP,
             state.completion_reason or CompletionReason.USER_EXIT,
         )
-    if state.turn_count >= MAX_TURNS:
+    # 앞 턴에서 예약한 마무리는 이번 발화의 에너지로 다시 판단하지 않는다.
+    if state.pending_wrap is not None:
+        return GoalDecision(ConversationGoal.WRAP, state.pending_wrap)
+    # 이번 발화가 마지막 턴이면 답변을 만들기 전에 마무리로 정한다.
+    turns_after = state.turn_count + 1 if utterance else state.turn_count
+    if turns_after >= MAX_TURNS:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.MAX_CYCLES)
     if utterance and wants_to_exit(utterance):
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)

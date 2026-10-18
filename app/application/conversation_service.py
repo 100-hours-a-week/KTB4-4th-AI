@@ -65,6 +65,7 @@ from app.domain.profile.models import (
     TasteField,
     utc_now,
 )
+from app.domain.profile.onboarding import OnboardingProfile
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,7 @@ class ConversationService:
         *,
         user_id: int,
         conversation_room_id: int,
+        onboarding: OnboardingProfile | None = None,
         now: datetime | None = None,
     ) -> PreparedSession:
         invalid_user_id = isinstance(user_id, bool) or user_id <= 0
@@ -286,8 +288,10 @@ class ConversationService:
             conversation_room_id=conversation_room_id,
             created_at=resolved_now,
             last_active_at=resolved_now,
+            onboarding=onboarding,
         )
-        return PreparedSession(state=state, messages=tuple(build_opening_messages()))
+        name = onboarding.address_name if onboarding else None
+        return PreparedSession(state=state, messages=tuple(build_opening_messages(name=name)))
 
     def record_opening(
         self,
@@ -546,21 +550,20 @@ class ConversationService:
         else:
             next_decision = decide_goal(state, "")
 
-        # 마무리 차례인데 모델이 질문으로 끝냈으면 질문을 떼고 종료 멘트를 붙인다.
-        if goal == ConversationGoal.WRAP and reply.endswith("?"):
+        if goal == ConversationGoal.WRAP:
+            # 마무리 턴은 모델의 짧은 반응 뒤에 종료 멘트를 붙이고 입력을 잠근다.
+            # 모델이 질문으로 끝냈으면 그 질문은 뗀다.
             reply = closing_reply(reply)
             state.history[-1] = ConversationTurn(
                 role="assistant", content=reply, created_at=resolved_now
             )
-        if next_decision.goal == ConversationGoal.WRAP:
             state.status = SessionStatus.INPUT_LOCKED
             state.completion_reason = next_decision.completion_reason
-            # 종료가 판정되면 최대 턴에 도달했어도 방금 만든 질문 대신 종료 멘트를 보낸다.
-            if goal != ConversationGoal.WRAP:
-                reply = closing_reply(reply)
-                state.history[-1] = ConversationTurn(
-                    role="assistant", content=reply, created_at=resolved_now
-                )
+            state.pending_wrap = None
+        elif next_decision.goal == ConversationGoal.WRAP:
+            # 추출 결과로 종료가 판정됐을 때는 이번 응답이 이미 나간 뒤다.
+            # 응답을 바꾸지 않고, 사용자의 답을 받은 다음 턴을 마무리로 예약한다.
+            state.pending_wrap = next_decision.completion_reason
 
         state.progress_floor = conversation_progress(state)
 

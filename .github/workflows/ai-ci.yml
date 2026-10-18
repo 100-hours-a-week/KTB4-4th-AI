@@ -2,14 +2,9 @@ name: AI CI
 
 on:
   pull_request:
-    branches:
-      - dev
-      - main
-
+    branches: [dev, main]
   push:
-    branches:
-      - dev
-      - main
+    branches: [dev, main]
 
 permissions:
   contents: read
@@ -19,39 +14,11 @@ env:
   ECR_REPOSITORY: need-u/ai
 
 jobs:
-  test:
-    name: Unit Test & Lint
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12.11"
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.8.4"
-          enable-cache: true
-
-      - name: Install Dependencies
-        run: uv sync --frozen --dev
-
-      - name: Unit Test
-        run: uv run pytest tests/unit
-
-      - name: Ruff Check
-        run: uv run ruff check .
-
-  docker-build-check:
-    name: Docker Build Check
-    needs: test
-    if: github.event_name == 'pull_request'
+  # =========================================================
+  # CI: Python Test
+  # =========================================================
+  check:
+    name: Python Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -59,13 +26,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Docker Build
-        run: docker build -t needu-ai:ci-check .
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
 
-  # V1: main -> ECR
+      - name: Install Dependencies
+        run: uv sync --frozen
+
+      - name: Run Tests
+        run: uv run --frozen pytest
+
+  # =========================================================
+  # V1: main Push -> SHA Image
+  # =========================================================
   v1-ecr-push:
-    name: V1 ECR Push
-    needs: test
+    name: Build & Push V1 Image
+    needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -88,22 +66,35 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & Push
+      - name: Build V1 Docker Image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_SHA: ${{ github.sha }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          IMAGE_URI="$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build \
+            -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA" \
+            .
 
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
+      - name: Push V1 Docker Image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-  # V2: dev -> ECR
+          docker push \
+            "$REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA"
+
+  # =========================================================
+  # V2: dev Push -> v2-SHA Image
+  # =========================================================
   v2-ecr-push:
-    name: V2 ECR Push
-    needs: test
+    name: Build & Push V2 Image
+    needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -126,30 +117,47 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & Push
+      - name: Build V2 Docker Image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: v2-${{ github.sha }}
+          IMAGE_SHA: ${{ github.sha }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          IMAGE_URI="$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build \
+            -t "$REGISTRY/$ECR_REPOSITORY:v2-$IMAGE_SHA" \
+            .
 
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
+      - name: Push V2 Docker Image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-  # V2: Dev ECS 자동 배포
+          docker push \
+            "$REGISTRY/$ECR_REPOSITORY:v2-$IMAGE_SHA"
+
+  # =========================================================
+  # V2 Dev: ECR Push 성공 후 ECS 자동 배포
+  # =========================================================
   deploy-dev:
-    name: V2 Dev Deploy
+    name: Deploy V2 Dev
     needs: v2-ecr-push
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
 
     permissions:
       contents: read
+      actions: read
       id-token: write
 
     uses: ./.github/workflows/deploy.yml
 
     with:
-      deploy_env: dev
+      environment: dev
+      github_environment: dev
       image_sha: ${{ github.sha }}
+
+    secrets: inherit

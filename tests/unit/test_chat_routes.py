@@ -392,6 +392,89 @@ def test_close_returns_initial_recommendations_without_second_request() -> None:
     assert recommendation_service.lists_payload is not None
     assert recommendation_service.lists_payload["userId"] == 10293
     assert "sessionId" not in recommendation_service.lists_payload
+    # 온보딩 값 없이 만든 대화방은 온보딩 조건 없이 추천한다.
+    assert "onboarding" not in recommendation_service.lists_payload
+
+
+ONBOARDING_USER_PROFILE = {
+    "nickname": "니듀",
+    "birthDate": "2000-01-01",
+    "gender": "FEMALE",
+    "interestCategoryCodes": ["COFFEE_TEA", "TRAVEL"],
+    "allergyCodes": ["PEANUT"],
+    "giftExclusionCodes": ["ALCOHOL"],
+}
+
+
+def _onboarding_app(
+    recommendation_service: FakeRecommendationService,
+    gateway: FakeModelGateway | None = None,
+):
+    return create_app(
+        Settings(
+            app_env="test",
+            service_token="test-token",
+            redis_url=None,
+            response_model_base_url=None,
+            extraction_model_base_url=None,
+        ),
+        model_gateway=gateway or FakeModelGateway(),
+        session_store=InMemorySessionStore(),
+        recommendation_service=recommendation_service,
+    )
+
+
+def test_close_passes_onboarding_from_session_creation_to_recommendation() -> None:
+    recommendation_service = FakeRecommendationService()
+    app = _onboarding_app(recommendation_service)
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={
+                "userId": 1,
+                "conversationRoomId": 42,
+                "userProfile": ONBOARDING_USER_PROFILE,
+            },
+        )
+        client.post(
+            "/v1/chat/sessions/42/messages",
+            headers=headers,
+            json={"userId": 1, "message": "주말마다 캠핑 가요"},
+        )
+        client.post("/v1/chat/sessions/42/analysis", headers=headers)
+        closed = client.post("/v1/chat/sessions/42/close", headers=headers, json={"userId": 1})
+
+    assert created.status_code == 201
+    assert closed.status_code == 200
+    assert recommendation_service.lists_payload is not None
+    assert recommendation_service.lists_payload["onboarding"] == {
+        "displayName": "니듀",
+        "interestCategoryCodes": ["COFFEE_TEA", "TRAVEL"],
+        "allergyCodes": ["PEANUT"],
+        "giftExclusionCodes": ["ALCOHOL"],
+    }
+
+
+def test_create_session_rejects_unknown_onboarding_code() -> None:
+    """모르는 알레르기 코드를 버리고 진행하면 그 알레르기가 추천에서 빠진다."""
+    app = _onboarding_app(FakeRecommendationService())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/sessions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "userId": 1,
+                "conversationRoomId": 42,
+                "userProfile": {**ONBOARDING_USER_PROFILE, "allergyCodes": ["SESAME"]},
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_REQUEST"
 
 
 def _extracted(field: str, value: str, confidence: float) -> dict[str, object]:
@@ -640,3 +723,101 @@ def test_recommendation_profile_carries_every_stored_item_beyond_exposure_limits
 
     assert len(_profile_response(analysis).preferences) == 3
     assert [item["value"] for item in recommendation_profile(analysis)["preferences"]] == tastes
+
+
+class RecordingModelGateway(FakeModelGateway):
+    """응답 모델에 넘어간 메시지를 호출 순서대로 남긴다."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.completed_messages: list[Sequence[Message]] = []
+
+    async def complete(self, messages: Sequence[Message], *, model: str) -> str:
+        self.completed_messages.append(messages)
+        return await super().complete(messages, model=model)
+
+
+def test_first_greeting_and_replies_call_the_user_by_name_from_user_profile() -> None:
+    gateway = RecordingModelGateway()
+    app = _onboarding_app(FakeRecommendationService(), gateway)
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={
+                "userId": 1,
+                "conversationRoomId": 42,
+                "userProfile": {**ONBOARDING_USER_PROFILE, "nickname": "서동휘"},
+            },
+        )
+        client.post(
+            "/v1/chat/sessions/42/messages",
+            headers=headers,
+            json={"userId": 1, "message": "주말마다 캠핑 가요"},
+        )
+
+    assert created.status_code == 201
+    opening, reply = gateway.completed_messages[:2]
+    # 대화방을 만드는 첫인사부터 성을 뗀 이름으로 부르게 한다. 원문은 대화에 넣지 않는다.
+    for messages in (opening, reply):
+        contents = "\n".join(message["content"] for message in messages)
+        assert '"동휘님"이라고 부른다' in contents
+        assert "서동휘" not in contents
+
+
+def test_first_greeting_does_not_name_the_user_without_a_usable_name() -> None:
+    gateway = RecordingModelGateway()
+    app = _onboarding_app(FakeRecommendationService(), gateway)
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/sessions",
+            headers={"Authorization": "Bearer test-token"},
+            json={
+                "userId": 1,
+                "conversationRoomId": 42,
+                "userProfile": {**ONBOARDING_USER_PROFILE, "nickname": "."},
+            },
+        )
+
+    contents = "\n".join(message["content"] for message in gateway.completed_messages[0])
+    assert '님"이라고 부른다' not in contents
+
+
+def test_summary_intro_is_corrected_to_the_full_username() -> None:
+    gateway = RecordingModelGateway(
+        completions=[
+            "안녕하세요! 요즘 어떻게 지내세요?",
+            "캠핑 좋죠. 주로 어디로 다니세요?",
+            # 모델이 원문 대신 대화 호칭으로 썼다.
+            "니쥬가 보기에 동휘님은 주말마다 캠핑을 떠나는 사람이에요.",
+        ]
+    )
+    app = _onboarding_app(FakeRecommendationService(), gateway)
+    headers = {"Authorization": "Bearer test-token"}
+
+    with TestClient(app) as client:
+        client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={
+                "userId": 1,
+                "conversationRoomId": 42,
+                "userProfile": {**ONBOARDING_USER_PROFILE, "nickname": "서동휘"},
+            },
+        )
+        client.post(
+            "/v1/chat/sessions/42/messages",
+            headers=headers,
+            json={"userId": 1, "message": "주말마다 캠핑 가요"},
+        )
+        analysis = client.post("/v1/chat/sessions/42/analysis", headers=headers)
+
+    assert analysis.status_code == 200
+    assert analysis.json()["profile"]["summary"] == (
+        "니쥬가 보기에 서동휘님은 주말마다 캠핑을 떠나는 사람이에요."
+    )
+    summary_prompt = gateway.completed_messages[2][0]["content"]
+    assert '첫 문장은 "니쥬가 보기에 서동휘님은"으로 시작해서' in summary_prompt

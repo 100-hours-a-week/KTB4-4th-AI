@@ -1,4 +1,4 @@
-name: AI Staging Deploy
+name: AI V2 Staging CD
 
 on:
   workflow_dispatch:
@@ -22,5 +22,7 @@ jobs:
     uses: ./.github/workflows/deploy.yml
 
     with:
-      deploy_env: staging
+      environment: staging
+      github_environment: staging
       image_sha: ${{ inputs.image_sha }}
+    secrets: inherit

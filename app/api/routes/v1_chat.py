@@ -1,20 +1,27 @@
-from collections.abc import Iterable
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Iterable
 from typing import Annotated, Any
 
+import anyio
 from fastapi import APIRouter, Depends, Path, status
+from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import get_chat_use_cases, get_recommendation_service
 from app.api.schemas.chat import (
     AnalyzeChatSessionResponse,
     ChatMessageRequest,
     ChatMessageResponse,
+    ChatMessageStreamRequest,
+    ChatStreamDelta,
+    ChatStreamError,
     CloseChatSessionRequest,
     CloseChatSessionResponse,
     CreateChatSessionRequest,
     CreateChatSessionResponse,
     UpdateChatAnalysisRequest,
 )
-from app.api.schemas.common import JAVA_LONG_MAX, to_camel
+from app.api.schemas.common import JAVA_LONG_MAX, ApiModel, to_camel
 from app.api.schemas.profile import ProfileItem, ScoredProfileKeywords, TasteProfile
 from app.api.schemas.recommendation import RecommendationLists
 from app.application.chat_use_cases import (
@@ -23,8 +30,10 @@ from app.application.chat_use_cases import (
     AnalysisOutdatedError,
     AnalysisRequiredError,
     ChatUseCases,
+    ConfirmedTurn,
     ProfileAnalysis,
     ProfileTooSparseError,
+    ReplyDelta,
     ResponseModelUnavailableError,
     SessionClosedError,
     SessionExistsError,
@@ -32,15 +41,28 @@ from app.application.chat_use_cases import (
     SessionNotFoundError,
     TurnInProgressError,
 )
+from app.application.conversation_service import CompletedTurn
 from app.application.conversation_state_store import SessionLifetimeExceededError
 from app.application.ports.recommendation_service import RecommendationService
 from app.core.errors import ApiError
 from app.domain.conversation.models import SessionStatus
-from app.domain.conversation.policy import MAX_TURNS, conversation_progress
+from app.domain.conversation.policy import (
+    MAX_TURNS,
+    conversation_progress,
+    recommendation_readiness,
+)
 from app.domain.profile.merger import taste_rank_score
 from app.domain.profile.models import ProfileSignal, TasteField
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# 보낼 이벤트가 없을 때 연결이 살아 있음을 알리는 주석 간격. BE는 30초 동안 아무것도 없으면 끊는다.
+STREAM_PING_INTERVAL_SECONDS = 10.0
+# 연결이 끊긴 뒤 생성 작업이 취소되고 잠금이 풀리기를 기다리는 최대 시간
+STREAM_CANCEL_WAIT_SECONDS = 2.0
+_STREAM_END = object()
 
 ConversationRoomPath = Annotated[
     int,
@@ -185,6 +207,17 @@ def recommendation_profile(result: ProfileAnalysis) -> dict[str, Any]:
     }
 
 
+def recommendation_payload(result: ProfileAnalysis) -> dict[str, Any]:
+    """추천 서비스 요청. 온보딩 값이 있으면 알레르기·선물 제외 조건과 관심 카테고리도 넘긴다."""
+    payload: dict[str, Any] = {
+        "userId": result.state.user_id,
+        "profile": recommendation_profile(result),
+    }
+    if result.state.onboarding is not None:
+        payload["onboarding"] = result.state.onboarding.recommendation_payload()
+    return payload
+
+
 def _scored_keywords(analysis: ProfileAnalysis) -> ScoredProfileKeywords:
     def scored(keywords: tuple[str, ...]) -> list[dict[str, object]]:
         # 분석 이전 버전에서 저장된 세션에는 점수가 없으므로 0점으로 내려준다.
@@ -225,6 +258,7 @@ async def create_chat_session(
         started = await use_cases.create_session(
             user_id=body.user_id,
             conversation_room_id=body.conversation_room_id,
+            onboarding=body.user_profile.to_domain() if body.user_profile else None,
         )
     except Exception as error:
         _raise_chat_error(error)
@@ -254,7 +288,10 @@ async def create_chat_message(
         )
     except Exception as error:
         _raise_chat_error(error)
-    input_locked = completed.state.status == SessionStatus.INPUT_LOCKED
+    return _completed_response(completed)
+
+
+def _completed_response(completed: CompletedTurn) -> ChatMessageResponse:
     return ChatMessageResponse(
         reply=completed.reply,
         created_at=completed.state.history[-1].created_at,
@@ -263,7 +300,132 @@ async def create_chat_message(
         max_turns=MAX_TURNS,
         progress=conversation_progress(completed.state),
         can_close=completed.readiness.sufficient,
-        input_locked=input_locked,
+        input_locked=completed.state.status == SessionStatus.INPUT_LOCKED,
+    )
+
+
+def _confirmed_response(confirmed: ConfirmedTurn) -> ChatMessageResponse:
+    """이미 확정한 턴을 다시 요청받았을 때 저장된 상태로 같은 응답을 만든다."""
+    state = confirmed.state
+    last_reply = state.history[-1]
+    return ChatMessageResponse(
+        reply=last_reply.content,
+        created_at=last_reply.created_at,
+        expiration_at=state.expiration_at,
+        turn=state.turn_count,
+        max_turns=MAX_TURNS,
+        progress=conversation_progress(state),
+        can_close=recommendation_readiness(state).sufficient,
+        input_locked=state.status == SessionStatus.INPUT_LOCKED,
+    )
+
+
+def _sse_event(event: str, data: ApiModel) -> str:
+    return f"event: {event}\ndata: {data.model_dump_json(by_alias=True)}\n\n"
+
+
+def _stream_error(error: Exception) -> ChatStreamError:
+    """스트림 도중 예외를 HTTP 오류와 같은 code·retryable로 바꾼다."""
+    try:
+        _raise_chat_error(error)
+    except ApiError as api_error:
+        return ChatStreamError(
+            code=api_error.code,
+            message=api_error.message,
+            retryable=api_error.retryable,
+        )
+    except Exception:
+        logger.exception("chat stream failed unexpectedly")
+    return ChatStreamError(
+        code="INTERNAL_ERROR",
+        message="응답을 만들지 못했습니다.",
+        retryable=True,
+    )
+
+
+async def _single(item: ConfirmedTurn) -> AsyncIterator[ConfirmedTurn]:
+    yield item
+
+
+async def _sse_stream(
+    events: AsyncIterator[ReplyDelta | CompletedTurn | ConfirmedTurn],
+) -> AsyncIterator[str]:
+    """턴 생성은 별도 작업에서 돌리고, 이벤트가 뜸하면 주석(: ping)을 보낸다.
+
+    호출한 쪽이 연결을 끊으면 이 제너레이터가 닫히며 생성 작업을 취소한다. 취소된 턴은
+    저장하지 않는다.
+    """
+    queue: asyncio.Queue[object] = asyncio.Queue()
+
+    async def produce() -> None:
+        try:
+            async for event in events:
+                await queue.put(event)
+        except Exception as error:
+            await queue.put(_stream_error(error))
+        finally:
+            queue.put_nowait(_STREAM_END)
+
+    producer = asyncio.create_task(produce())
+    next_index = 0
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=STREAM_PING_INTERVAL_SECONDS)
+            except TimeoutError:
+                yield ": ping\n\n"
+                continue
+            if item is _STREAM_END:
+                return
+            if isinstance(item, ReplyDelta):
+                yield _sse_event("delta", ChatStreamDelta(index=next_index, text=item.text))
+                next_index += 1
+            elif isinstance(item, CompletedTurn):
+                yield _sse_event("completed", _completed_response(item))
+            elif isinstance(item, ConfirmedTurn):
+                yield _sse_event("completed", _confirmed_response(item))
+            elif isinstance(item, ChatStreamError):
+                yield _sse_event("error", item)
+    finally:
+        producer.cancel()
+        # 바로 같은 메시지로 다시 요청해도 잠금이 풀려 있도록 취소가 끝나기를 잠깐 기다린다.
+        # 연결이 끊겨 이 작업 자체가 취소된 중이어도 기다릴 수 있게 취소를 막는다.
+        with anyio.CancelScope(shield=True):
+            await asyncio.wait({producer}, timeout=STREAM_CANCEL_WAIT_SECONDS)
+
+
+@router.post(
+    "/sessions/{conversationRoomId}/messages/stream",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def stream_chat_message(
+    conversation_room_id: ConversationRoomPath,
+    body: ChatMessageStreamRequest,
+    use_cases: Annotated[ChatUseCases, Depends(get_chat_use_cases)],
+) -> StreamingResponse:
+    # 스트림을 열기 전에 막히는 요청은 메시지 전송과 같은 HTTP 오류로 응답한다
+    try:
+        confirmed = await use_cases.find_confirmed_turn(
+            conversation_room_id,
+            user_id=body.user_id,
+            user_message_id=body.user_message_id,
+        )
+    except Exception as error:
+        _raise_chat_error(error)
+    if confirmed is not None:
+        events = _single(confirmed)
+    else:
+        events = use_cases.stream_message(
+            conversation_room_id,
+            body.message,
+            user_id=body.user_id,
+            user_message_id=body.user_message_id,
+        )
+    return StreamingResponse(
+        _sse_stream(events),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -323,10 +485,7 @@ async def close_chat_session(
             user_id=body.user_id,
         )
         recommendation_result = await recommendation_service.recommend_lists(
-            {
-                "userId": closable.state.user_id,
-                "profile": recommendation_profile(closable),
-            }
+            recommendation_payload(closable)
         )
         recommendations = RecommendationLists.model_validate(recommendation_result)
         finalized = await use_cases.close_session(conversation_room_id, user_id=body.user_id)

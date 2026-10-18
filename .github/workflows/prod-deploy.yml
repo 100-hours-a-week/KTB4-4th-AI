@@ -1,15 +1,16 @@
-name: AI Production Deploy
+name: AI V2 Production CD
 
 on:
   workflow_dispatch:
     inputs:
       image_sha:
-        description: "V2 Docker image Git SHA (40 characters)"
+        description: "Dev에서 검증하고 Main에 포함된 V2 이미지 SHA (40자리)"
         required: true
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   deploy-prod:
@@ -17,10 +18,14 @@ jobs:
 
     permissions:
       contents: read
+      actions: read
       id-token: write
 
     uses: ./.github/workflows/deploy.yml
 
     with:
-      deploy_env: prod
+      environment: prod
+      github_environment: prod
       image_sha: ${{ inputs.image_sha }}
+
+    secrets: inherit

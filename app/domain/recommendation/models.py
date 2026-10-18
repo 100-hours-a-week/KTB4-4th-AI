@@ -6,6 +6,7 @@ from decimal import Decimal
 from enum import StrEnum
 
 from app.domain.profile.models import DeferralReason, PreferenceAspect, TasteField, Visibility
+from app.domain.recommendation.exclusions import CatalogExclusion
 
 
 class RecommendationMode(StrEnum):
@@ -43,6 +44,10 @@ class CatalogProduct:
     category: str | None = None
     # 선물 목록(gift) 후보인지. 테마가 붙었거나 교환권·명품·패션인 상품이다.
     gift_available: bool = False
+    # 세부 카테고리 코드(app.domain.catalog.subcategories). 판단 모델의 확신이 낮으면 None 이다.
+    subcategory: str | None = None
+    # content 문서 원문. 온보딩 제외 조건의 단어 필터에 쓴다.
+    content_document: str | None = None
 
     def __post_init__(self) -> None:
         name = self.name.strip()
@@ -91,6 +96,8 @@ class RecommendationGuide:
 
     exclusions: tuple[str, ...] = ()
     preferences: tuple[str, ...] = ()
+    # 온보딩의 알레르기·선물 제외 조건. exclusions 와 달리 유사도가 아니라 정확히 거른다.
+    catalog_exclusion: CatalogExclusion = CatalogExclusion()
 
 
 @dataclass(slots=True, frozen=True)

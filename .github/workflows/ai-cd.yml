@@ -1,4 +1,4 @@
-name: AI CD
+name: AI V1 CD
 
 on:
   workflow_dispatch:

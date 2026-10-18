@@ -422,3 +422,22 @@ def test_gift_mode_only_shows_gift_available_products() -> None:
 
     assert [item.product.key for item in gift] == [pooled.key]
     assert [item.product.key for item in self_] == [outside.key, pooled.key]
+
+
+def test_gift_reason_names_the_recipient_but_self_reason_does_not() -> None:
+    (interest_query,) = _queries([_signal(TasteField.INTERESTS, "커피와 차")])
+    product = _product("kakao", "mug", "커피 머그컵")
+    matches = [VectorMatch(query=interest_query, product=product, similarity=0.8)]
+
+    gift = rank_recommendations(
+        matches, mode=RecommendationMode.GIFT, now=NOW, recipient_name="서동휘"
+    )
+    own = rank_recommendations(
+        matches, mode=RecommendationMode.SELF, now=NOW, recipient_name="서동휘"
+    )
+    unnamed = rank_recommendations(matches, mode=RecommendationMode.GIFT, now=NOW)
+
+    # 선물 목록은 친구가 보므로 username 원문을 넣는다. self 목록은 본인이 본다.
+    assert gift[0].reason == "커피와 차에 관심 있는 서동휘님에게 선물하기 좋은 상품이에요."
+    assert own[0].reason == "커피와 차에 대한 관심과 잘 맞는 상품이에요."
+    assert unnamed[0].reason == "커피와 차에 관심 있는 분에게 선물하기 좋은 상품이에요."
