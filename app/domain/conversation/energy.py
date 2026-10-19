@@ -15,6 +15,9 @@ from app.domain.conversation.models import ConversationState
 ENERGY_RECENT_WEIGHT = 0.6
 # 이 아래면 에너지가 낮은 턴으로 센다.
 LOW_ENERGY = 0.35
+# 이 이상이면 반응이 좋은 턴으로 본다. 평소 길이 이상으로 답하거나, 조금 짧아도 웃음·감탄이나
+# 되묻기가 섞이면 넘는다.
+ENGAGED_ENERGY = 0.8
 # 평균 길이가 없을 때(첫 답) 이 길이면 길이 점수를 꽉 채운다.
 FIRST_ANSWER_FULL_LENGTH = 30
 
