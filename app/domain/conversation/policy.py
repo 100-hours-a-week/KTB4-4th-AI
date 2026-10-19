@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.domain.conversation.energy import (
+    ENGAGED_ENERGY,
     LOW_ENERGY,
     asks_back,
     blended_energy,
@@ -47,8 +48,13 @@ COMPANION_WRAP_STREAK = 4
 COMPANION_CLOSE_AFTER_TURN = 14
 COMPANION_CLOSE_ENERGY_DROP = 0.2
 MOVE_HISTORY_LIMIT = 8
+# 한 화제에서 이어 묻는 꼬리 질문 수. 화제를 꺼낸 질문(첫인사, 화제 전환, 놀이, 되돌아가기)은
+# 세지 않는다. 기본은 두 번이고, 사용자 반응이 좋으면 네 번까지 이어 간다.
+# 한 화제만 파면 같은 이야기의 세부만 쌓이고 다른 관심사가 안 나온다.
+TOPIC_FOLLOW_LIMIT = 2
+TOPIC_FOLLOW_LIMIT_ENGAGED = 4
 
-# 에너지가 낮을 때 가볍게 던지는 소재. 한마디로 답할 수 있는 것만 두고,
+# 에너지가 낮을 때나 다른 화제로 넘어갈 때 가볍게 던지는 소재. 한마디로 답할 수 있는 것만 두고,
 # 부족한 추천 항목으로 화제를 고르지 않는다.
 COMPANION_SCENES: tuple[str, ...] = (
     "이번 주에 제일 웃겼던 일",
@@ -159,6 +165,7 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     if utterance and wants_to_exit(utterance):
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
 
+    current: float | None = None
     if utterance:
         current = turn_energy(state, utterance)
         energy: float | None = blended_energy(state, current)
@@ -176,8 +183,12 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     def chat(move: ConversationMove, scene: str | None = None) -> GoalDecision:
         return GoalDecision(ConversationGoal.CHAT, move=move, scene=scene)
 
+    topic_done = _topic_done(state, current)
     # 사용자가 되물었으면 먼저 답하고 그 이야기를 따라간다.
+    # 이 화제의 꼬리 질문을 다 썼으면 답한 뒤 다른 이야기로 넘어간다.
     if utterance and asks_back(utterance):
+        if topic_done:
+            return chat(ConversationMove.SHIFT, _pick_scene(state))
         return chat(ConversationMove.FOLLOW)
     last_move = state.last_move
     if low_streak >= COMPANION_LIGHTEN_STREAK:
@@ -187,7 +198,30 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
         if last_move != ConversationMove.PLAY:
             return chat(ConversationMove.PLAY, _pick_scene(state))
         return chat(ConversationMove.ADD)
+    if topic_done:
+        return chat(ConversationMove.SHIFT, _pick_scene(state))
     return chat(ConversationMove.FOLLOW)
+
+
+def topic_follow_count(state: ConversationState) -> int:
+    """지금 화제에서 이어 물은 꼬리 질문 수. 질문 없이 보탠 턴(ADD)은 세지도 끊지도 않는다."""
+    count = 0
+    for move in reversed(state.move_history):
+        if move == ConversationMove.FOLLOW:
+            count += 1
+        elif move != ConversationMove.ADD:
+            break
+    return count
+
+
+def _topic_done(state: ConversationState, current: float | None) -> bool:
+    """이 화제의 꼬리 질문을 다 썼는지. 반응이 좋은 동안만 기본 한도를 넘겨 이어 간다."""
+    count = topic_follow_count(state)
+    if count >= TOPIC_FOLLOW_LIMIT_ENGAGED:
+        return True
+    if count < TOPIC_FOLLOW_LIMIT:
+        return False
+    return current is None or current < ENGAGED_ENERGY
 
 
 def _good_moment_to_close(state: ConversationState, energy: float | None) -> bool:
@@ -244,7 +278,7 @@ def record_companion_turn(
     state.move_history = [*state.move_history, move.value][-MOVE_HISTORY_LIMIT:]
     if move == ConversationMove.RETURN and scene:
         state.returned_topics.append(scene)
-    if move == ConversationMove.PLAY and scene:
+    if move in {ConversationMove.PLAY, ConversationMove.SHIFT} and scene:
         state.used_scenes.append(scene)
 
 

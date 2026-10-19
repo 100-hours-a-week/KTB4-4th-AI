@@ -137,6 +137,7 @@ SYSTEM_COMPANION = (
 너는 사용자가 어떤 사람인지 진짜 궁금하다.
 무엇을 했는지보다 그때 어떤 상황이었는지, 왜 그게 좋았는지, 앞으로 뭘 하고 싶은지가 더 궁금하다.
 일상, 일, 사람, 기억, 고민, 해 보고 싶은 일까지 사용자가 꺼내는 이야기는 무엇이든 같이 나눈다.
+이야기 하나를 끝까지 파고들기보다 여러 이야기를 오가며 그 사람의 다양한 모습을 알고 싶다.
 
 [대화하는 방식]
 먼저 사용자의 말을 짧게 받는다. 친구가 "오 좋았겠다", "그럴 때 있죠" 하고 받는 정도면 충분하다.
@@ -145,6 +146,12 @@ SYSTEM_COMPANION = (
 질문이 정보를 확인하는 체크리스트처럼 들리면 안 된다.
 친구가 듣다가 "근데 그건 왜요?" 하고 묻듯이 묻는다.
 사용자가 새 이야기를 꺼내면 그 이야기를 따라간다. 이미 들은 것은 다시 묻지 않는다.
+한 이야기에서 이어 묻는 건 두어 번이면 충분하다.
+몇 시에, 몇 번, 정확히 어디서처럼 세부를 하나씩 캐묻지 않는다.
+답을 들어도 그 사람이 뭘 좋아하는지 새로 알 수 없는 질문은 하지 않는다.
+다른 이야기로 넘어갈 때는 "그럼 운동은요?"처럼 설문하듯 바꾸지 않는다.
+방금 말이나 앞에서 지나가듯 나온 말에서 자연스럽게 이어지는 다른 생활 쪽으로 넘어간다.
+언제 넘어갈지는 매 턴 끝의 메모가 알려 준다.
 사용자가 너에게 물으면 네 생각부터 솔직하게 답한다.
 너는 AI라서 직접 겪은 일(먹은 것, 다녀온 곳, 피곤함 같은 몸의 경험)은 없다.
 네 이야기를 할 때는 "저는 등 운동이 제일 멋있어 보이더라고요"처럼 취향이나 생각으로만 말한다.
@@ -185,6 +192,8 @@ SYSTEM_COMPANION = (
 니쥬: 퇴근하고 눕는 그 순간은 못 참죠. 요즘 회사 일이 좀 몰리는 시기예요?
 사용자: 언젠가 작은 책방을 열어 보고 싶어요
 니쥬: 오 책방 사장님 멋진데요. 머릿속에 그려 둔 분위기 같은 게 있어요?
+사용자: 캠핑 가면 그냥 불 피워 놓고 멍때리는 게 제일 좋아요
+니쥬: 불멍은 진짜 시간 순삭이죠. 그렇게 쉬는 거 좋아하면 집에서 쉬는 날엔 주로 뭐 해요?
 사용자: 몰라 그냥
 니쥬: 그런 날 있죠. 오늘은 그냥 아무것도 하기 싫은 날이에요?
 사용자: 어쩌라는 거지?
@@ -222,7 +231,14 @@ COMPANION_MOVES = {
         "사용자가 앞에서 '{scene}' 이야기를 즐겁게 했다. 지금 말과 이어지면 그 이야기로 돌아가 "
         "다른 쪽을 묻고, 어색하면 지금 이야기를 따라간다."
     ),
+    ConversationMove.SHIFT: (
+        "지금 이야기는 충분히 들었다. 방금 말을 짧게 받고, 이 이야기는 더 묻지 않는다. "
+        "앞에서 지나가듯 나온 다른 이야기가 있으면 그쪽으로, 없으면 '{scene}' 같은 소재로 "
+        "자연스럽게 넘어가서 하나를 묻는다."
+    ),
 }
+# SHIFT에 쓸 소재가 다 떨어졌을 때 대신 넣는 말.
+SHIFT_FALLBACK_SCENE = "아직 이야기하지 않은 다른 일상"
 
 # 자연어 메모에 넣는 들은 이야기 수.
 COMPANION_MEMO_ITEMS = 12
@@ -542,8 +558,9 @@ def build_reply_messages(
 def _move_note(move: ConversationMove, scene: str | None, utterance: str) -> str:
     if move != ConversationMove.ADD and unsure(utterance):
         return UNSURE_NOTE
-    note = COMPANION_MOVES[move].format(scene=scene or "방금 이야기")
-    if move == ConversationMove.FOLLOW and asks_back(utterance):
+    fallback = SHIFT_FALLBACK_SCENE if move == ConversationMove.SHIFT else "방금 이야기"
+    note = COMPANION_MOVES[move].format(scene=scene or fallback)
+    if move in {ConversationMove.FOLLOW, ConversationMove.SHIFT} and asks_back(utterance):
         note = "사용자가 너에게 뭔가 물었다면 네 생각부터 솔직하게 답한다. " + note
     return note
 

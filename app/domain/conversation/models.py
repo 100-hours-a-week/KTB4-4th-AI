@@ -27,6 +27,8 @@ class ConversationMove(StrEnum):
     PLAY = "play"
     # 앞에서 신나게 이야기한 화제로 돌아간다.
     RETURN = "return"
+    # 한 화제에서 꼬리 질문을 충분히 했으니 다른 생활 이야기로 넘어간다.
+    SHIFT = "shift"
 
 
 class SessionStatus(StrEnum):
