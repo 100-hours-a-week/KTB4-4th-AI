@@ -159,6 +159,71 @@ def test_no_new_interest_does_not_force_a_topic_change() -> None:
     assert decision.scene is None
 
 
+def followed(state: ConversationState, *moves: str) -> ConversationState:
+    state.user_length_avg = 20.0
+    state.move_history = list(moves)
+    return state
+
+
+CALM_ANSWER = "네 친구랑 같이 갔어요"
+EXCITED_ANSWER = "그 캠핑장 별이 진짜 장난 아니었어요 ㅋㅋ 또 가고 싶어요"
+
+
+def test_two_follow_ups_then_shift_topic() -> None:
+    state = followed(companion_state(turn_count=3), "follow")
+    assert decide_goal(state, CALM_ANSWER).move == ConversationMove.FOLLOW
+
+    state = followed(companion_state(turn_count=3), "follow", "follow")
+    decision = decide_goal(state, CALM_ANSWER)
+    assert decision.move == ConversationMove.SHIFT
+    assert decision.scene in COMPANION_SCENES
+
+
+def test_engaged_user_keeps_topic_up_to_four_follow_ups() -> None:
+    for count in (2, 3):
+        state = followed(companion_state(turn_count=5), *["follow"] * count)
+        assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.FOLLOW
+
+    state = followed(companion_state(turn_count=5), *["follow"] * 4)
+    assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.SHIFT
+
+
+def test_engaged_streak_ends_when_reaction_cools() -> None:
+    state = followed(companion_state(turn_count=5), "follow", "follow", "follow")
+
+    assert decide_goal(state, CALM_ANSWER).move == ConversationMove.SHIFT
+
+
+def test_topic_change_resets_follow_count_and_add_does_not() -> None:
+    assert policy.topic_follow_count(followed(companion_state(), "follow", "shift")) == 0
+    assert policy.topic_follow_count(followed(companion_state(), "play", "follow")) == 1
+    assert policy.topic_follow_count(followed(companion_state(), "follow", "add", "follow")) == 2
+
+
+def test_asking_back_after_topic_is_done_answers_then_shifts() -> None:
+    state = followed(companion_state(turn_count=6), *["follow"] * 4)
+
+    decision = decide_goal(state, "니쥬는 캠핑 가봤어요?")
+    assert decision.move == ConversationMove.SHIFT
+    card = build_reply_messages(
+        state, decision.goal, "니쥬는 캠핑 가봤어요?", move=decision.move, scene=decision.scene
+    )[-2]["content"]
+    assert "네 생각부터 솔직하게 답한다" in card
+    assert "이 이야기는 더 묻지 않는다" in card
+
+
+def test_shift_card_without_scene_uses_fallback() -> None:
+    card = build_reply_messages(
+        companion_state(turn_count=8),
+        ConversationGoal.CHAT,
+        CALM_ANSWER,
+        move=ConversationMove.SHIFT,
+    )[-2]["content"]
+
+    assert "아직 이야기하지 않은 다른 일상" in card
+    assert "방금 이야기" not in card
+
+
 def test_conversation_scene_does_not_depend_on_missing_recommendation_fields(monkeypatch) -> None:
     scenes = []
     for missing in (("gear",), ("query_signals", "taste_axes")):
@@ -262,8 +327,16 @@ def test_record_turn_tracks_moves_and_scenes() -> None:
         answer_depth=None,
         new_interests=[],
     )
-    assert state.move_history == ["follow", "play", "add"]
-    assert state.used_scenes == ["이번 주말에 하고 싶은 것"]
+    record_companion_turn(
+        state,
+        utterance="요즘은 그냥 집에 있어요",
+        move=ConversationMove.SHIFT,
+        scene="요즘 자주 먹는 것",
+        answer_depth=None,
+        new_interests=[],
+    )
+    assert state.move_history == ["follow", "play", "add", "shift"]
+    assert state.used_scenes == ["이번 주말에 하고 싶은 것", "요즘 자주 먹는 것"]
 
 
 # ---- 프롬프트 ----
