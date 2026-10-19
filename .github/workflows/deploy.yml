@@ -1,233 +1,178 @@
-name: Deploy V2 AI
+name: Deploy AI to V2 ECS
 
 on:
   workflow_call:
     inputs:
       environment:
-        description: "Deployment environment"
+        description: "배포할 V2 환경"
         required: true
         type: string
       github_environment:
-        description: "GitHub Environment"
+        description: "배포 승인과 OIDC 인증에 사용할 GitHub Environment"
         required: true
         type: string
       image_sha:
-        description: "Original Dev commit SHA"
+        description: "V2 ECR 이미지 태그에 사용할 Git SHA"
         required: true
         type: string
-      verify_dev_match:
-        description: "Verify current Dev ECS image"
+      deployment_type:
+        description: "image 또는 config-only"
         required: false
-        type: boolean
+        default: image
+        type: string
+      allow_prod_image:
+        description: "Production 전용 승격 워크플로에서만 true"
+        required: false
         default: false
+        type: boolean
+      verify_dev_match:
+        description: "현재 Dev에서 검증 중인 이미지와 같은지 확인"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
-  actions: read
-  id-token: write
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_ACCOUNT_ID: "919551759796"
+  ECR_REPOSITORY: need-u/ai
+  ECR_REPOSITORY_URI: 919551759796.dkr.ecr.ap-northeast-2.amazonaws.com/need-u/ai
 
 jobs:
   deploy:
     name: Deploy AI
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: ${{ inputs.github_environment }}
 
+    permissions:
+      contents: read
+      id-token: write
+
     concurrency:
-      group: ai-v2-deploy-${{ inputs.environment }}
+      group: deploy-${{ inputs.environment }}-ai
       cancel-in-progress: false
 
-    env:
-      AWS_REGION: ap-northeast-2
-      AWS_ACCOUNT_ID: "919551759796"
-      DEPLOY_ENV: ${{ inputs.environment }}
-      IMAGE_SHA: ${{ inputs.image_sha }}
-      ECR_REPOSITORY: need-u/ai
-      ECR_REPOSITORY_URI: ${{ vars.AWS_ECR_REPOSITORY_URI }}
-      ECS_CLUSTER: needu-${{ inputs.environment }}-cluster
-      ECS_SERVICE: needu-${{ inputs.environment }}-ai
-      SSM_BASE_TASK_DEFINITION: /needu/v2/${{ inputs.environment }}/ecs/ai/base-task-definition-arn
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Validate Deployment Inputs
+      - name: Validate Inputs
         shell: bash
-        run: |
-          set -euo pipefail
-
-          case "$DEPLOY_ENV" in
-            dev|staging|prod)
-              ;;
-            *)
-              echo "::error::Unsupported environment: $DEPLOY_ENV"
-              exit 1
-              ;;
-          esac
-
-          if [[ ! "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::image_sha must be a full 40-character SHA"
-            exit 1
-          fi
-
-          if [[ -z "$ECR_REPOSITORY_URI" ]]; then
-            echo "::error::AWS_ECR_REPOSITORY_URI is not configured"
-            exit 1
-          fi
-
-          EXPECTED_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
-
-          if [[ "$ECR_REPOSITORY_URI" != "$EXPECTED_URI" ]]; then
-            echo "::error::Unexpected ECR repository URI"
-            exit 1
-          fi
-
-          IMAGE_TAG="v2-${IMAGE_SHA}"
-          IMAGE_URI="${ECR_REPOSITORY_URI}:${IMAGE_TAG}"
-
-          {
-            echo "IMAGE_TAG=$IMAGE_TAG"
-            echo "IMAGE_URI=$IMAGE_URI"
-          } >> "$GITHUB_ENV"
-
-          echo "Environment: $DEPLOY_ENV"
-          echo "Image: $IMAGE_URI"
-
-      - name: Verify SHA Exists In Main
-        if: inputs.environment == 'prod'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git fetch origin main
-
-          if ! git cat-file -e "${IMAGE_SHA}^{commit}"; then
-            echo "::error::Commit not found: $IMAGE_SHA"
-            exit 1
-          fi
-
-          if ! git merge-base --is-ancestor "$IMAGE_SHA" origin/main; then
-            echo "::error::Dev SHA is not an ancestor of main"
-            exit 1
-          fi
-
-          echo "SHA is included in main history."
-
-      - name: Verify Successful Dev CI And ECS Deployment
-        if: inputs.environment == 'prod'
-        uses: actions/github-script@v7
         env:
-          TARGET_SHA: ${{ inputs.image_sha }}
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const sha = process.env.TARGET_SHA;
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          IMAGE_SHA: ${{ inputs.image_sha }}
+          DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
+          ALLOW_PROD_IMAGE: ${{ inputs.allow_prod_image }}
+          AWS_CD_ROLE_ARN: ${{ vars.AWS_CD_ROLE_ARN }}
+        run: |
+          set -euo pipefail
 
-            core.info(`Target SHA: ${sha}`);
+          if [[ ! "$DEPLOY_ENVIRONMENT" =~ ^(dev|staging|prod)$ ]]; then
+            echo "::error::지원하지 않는 배포 환경입니다: $DEPLOY_ENVIRONMENT"
+            exit 1
+          fi
 
-            const runs = await github.paginate(
-              github.rest.actions.listWorkflowRuns,
-              {
-                owner,
-                repo,
-                workflow_id: "ai-ci.yml",
-                branch: "dev",
-                event: "push",
-                per_page: 100
-              }
-            );
+          if [[ ! "$DEPLOYMENT_TYPE" =~ ^(image|config-only)$ ]]; then
+            echo "::error::Invalid deployment type: $DEPLOYMENT_TYPE"
+            exit 1
+          fi
 
-            const matchingRuns = runs.filter(run =>
-              run.head_sha === sha &&
-              run.head_branch === "dev" &&
-              run.event === "push" &&
-              run.conclusion === "success"
-            );
+          if [[ "$DEPLOYMENT_TYPE" == "image" ]]; then
+            if [[ ! "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Image deployment requires a 40-character SHA."
+              exit 1
+            fi
 
-            core.info(
-              `Matching successful Dev runs: ${matchingRuns.length}`
-            );
+            if [[ "$DEPLOY_ENVIRONMENT" == "prod" && "$ALLOW_PROD_IMAGE" != "true" ]]; then
+              echo "::error::Prod image deployments must use prod-deploy.yml."
+              exit 1
+            fi
+          elif [[ -n "$IMAGE_SHA" ]]; then
+            echo "::error::Do not specify image_sha for config-only."
+            exit 1
+          fi
 
-            if (matchingRuns.length === 0) {
-              core.setFailed(
-                `동일 SHA의 성공한 Dev CI 실행을 찾지 못했습니다: ${sha}`
-              );
-              return;
-            }
-
-            for (const run of matchingRuns) {
-              core.info(`Checking run: ${run.html_url}`);
-
-              const jobs = await github.paginate(
-                github.rest.actions.listJobsForWorkflowRun,
-                {
-                  owner,
-                  repo,
-                  run_id: run.id,
-                  per_page: 100
-                }
-              );
-
-              for (const job of jobs) {
-                core.info(
-                  `Job: ${job.name} / ${job.conclusion}`
-                );
-              }
-
-              const testPassed = jobs.some(job =>
-                job.name === "Python Test" &&
-                job.conclusion === "success"
-              );
-
-              const imageBuilt = jobs.some(job =>
-                job.name === "Build & Push V2 Image" &&
-                job.conclusion === "success"
-              );
-
-              const devDeployed = jobs.some(job =>
-                (
-                  job.name === "Deploy V2 Dev / Deploy AI" ||
-                  job.name.startsWith("Deploy V2 Dev /")
-                ) &&
-                job.conclusion === "success"
-              );
-
-              if (testPassed && imageBuilt && devDeployed) {
-                core.info("Dev CI and ECS deployment verified.");
-                core.info(`Run: ${run.html_url}`);
-                return;
-              }
-            }
-
-            core.setFailed(
-              `동일 SHA의 Dev ECS 배포 성공 Job을 확인하지 못했습니다: ${sha}`
-            );
+          if [[ -z "$AWS_CD_ROLE_ARN" ]]; then
+            echo "::error::GitHub Environment에 AWS_CD_ROLE_ARN 변수가 필요합니다."
+            exit 1
+          fi
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_CD_ROLE_ARN }}
-          aws-region: ap-northeast-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS Account
         shell: bash
         run: |
           set -euo pipefail
 
-          ACTUAL_ACCOUNT="$(aws sts get-caller-identity \
+          ACCOUNT_ID="$(aws sts get-caller-identity \
             --query Account \
             --output text)"
 
-          if [[ "$ACTUAL_ACCOUNT" != "$AWS_ACCOUNT_ID" ]]; then
-            echo "::error::Unexpected AWS account"
+          if [[ "$ACCOUNT_ID" != "$AWS_ACCOUNT_ID" ]]; then
+            echo "::error::Unexpected AWS account: $ACCOUNT_ID"
             exit 1
           fi
 
+      - name: Resolve Deployment Resources
+        shell: bash
+        env:
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "ECS_CLUSTER=needu-${DEPLOY_ENVIRONMENT}-cluster"
+            echo "ECS_SERVICE=needu-${DEPLOY_ENVIRONMENT}-ai"
+            echo "BASE_TASK_DEFINITION_PARAMETER=/needu/v2/${DEPLOY_ENVIRONMENT}/ecs/ai/base-task-definition-arn"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve Deployment Image
+        shell: bash
+        env:
+          DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
+          IMAGE_SHA: ${{ inputs.image_sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$DEPLOYMENT_TYPE" == "image" ]]; then
+            IMAGE_TAG="v2-${IMAGE_SHA}"
+            IMAGE="${ECR_REPOSITORY_URI}:${IMAGE_TAG}"
+
+            echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+          else
+            CURRENT_TASK_ARN="$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --region "$AWS_REGION" \
+              --query 'services[0].taskDefinition' \
+              --output text)"
+
+            if [[ -z "$CURRENT_TASK_ARN" || "$CURRENT_TASK_ARN" == "None" ]]; then
+              echo "::error::Current task definition not found."
+              exit 1
+            fi
+
+            IMAGE="$(aws ecs describe-task-definition \
+              --task-definition "$CURRENT_TASK_ARN" \
+              --region "$AWS_REGION" \
+              --query 'taskDefinition.containerDefinitions[?name==`ai`].image | [0]' \
+              --output text)"
+
+            if [[ -z "$IMAGE" || "$IMAGE" == "None" ]]; then
+              echo "::error::Current AI image not found."
+              exit 1
+            fi
+          fi
+
+          echo "DEPLOY_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "Resolved image: $IMAGE"
+
       - name: Verify ECR Image
+        if: inputs.deployment_type == 'image'
         shell: bash
         run: |
           set -euo pipefail
@@ -235,80 +180,111 @@ jobs:
           aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" \
             --image-ids "imageTag=$IMAGE_TAG" \
-            --region "$AWS_REGION" \
-            > /dev/null
+            --region "$AWS_REGION" > /dev/null
 
-          echo "ECR image verified: $IMAGE_URI"
+          echo "ECR image verified: $DEPLOY_IMAGE"
 
-      - name: Verify Current Dev ECS Image
-        if: inputs.environment == 'prod' && inputs.verify_dev_match
+      - name: Verify Dev Image
+        if: inputs.verify_dev_match && inputs.deployment_type == 'image'
         shell: bash
         run: |
           set -euo pipefail
 
-          DEV_TASK_DEFINITION="$(aws ecs describe-services \
+          DEV_SERVICE="$(aws ecs describe-services \
             --cluster needu-dev-cluster \
             --services needu-dev-ai \
-            --query 'services[0].taskDefinition' \
+            --region "$AWS_REGION" \
+            --query 'services[0]' \
+            --output json)"
+
+          DEV_TASK_ARN="$(jq -r '.taskDefinition // empty' <<< "$DEV_SERVICE")"
+          DEV_DESIRED="$(jq -r '.desiredCount // -1' <<< "$DEV_SERVICE")"
+          DEV_RUNNING="$(jq -r '.runningCount // -1' <<< "$DEV_SERVICE")"
+          DEV_PENDING="$(jq -r '.pendingCount // -1' <<< "$DEV_SERVICE")"
+          DEV_DEPLOYMENTS="$(jq -r '.deployments | length' <<< "$DEV_SERVICE")"
+          DEV_ROLLOUT="$(jq -r '
+            [.deployments[] |
+              select(.status == "PRIMARY") |
+              .rolloutState // "UNKNOWN"
+            ] | first // "UNKNOWN"
+          ' <<< "$DEV_SERVICE")"
+
+          if [[ -z "$DEV_TASK_ARN" || \
+                "$DEV_DESIRED" -le 0 || \
+                "$DEV_RUNNING" -ne "$DEV_DESIRED" || \
+                "$DEV_PENDING" -ne 0 || \
+                "$DEV_DEPLOYMENTS" -ne 1 || \
+                "$DEV_ROLLOUT" != "COMPLETED" ]]; then
+            echo "::error::Dev AI ECS 서비스가 안정적인 상태가 아닙니다."
+            exit 1
+          fi
+
+          DEV_IMAGE="$(aws ecs describe-task-definition \
+            --task-definition "$DEV_TASK_ARN" \
+            --region "$AWS_REGION" \
+            --query 'taskDefinition.containerDefinitions[?name==`ai`].image | [0]' \
             --output text)"
 
-          if [[ -z "$DEV_TASK_DEFINITION" || "$DEV_TASK_DEFINITION" == "None" ]]; then
-            echo "::error::Dev ECS task definition not found"
+          if [[ "$DEV_IMAGE" != "$DEPLOY_IMAGE" ]]; then
+            echo "::error::Dev에서 검증 중인 이미지와 요청 이미지가 다릅니다."
+            echo "Dev: $DEV_IMAGE"
+            echo "Requested: $DEPLOY_IMAGE"
             exit 1
           fi
 
-          aws ecs describe-task-definition \
-            --task-definition "$DEV_TASK_DEFINITION" \
-            --query 'taskDefinition.containerDefinitions' \
-            --output json \
-            > dev-containers.json
+          echo "Dev ECS image verified: $DEV_IMAGE"
 
-          if ! jq -e --arg IMAGE "$IMAGE_URI" \
-            'any(.[]; .image == $IMAGE)' \
-            dev-containers.json > /dev/null; then
-            echo "::error::Current Dev ECS image differs from requested image"
-            exit 1
-          fi
-
-          echo "Current Dev ECS image verified."
-
-      - name: Load Base Task Definition
+      - name: Read Terraform Baseline Task Definition
         shell: bash
         run: |
           set -euo pipefail
 
-          BASE_TASK_DEFINITION="$(aws ssm get-parameter \
-            --name "$SSM_BASE_TASK_DEFINITION" \
+          BASE_TASK_DEFINITION_ARN="$(aws ssm get-parameter \
+            --name "$BASE_TASK_DEFINITION_PARAMETER" \
+            --region "$AWS_REGION" \
             --query 'Parameter.Value' \
             --output text)"
 
-          if [[ -z "$BASE_TASK_DEFINITION" || "$BASE_TASK_DEFINITION" == "None" ]]; then
-            echo "::error::Base task definition ARN not found"
+          if [[ -z "$BASE_TASK_DEFINITION_ARN" || \
+                "$BASE_TASK_DEFINITION_ARN" == "None" ]]; then
+            echo "::error::Baseline Task Definition ARN not found."
             exit 1
           fi
 
-          aws ecs describe-task-definition \
-            --task-definition "$BASE_TASK_DEFINITION" \
-            --query 'taskDefinition' \
-            --output json \
-            > base-task-definition.json
+          echo "BASE_TASK_DEFINITION_ARN=$BASE_TASK_DEFINITION_ARN" >> "$GITHUB_ENV"
 
-      - name: Prepare New Task Definition
+      - name: Create Task Definition Revision
+        id: task-definition
         shell: bash
         run: |
           set -euo pipefail
 
-          jq --arg IMAGE "$IMAGE_URI" '
-            del(
-              .taskDefinitionArn,
-              .revision,
-              .status,
-              .requiresAttributes,
-              .compatibilities,
-              .registeredAt,
-              .registeredBy,
-              .deregisteredAt
-            )
+          aws ecs describe-task-definition \
+            --task-definition "$BASE_TASK_DEFINITION_ARN" \
+            --region "$AWS_REGION" \
+            --query 'taskDefinition' \
+            --output json > baseline.json
+
+          jq --arg IMAGE "$DEPLOY_IMAGE" '
+            {
+              family,
+              taskRoleArn,
+              executionRoleArn,
+              networkMode,
+              containerDefinitions,
+              volumes,
+              placementConstraints,
+              requiresCompatibilities,
+              cpu,
+              memory,
+              runtimePlatform,
+              ephemeralStorage,
+              pidMode,
+              ipcMode,
+              proxyConfiguration,
+              inferenceAccelerators
+            }
+            | with_entries(select(.value != null))
             | .containerDefinitions |= map(
                 if .name == "ai" then
                   .image = $IMAGE
@@ -316,147 +292,180 @@ jobs:
                   .
                 end
               )
-          ' base-task-definition.json > new-task-definition.json
+          ' baseline.json > register-task-definition.json
 
-          if ! jq -e --arg IMAGE "$IMAGE_URI" \
-            '.containerDefinitions | any(.[]; .name == "ai" and .image == $IMAGE)' \
-            new-task-definition.json > /dev/null; then
-            echo "::error::AI container image was not updated"
+          if ! jq -e --arg IMAGE "$DEPLOY_IMAGE" '
+            .containerDefinitions |
+            any(.[]; .name == "ai" and .image == $IMAGE)
+          ' register-task-definition.json > /dev/null; then
+            echo "::error::AI container image was not updated."
             exit 1
           fi
 
-      - name: Check ECS Service State
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE" \
-            --query 'services[0]' \
-            --output json \
-            > service-before.json
-
-          STATUS="$(jq -r '.status // "MISSING"' service-before.json)"
-          DESIRED_COUNT="$(jq -r '.desiredCount // -1' service-before.json)"
-          RUNNING_COUNT="$(jq -r '.runningCount // -1' service-before.json)"
-
-          if [[ "$STATUS" != "ACTIVE" ]]; then
-            echo "::error::ECS service is not ACTIVE: $STATUS"
-            exit 1
-          fi
-
-          if [[ "$DEPLOY_ENV" == "prod" ]]; then
-            if [[ "$DESIRED_COUNT" != "0" || "$RUNNING_COUNT" != "0" ]]; then
-              echo "::error::Prod ECS must remain stopped (desired=0, running=0)"
-              exit 1
-            fi
-          fi
-
-          {
-            echo "DESIRED_COUNT_BEFORE=$DESIRED_COUNT"
-            echo "RUNNING_COUNT_BEFORE=$RUNNING_COUNT"
-          } >> "$GITHUB_ENV"
-
-      - name: Register New Task Definition
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          NEW_TASK_DEFINITION="$(aws ecs register-task-definition \
-            --cli-input-json file://new-task-definition.json \
+          NEW_TASK_ARN="$(aws ecs register-task-definition \
+            --cli-input-json file://register-task-definition.json \
+            --region "$AWS_REGION" \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)"
 
-          echo "NEW_TASK_DEFINITION=$NEW_TASK_DEFINITION" >> "$GITHUB_ENV"
-
-          echo "Registered: $NEW_TASK_DEFINITION"
+          echo "task_definition_arn=$NEW_TASK_ARN" >> "$GITHUB_OUTPUT"
+          echo "Registered: $NEW_TASK_ARN"
 
       - name: Update ECS Service
         shell: bash
+        env:
+          NEW_TASK_ARN: ${{ steps.task-definition.outputs.task_definition_arn }}
         run: |
           set -euo pipefail
 
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service "$ECS_SERVICE" \
-            --task-definition "$NEW_TASK_DEFINITION" \
-            > /dev/null
+            --task-definition "$NEW_TASK_ARN" \
+            --region "$AWS_REGION" > /dev/null
 
-          echo "ECS service task definition updated."
+          echo "ECS service updated: $NEW_TASK_ARN"
 
-      - name: Wait For ECS Service Stability
-        if: env.DESIRED_COUNT_BEFORE != '0'
+      - name: Wait for ECS Service Stability
         shell: bash
         run: |
           set -euo pipefail
 
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services "$ECS_SERVICE"
+            --services "$ECS_SERVICE" \
+            --region "$AWS_REGION"
 
-      - name: Verify ECS Deployment
+          echo "AI ECS service is stable."
+
+      # 핵심 수정: ECS Rollout COMPLETED 상태까지 추가 대기
+      - name: Wait for ECS Rollout Completion
         shell: bash
+        env:
+          EXPECTED_TASK_ARN: ${{ steps.task-definition.outputs.task_definition_arn }}
         run: |
           set -euo pipefail
 
-          aws ecs describe-services \
+          for i in {1..60}; do
+            SERVICE_STATE="$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$ECS_SERVICE" \
+              --region "$AWS_REGION" \
+              --query 'services[0]' \
+              --output json)"
+
+            CURRENT_TASK_ARN="$(jq -r '.taskDefinition // empty' <<< "$SERVICE_STATE")"
+            DESIRED="$(jq -r '.desiredCount // -1' <<< "$SERVICE_STATE")"
+            RUNNING="$(jq -r '.runningCount // -1' <<< "$SERVICE_STATE")"
+            PENDING="$(jq -r '.pendingCount // -1' <<< "$SERVICE_STATE")"
+            DEPLOYMENTS="$(jq -r '.deployments | length' <<< "$SERVICE_STATE")"
+
+            ROLLOUT="$(jq -r '
+              [.deployments[] |
+                select(.status == "PRIMARY") |
+                .rolloutState // "UNKNOWN"
+              ] | first // "UNKNOWN"
+            ' <<< "$SERVICE_STATE")"
+
+            echo "Rollout $i/60: $ROLLOUT, running=$RUNNING/$DESIRED, pending=$PENDING, deployments=$DEPLOYMENTS"
+
+            if [[ "$CURRENT_TASK_ARN" != "$EXPECTED_TASK_ARN" ]]; then
+              echo "::error::ECS Task Definition changed unexpectedly."
+              exit 1
+            fi
+
+            if [[ "$ROLLOUT" == "FAILED" ]]; then
+              echo "::error::ECS rollout failed."
+              exit 1
+            fi
+
+            if [[ "$ROLLOUT" == "COMPLETED" && \
+                  "$RUNNING" -eq "$DESIRED" && \
+                  "$PENDING" -eq 0 && \
+                  "$DEPLOYMENTS" -eq 1 ]]; then
+              echo "ECS rollout completed."
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "::error::ECS rollout completion timed out after 10 minutes."
+          exit 1
+
+      - name: Verify Deployment
+        shell: bash
+        env:
+          EXPECTED_TASK_ARN: ${{ steps.task-definition.outputs.task_definition_arn }}
+        run: |
+          set -euo pipefail
+
+          SERVICE_STATE="$(aws ecs describe-services \
             --cluster "$ECS_CLUSTER" \
             --services "$ECS_SERVICE" \
+            --region "$AWS_REGION" \
             --query 'services[0]' \
-            --output json \
-            > service-after.json
+            --output json)"
 
-          ACTUAL_TASK_DEFINITION="$(jq -r '.taskDefinition' service-after.json)"
-          ACTUAL_DESIRED_COUNT="$(jq -r '.desiredCount' service-after.json)"
-          ACTUAL_RUNNING_COUNT="$(jq -r '.runningCount' service-after.json)"
+          CURRENT_TASK_ARN="$(jq -r '.taskDefinition // empty' <<< "$SERVICE_STATE")"
+          DESIRED_COUNT="$(jq -r '.desiredCount // -1' <<< "$SERVICE_STATE")"
+          RUNNING_COUNT="$(jq -r '.runningCount // -1' <<< "$SERVICE_STATE")"
+          PENDING_COUNT="$(jq -r '.pendingCount // -1' <<< "$SERVICE_STATE")"
+          DEPLOYMENT_COUNT="$(jq -r '.deployments | length' <<< "$SERVICE_STATE")"
 
-          if [[ "$ACTUAL_TASK_DEFINITION" != "$NEW_TASK_DEFINITION" ]]; then
-            echo "::error::ECS service task definition mismatch"
+          ROLLOUT="$(jq -r '
+            [.deployments[] |
+              select(.status == "PRIMARY") |
+              .rolloutState // "UNKNOWN"
+            ] | first // "UNKNOWN"
+          ' <<< "$SERVICE_STATE")"
+
+          if [[ "$CURRENT_TASK_ARN" != "$EXPECTED_TASK_ARN" ]]; then
+            echo "::error::ECS Task Definition mismatch."
             exit 1
           fi
 
-          if [[ "$ACTUAL_DESIRED_COUNT" != "$DESIRED_COUNT_BEFORE" ]]; then
-            echo "::error::ECS desired count unexpectedly changed"
+          if [[ "$RUNNING_COUNT" -ne "$DESIRED_COUNT" || \
+                "$PENDING_COUNT" -ne 0 || \
+                "$DEPLOYMENT_COUNT" -ne 1 || \
+                "$ROLLOUT" != "COMPLETED" ]]; then
+            echo "::error::ECS deployment is not stable: $RUNNING_COUNT/$DESIRED_COUNT ($ROLLOUT)"
             exit 1
           fi
 
-          if [[ "$DEPLOY_ENV" == "prod" && "$ACTUAL_RUNNING_COUNT" != "0" ]]; then
-            echo "::error::Prod ECS unexpectedly started"
+          ACTUAL_IMAGE="$(aws ecs describe-task-definition \
+            --task-definition "$CURRENT_TASK_ARN" \
+            --region "$AWS_REGION" \
+            --query 'taskDefinition.containerDefinitions[?name==`ai`].image | [0]' \
+            --output text)"
+
+          if [[ "$ACTUAL_IMAGE" != "$DEPLOY_IMAGE" ]]; then
+            echo "::error::Deployed image mismatch."
+            echo "Expected: $DEPLOY_IMAGE"
+            echo "Actual: $ACTUAL_IMAGE"
             exit 1
           fi
 
-          aws ecs describe-task-definition \
-            --task-definition "$ACTUAL_TASK_DEFINITION" \
-            --query 'taskDefinition.containerDefinitions' \
-            --output json \
-            > deployed-containers.json
-
-          if ! jq -e --arg IMAGE "$IMAGE_URI" \
-            'any(.[]; .name == "ai" and .image == $IMAGE)' \
-            deployed-containers.json > /dev/null; then
-            echo "::error::Deployed image mismatch"
-            exit 1
+          if [[ "$DESIRED_COUNT" -eq 0 ]]; then
+            echo "AI Task Definition/image updated (service remains stopped 0/0)."
+          else
+            echo "AI deployment succeeded: $RUNNING_COUNT/$DESIRED_COUNT"
           fi
-
-          echo "ECS task definition and image verified."
 
       - name: Deployment Summary
+        if: success()
         shell: bash
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
+          NEW_TASK_ARN: ${{ steps.task-definition.outputs.task_definition_arn }}
         run: |
           {
             echo "## AI V2 Deployment"
             echo ""
             echo "- Environment: $DEPLOY_ENV"
-            echo "- Image: $IMAGE_URI"
-            echo "- ECS Cluster: $ECS_CLUSTER"
-            echo "- ECS Service: $ECS_SERVICE"
-            echo "- Task Definition: $NEW_TASK_DEFINITION"
-            echo "- Desired Count: $DESIRED_COUNT_BEFORE"
-            echo ""
-            if [[ "$DEPLOY_ENV" == "prod" ]]; then
-              echo "Prod task definition updated without starting ECS tasks."
-            else
-              echo "ECS deployment verification completed."
-            fi
+            echo "- Type: $DEPLOYMENT_TYPE"
+            echo "- Image: $DEPLOY_IMAGE"
+            echo "- Terraform baseline: $BASE_TASK_DEFINITION_ARN"
+            echo "- Deployed Task Definition: $NEW_TASK_ARN"
           } >> "$GITHUB_STEP_SUMMARY"
