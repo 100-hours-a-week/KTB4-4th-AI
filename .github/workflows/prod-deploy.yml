@@ -67,6 +67,7 @@ jobs:
       github_environment: prod
       image_sha: ${{ inputs.image_sha }}
       verify_dev_match: true
+      allow_prod_image: true
     secrets: inherit
 
   record-production-deployment:

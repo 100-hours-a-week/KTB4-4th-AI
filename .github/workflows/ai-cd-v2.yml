@@ -1,0 +1,68 @@
+name: AI CD V2
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      deployment_type:
+        description: "Deployment type"
+        required: true
+        type: choice
+        options:
+          - image
+          - config-only
+      image_tag:
+        description: "40-character Git SHA (image only)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Deployment Request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Inputs
+        shell: bash
+        env:
+          DEPLOY_ENV: ${{ inputs.environment }}
+          DEPLOYMENT_TYPE: ${{ inputs.deployment_type }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$DEPLOYMENT_TYPE" == "image" ]]; then
+            if [[ ! "$IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::image deployment requires a 40-character Git SHA."
+              exit 1
+            fi
+            if [[ "$DEPLOY_ENV" == "prod" ]]; then
+              echo "::error::Production image promotion must use AI V2 Production CD."
+              exit 1
+            fi
+          elif [[ -n "$IMAGE_TAG" ]]; then
+            echo "::error::Do not specify image_tag for config-only."
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy AI V2
+    needs: validate
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.environment }}
+      github_environment: ${{ inputs.environment }}
+      deployment_type: ${{ inputs.deployment_type }}
+      image_sha: ${{ inputs.image_tag }}
+    secrets: inherit
