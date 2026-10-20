@@ -357,3 +357,27 @@ def test_taste_queries_anchored_on_an_uncovered_interest_are_dropped_too() -> No
     # "볼링 관련 제품 중 미니멀한 디자인"은 검색됐지만 볼링이 상품 없는 관심사라 결과를 버린다.
     assert any(text == "볼링 관련 제품 중 미니멀한 디자인" for text, _, _ in catalog.searched)
     assert [item.product.name for item in batch.self] == ["보드게임"]
+
+
+def test_taste_reason_does_not_repeat_the_word_taste() -> None:
+    product = _product("1", "땅콩 버터")
+    peanut = _signal(TasteField.PREFERENCES, "땅콩만 좋아하는 취향", None)
+    minimal = _signal(TasteField.PREFERENCES, "미니멀한 디자인", None)
+    matches = [_scored(_query(peanut), product)]
+
+    assert (
+        recommendation_reason(matches, RecommendationMode.GIFT, recipient_name="서동휘")
+        == "서동휘님의 땅콩만 좋아하는 취향에 맞춰 선물하기 좋은 상품이에요."
+    )
+    assert (
+        recommendation_reason(matches, RecommendationMode.SELF)
+        == "땅콩만 좋아하는 취향과 잘 맞는 상품이에요."
+    )
+    assert (
+        recommendation_reason([_scored(_query(minimal), product)], RecommendationMode.SELF)
+        == "미니멀한 디자인 취향과 잘 맞는 상품이에요."
+    )
+    coffee = [_scored(_query(COFFEE), product)]
+    assert recommendation_reason(
+        coffee, RecommendationMode.SELF, boost_label="고소한 맛 취향"
+    ).endswith("고소한 맛 취향도 반영했어요.")
