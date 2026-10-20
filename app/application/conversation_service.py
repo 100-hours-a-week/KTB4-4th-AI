@@ -291,7 +291,9 @@ class ConversationService:
             onboarding=onboarding,
         )
         name = onboarding.address_name if onboarding else None
-        return PreparedSession(state=state, messages=tuple(build_opening_messages(name=name)))
+        return PreparedSession(
+            state=state, messages=tuple(build_opening_messages(name=name, now=resolved_now))
+        )
 
     def record_opening(
         self,
