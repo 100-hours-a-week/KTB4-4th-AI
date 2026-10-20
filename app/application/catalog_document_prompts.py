@@ -14,8 +14,10 @@ from app.domain.catalog.models import (
 )
 
 # 추천 질의는 app/domain/recommendation/queries.py 의 _query_text 가 만든다.
-# 문서는 그 질의 문장과 같은 공간에서 가까워야 하므로,
-# 아래 지시는 질의 템플릿을 그대로 따라간다.
+# 관심사별 검색 의도(app/application/search_intent_prompts.py)가 있으면 의도 문장을 쓴다.
+# 의도 문장은 이 문서 형식("{카테고리} {세부 카테고리}. ...")을 따라 쓰므로, 이 형식을 바꾸면
+# 의도 프롬프트의 예시와 INTENT_VERSION 도 함께 바꾼다.
+# 의도가 없는 관심사는 아래 템플릿으로 찾으므로, 문서도 템플릿과 같은 어휘를 쓴다.
 #   content: "{취향값} 관련 제품" 또는 취향값 자체
 #   usage:   "{취향값} 활동에서 사용하는 제품"
 #   gift:    "{취향값}에 관심 있는 사람이 받으면 좋은 선물"

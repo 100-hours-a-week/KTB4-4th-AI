@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from app.domain.profile.models import PreferenceAspect, TasteField
+from app.domain.recommendation.intents import SearchIntent, intent_key
 from app.domain.recommendation.models import (
     RecommendationMode,
     RecommendationSignal,
@@ -59,7 +60,15 @@ _GIFT_ONLY = frozenset({RecommendationMode.GIFT})
 _GIFT_QUERY_FIELDS = frozenset({TasteField.INTERESTS, TasteField.HOBBIES, TasteField.WANTS})
 
 
-def _query_text(signal: RecommendationSignal, space: VectorSpace) -> str:
+def _query_text(
+    signal: RecommendationSignal,
+    space: VectorSpace,
+    intents: Mapping[str, SearchIntent] | None = None,
+) -> str:
+    """검색 의도가 있으면 그 공간의 의도 문장을, 없으면 템플릿 문장을 쓴다."""
+    intent = (intents or {}).get(intent_key(signal.value, signal.taxonomy_path))
+    if intent is not None:
+        return intent.text(space)
     if space == VectorSpace.USAGE:
         return f"{signal.value} 활동에서 사용하는 제품"
     if space == VectorSpace.GIFT:
@@ -111,12 +120,16 @@ def build_search_queries(
     signals: Iterable[RecommendationSignal],
     *,
     max_queries: int = MAX_QUERIES,
+    intents: Mapping[str, SearchIntent] | None = None,
 ) -> tuple[SearchQuery, ...]:
     """저장된 취향·관심사로 검색 쿼리를 만든다.
 
     관심사마다 쿼리를 하나씩 만들고, 취향은 붙은 관심사나 상위 관심사와 조합해 쿼리를 더한다.
     쿼리가 다양할수록 여러 종류의 상품이 후보에 오르고,
     랭킹이 쿼리마다 하나씩 먼저 뽑아 목록을 채운다.
+
+    intents 는 intent_key 로 찾는 관심사별 검색 의도다. 의도가 있는 관심사의 쿼리는 의도 문장을
+    쓰고, 없으면 템플릿 문장을 쓴다. 취향 쿼리는 사용자마다 달라서 의도를 쓰지 않는다.
     """
     if max_queries <= 0:
         raise ValueError("max_queries must be positive")
@@ -140,7 +153,7 @@ def build_search_queries(
                 signal=signal,
                 modes=modes,
                 space=space,
-                text=_query_text(signal, space),
+                text=_query_text(signal, space, intents),
             )
         )
     queries.extend(
@@ -149,7 +162,7 @@ def build_search_queries(
             signal=signal,
             modes=_GIFT_ONLY,
             space=VectorSpace.GIFT,
-            text=_query_text(signal, VectorSpace.GIFT),
+            text=_query_text(signal, VectorSpace.GIFT, intents),
         )
         for index, signal in enumerate(
             (signal for signal in interests if signal.field in _GIFT_QUERY_FIELDS),
@@ -157,9 +170,7 @@ def build_search_queries(
         )
     )
     anchors = [
-        signal.value
-        for signal in interests
-        if signal.field in {TasteField.INTERESTS, TasteField.HOBBIES}
+        signal for signal in interests if signal.field in {TasteField.INTERESTS, TasteField.HOBBIES}
     ][:MAX_CROSS_INTERESTS]
     queries.extend(_taste_queries(signals, anchors))
     queries.extend(_situation_queries(signals, anchors))
@@ -183,7 +194,7 @@ def _tastes(
 
 def _taste_queries(
     signals: Iterable[RecommendationSignal],
-    anchors: list[str],
+    anchors: list[RecommendationSignal],
 ) -> list[SearchQuery]:
     """취향을 관심사와 조합한 content 쿼리.
 
@@ -191,13 +202,16 @@ def _taste_queries(
     대상 없는 취향("미니멀한 디자인")은 상위 관심사마다 짝지어
     "캠핑 관련 제품 중 미니멀한 디자인"처럼 쓴다.
     """
-    texts: list[tuple[RecommendationSignal, str]] = []
+    texts: list[tuple[RecommendationSignal, str, RecommendationSignal | None]] = []
     for signal in _tastes(signals, _CONTENT_TASTE_ASPECTS):
         base = _with_target(signal)
         if base is not None:
-            texts.append((signal, f"{base} 관련 제품"))
+            texts.append((signal, f"{base} 관련 제품", None))
         else:
-            texts.extend((signal, f"{anchor} 관련 제품 중 {signal.value}") for anchor in anchors)
+            texts.extend(
+                (signal, f"{anchor.value} 관련 제품 중 {signal.value}", anchor)
+                for anchor in anchors
+            )
     return [
         SearchQuery(
             query_id=f"t_{index}",
@@ -205,14 +219,15 @@ def _taste_queries(
             modes=_BOTH_MODES,
             space=VectorSpace.CONTENT,
             text=text,
+            anchor=anchor,
         )
-        for index, (signal, text) in enumerate(texts[:MAX_TASTE_QUERIES], start=1)
+        for index, (signal, text, anchor) in enumerate(texts[:MAX_TASTE_QUERIES], start=1)
     ]
 
 
 def _situation_queries(
     signals: Iterable[RecommendationSignal],
-    anchors: list[str],
+    anchors: list[RecommendationSignal],
 ) -> list[SearchQuery]:
     """상황 취향을 기존 usage 템플릿에 넣어 보조 쿼리를 만든다.
 
@@ -223,12 +238,13 @@ def _situation_queries(
     queries: list[SearchQuery] = []
     for signal in _tastes(signals, frozenset({PreferenceAspect.SITUATION})):
         base = _with_target(signal)
+        anchor = None
         if base is None:
-            base = (
-                f"{signal.value} {anchors[0]}"
-                if anchors and anchors[0] not in signal.value
-                else signal.value
-            )
+            if anchors and anchors[0].value not in signal.value:
+                anchor = anchors[0]
+                base = f"{signal.value} {anchor.value}"
+            else:
+                base = signal.value
         queries.append(
             SearchQuery(
                 query_id=f"s_{len(queries) + 1}",
@@ -236,6 +252,7 @@ def _situation_queries(
                 modes=_BOTH_MODES,
                 space=VectorSpace.USAGE,
                 text=f"{base} 활동에서 사용하는 제품",
+                anchor=anchor,
             )
         )
         if len(queries) == MAX_SITUATION_QUERIES:
@@ -253,3 +270,51 @@ def _unique_texts(queries: Iterable[SearchQuery]) -> list[SearchQuery]:
         seen.add(key)
         unique.append(query)
     return unique
+
+
+def is_interest_query(query: SearchQuery) -> bool:
+    """관심사 하나를 찾는 쿼리(q_, g_). 취향·상황 쿼리와 탐색 쿼리는 아니다."""
+    return not query.exploration and query.signal.field != TasteField.PREFERENCES
+
+
+def is_coverage_query(query: SearchQuery) -> bool:
+    """카탈로그에 그 관심사의 상품이 있는지 보는 쿼리.
+
+    gift 공간은 유사도가 전반적으로 높아서 판정에 쓰지 않는다.
+    """
+    return is_interest_query(query) and query.space != VectorSpace.GIFT
+
+
+def build_explore_queries(
+    queries: Iterable[SearchQuery],
+    *,
+    intents: Mapping[str, SearchIntent] | None,
+) -> tuple[SearchQuery, ...]:
+    """검색 의도가 있는 관심사마다 탐색 쿼리를 하나씩 만든다.
+
+    쓸지는 1단계 검색 뒤에 엔진이 정한다. 상품 content 문서와 같은 문형이라 content 공간에서 찾는다.
+    사용자 취향은 붙이지 않는다. "미니멀한 디자인"을 붙이면 "미니" 글자에 걸린 상품이 올라왔다.
+    """
+    if not intents:
+        return ()
+    explore: list[SearchQuery] = []
+    seen: set[str] = set()
+    for query in queries:
+        if not is_coverage_query(query):
+            continue
+        key = intent_key(query.signal.value, query.signal.taxonomy_path)
+        intent = intents.get(key)
+        if intent is None or key in seen:
+            continue
+        seen.add(key)
+        explore.append(
+            SearchQuery(
+                query_id=f"e_{len(explore) + 1}",
+                signal=query.signal,
+                modes=_BOTH_MODES,
+                space=VectorSpace.CONTENT,
+                text=intent.explore,
+                exploration=True,
+            )
+        )
+    return tuple(explore)
