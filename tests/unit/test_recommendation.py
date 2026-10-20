@@ -139,7 +139,8 @@ def test_gift_deferral_boost_and_private_reason_are_applied() -> None:
 
     assert ranked[0].product == deferred_product
     assert "고급 그라인더" not in ranked[0].reason
-    assert ranked[0].reason == "평소 관심사와 잘 맞아 선물하기 좋은 상품이에요."
+    # 무엇을 못 샀는지는 친구에게 보이지 않는다.
+    assert ranked[0].reason == "스스로 사기엔 망설여지는 물건이라 선물로 반가울 거예요."
 
 
 def test_recency_decay_prefers_a_recent_signal() -> None:
@@ -441,3 +442,42 @@ def test_gift_reason_names_the_recipient_but_self_reason_does_not() -> None:
     assert gift[0].reason == "커피와 차에 관심 있는 서동휘님에게 선물하기 좋은 상품이에요."
     assert own[0].reason == "커피와 차에 대한 관심과 잘 맞는 상품이에요."
     assert unnamed[0].reason == "커피와 차에 관심 있는 분에게 선물하기 좋은 상품이에요."
+
+
+def test_remaining_slots_rotate_across_queries_within_the_score_gap() -> None:
+    books, walking, knitting = _queries(
+        [
+            _signal(TasteField.INTERESTS, "독서", confidence=0.9),
+            _signal(TasteField.INTERESTS, "산책", confidence=0.9),
+            _signal(TasteField.INTERESTS, "뜨개질", confidence=0.9),
+        ]
+    )
+
+    def matches(query, prefix: str, top: float):
+        return [
+            VectorMatch(
+                query=query,
+                product=_product("kakao", f"{prefix}-{index}", f"{prefix} {index}"),
+                similarity=top - index / 100,
+            )
+            for index in range(6)
+        ]
+
+    ranked = rank_recommendations(
+        [
+            *matches(books, "book", 0.75),
+            *matches(walking, "walk", 0.62),
+            # 맞는 상품이 없는 쿼리. 1등과 점수 차이가 커서 첫 바퀴의 한 자리만 갖는다.
+            *matches(knitting, "knit", 0.30),
+        ],
+        mode=RecommendationMode.SELF,
+        now=NOW,
+        limit=8,
+    )
+
+    owners = [item.product.key.external_id.split("-")[0] for item in ranked]
+    assert owners.count("book") == 4
+    assert owners.count("walk") == 3
+    assert owners.count("knit") == 1
+    scores = [item.score for item in ranked]
+    assert scores == sorted(scores, reverse=True)

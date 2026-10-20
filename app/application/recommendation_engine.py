@@ -16,9 +16,15 @@ from app.domain.recommendation import (
     RecommendationGuide,
     RecommendationMode,
     RecommendationSignal,
+    SearchIntent,
+    SearchQuery,
     VectorMatch,
     VectorSpace,
+    build_explore_queries,
     build_search_queries,
+    intent_key,
+    is_coverage_query,
+    is_interest_query,
     rank_recommendations,
 )
 
@@ -30,6 +36,14 @@ EXCLUSION_TOP_K = 40
 PREFERENCE_SIMILARITY = 0.5
 PREFERENCE_BONUS = 0.05
 MAX_PREFERENCE_BONUS = 0.10
+# 검색 의도 쿼리의 1위가 이보다 낮으면 카탈로그에 그 관심사의 상품이 없는 것으로 본다.
+# 그 관심사로 찾은 상품은 버리고 탐색 쿼리로 찾은 상품을 대신 넣는다.
+# 의도를 세 번씩 만들어 잰 1위 유사도는 이랬다. 평가셋으로 다시 맞춰야 하는 값이다.
+#   상품 있음: 커피·차·독서·콘솔게임·캠핑 0.67~0.76, 와인(와인잔) 0.63, 산책(운동화·백팩) 0.64~0.65
+#   상품 없음: 볼링(골프 장갑) 0.61~0.62, 스키 0.57~0.60, 뜨개질 0.56~0.59
+# 템플릿 쿼리는 유사도 분포가 달라 판정하지 않는다.
+COVERAGE_MIN_SIMILARITY = 0.62
+EXPLORE_TOP_K = 40
 
 
 def _normalize(text: str) -> str:
@@ -65,28 +79,38 @@ class RecommendationEngine:
         guide: RecommendationGuide | None = None,
         categories: Sequence[str] | None = None,
         recipient_name: str | None = None,
+        intents: Mapping[str, SearchIntent] | None = None,
     ) -> RecommendationBatch:
         """categories 를 주면 그 카테고리 안에서만 찾는다(v2 카테고리 탭).
 
         recipient_name 은 선물 목록 추천 이유에 넣는 받는 사람 이름이다.
+        intents 는 관심사별 검색 의도다. 없는 관심사는 템플릿 쿼리로 찾는다.
         """
-        queries = build_search_queries(signals)
+        queries = build_search_queries(signals, intents=intents)
         if not queries:
             return RecommendationBatch(self=(), gift=())
         guide = guide or RecommendationGuide()
+        explore_queries = build_explore_queries(queries, intents=intents)
 
-        # 쿼리, 제외, 선호 문장을 한 번에 임베딩한다.
+        # 쿼리, 탐색, 제외, 선호 문장을 한 번에 임베딩한다. 탐색 쿼리는 쓸지 모르지만
+        # 같이 넣어 두면 2단계 검색을 위해 임베딩을 다시 부르지 않는다.
         texts = [
             *(query.text for query in queries),
+            *(query.text for query in explore_queries),
             *guide.exclusions,
             *guide.preferences,
         ]
         vectors = await self._embedder.embed_queries(texts)
         if len(vectors) != len(texts):
             raise ValueError("embedder returned an unexpected number of query vectors")
-        query_vectors = vectors[: len(queries)]
-        exclusion_vectors = vectors[len(queries) : len(queries) + len(guide.exclusions)]
-        preference_vectors = vectors[len(queries) + len(guide.exclusions) :]
+        cursor = 0
+        query_vectors = vectors[cursor : cursor + len(queries)]
+        cursor += len(queries)
+        explore_vectors = vectors[cursor : cursor + len(explore_queries)]
+        cursor += len(explore_queries)
+        exclusion_vectors = vectors[cursor : cursor + len(guide.exclusions)]
+        cursor += len(guide.exclusions)
+        preference_vectors = vectors[cursor:]
 
         searches, exclusion_searches, preference_searches = await asyncio.gather(
             asyncio.gather(
@@ -125,19 +149,43 @@ class RecommendationEngine:
                 )
             ),
         )
+
+        # 2단계: 카탈로그에 상품이 없는 관심사는 1단계 결과를 버리고 탐색 쿼리로 다시 찾는다.
+        uncovered = _uncovered(queries, searches, intents)
+        explore = [
+            (query, vector)
+            for query, vector in zip(explore_queries, explore_vectors, strict=True)
+            if _signal_key(query) in uncovered
+        ]
+        explore_searches = await asyncio.gather(
+            *(
+                self._search(
+                    vector,
+                    query.space,
+                    EXPLORE_TOP_K,
+                    categories=categories,
+                    exclusion=guide.catalog_exclusion,
+                )
+                for query, vector in explore
+            )
+        )
         matches = [
             VectorMatch(
                 query=query,
                 product=result.product,
                 similarity=result.similarity,
             )
-            for query, results in zip(queries, searches, strict=True)
+            for query, results in (
+                *zip(queries, searches, strict=True),
+                *zip((query for query, _ in explore), explore_searches, strict=True),
+            )
+            if not _drops_with(query, uncovered)
             for result in results
         ]
         excluded = _excluded_keys(
             matches, guide.exclusions, exclusion_searches, guide.catalog_exclusion
         )
-        boosts = _preference_boosts(preference_searches)
+        boosts, boost_labels = _preference_boosts(guide.preferences, preference_searches)
         return RecommendationBatch(
             self=rank_recommendations(
                 matches,
@@ -146,6 +194,7 @@ class RecommendationEngine:
                 limit=limit,
                 excluded=excluded,
                 boosts=boosts,
+                boost_labels=boost_labels,
             ),
             gift=rank_recommendations(
                 matches,
@@ -154,6 +203,7 @@ class RecommendationEngine:
                 limit=limit,
                 excluded=excluded,
                 boosts=boosts,
+                boost_labels=boost_labels,
                 recipient_name=recipient_name,
             ),
         )
@@ -203,13 +253,48 @@ def _excluded_keys(
     return frozenset(excluded)
 
 
-def _preference_boosts(
+def _signal_key(query: SearchQuery) -> str:
+    return intent_key(query.signal.value, query.signal.taxonomy_path)
+
+
+def _drops_with(query: SearchQuery, uncovered: frozenset[str]) -> bool:
+    """상품이 없다고 판정된 관심사의 쿼리, 그 관심사와 짝지은 취향·상황 쿼리."""
+    if is_interest_query(query) and _signal_key(query) in uncovered:
+        return True
+    anchor = query.anchor
+    return anchor is not None and intent_key(anchor.value, anchor.taxonomy_path) in uncovered
+
+
+def _uncovered(
+    queries: Sequence[SearchQuery],
     searches: Sequence[Sequence[CatalogSearchResult]],
-) -> Mapping[ProductKey, float]:
+    intents: Mapping[str, SearchIntent] | None,
+) -> frozenset[str]:
+    """검색 의도로 찾았는데 1위도 COVERAGE_MIN_SIMILARITY 보다 낮은 관심사의 키."""
+    if not intents:
+        return frozenset()
+    best: dict[str, float] = {}
+    for query, results in zip(queries, searches, strict=True):
+        key = _signal_key(query)
+        if not is_coverage_query(query) or key not in intents:
+            continue
+        top = max((result.similarity for result in results), default=0.0)
+        best[key] = max(best.get(key, 0.0), top)
+    return frozenset(key for key, top in best.items() if top < COVERAGE_MIN_SIMILARITY)
+
+
+def _preference_boosts(
+    preferences: Sequence[str],
+    searches: Sequence[Sequence[CatalogSearchResult]],
+) -> tuple[Mapping[ProductKey, float], Mapping[ProductKey, str]]:
+    """선호 문장과 가까운 상품의 가산점과, 추천 이유에 쓸 가장 가까운 선호 문장."""
     boosts: dict[ProductKey, float] = {}
-    for results in searches:
+    nearest: dict[ProductKey, tuple[float, str]] = {}
+    for preference, results in zip(preferences, searches, strict=True):
         for result in results:
             if result.similarity >= PREFERENCE_SIMILARITY:
                 key = result.product.key
                 boosts[key] = min(boosts.get(key, 0.0) + PREFERENCE_BONUS, MAX_PREFERENCE_BONUS)
-    return boosts
+                if result.similarity > nearest.get(key, (0.0, ""))[0]:
+                    nearest[key] = (result.similarity, preference)
+    return boosts, {key: label for key, (_, label) in nearest.items()}

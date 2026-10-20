@@ -132,11 +132,51 @@ def test_recommendation_inputs_turn_onboarding_into_signals_and_exclusion() -> N
     assert "여행에 관심 있는 사람이 받으면 좋은 선물" in texts
 
 
-def test_recommendation_inputs_without_onboarding_keep_previous_behaviour() -> None:
+def test_recommendation_inputs_without_onboarding_only_exclude_pets() -> None:
     signals, guide = recommendation_inputs({"profile": {field.value: [] for field in TasteField}})
 
     assert signals == ()
-    assert guide.catalog_exclusion == CatalogExclusion()
+    # 반려동물 신호가 없으면 반려동물 대분류만 뺀다. 그 밖의 조건은 없다.
+    assert guide.catalog_exclusion == CatalogExclusion(categories=frozenset({"pet"}))
+
+
+def _profile_with(field: TasteField, value: str, path: list[str] | None) -> dict:
+    profile: dict = {item.value: [] for item in TasteField}
+    profile[field.value] = [
+        {
+            "value": value,
+            "confidence": 0.8,
+            "visibility": "friends",
+            "updatedAt": NOW.isoformat(),
+            "taxonomyPath": path,
+        }
+    ]
+    return profile
+
+
+def test_pet_category_stays_only_with_a_pet_signal() -> None:
+    pets = ["관심사", "반려동물"]
+    walking = recommendation_inputs(
+        {"profile": _profile_with(TasteField.HOBBIES, "산책", ["관심사", "운동·피트니스"])}
+    )[1]
+    lives_with_dog = recommendation_inputs(
+        {"profile": _profile_with(TasteField.LIFESTYLE, "반려견과 산다", pets)}
+    )[1]
+    dislikes_cats = recommendation_inputs(
+        {"profile": _profile_with(TasteField.DISLIKES, "고양이 털", pets)}
+    )[1]
+    chose_pets = recommendation_inputs(
+        {
+            "profile": {field.value: [] for field in TasteField},
+            "onboarding": {"interestCategoryCodes": ["PET"]},
+        }
+    )[1]
+
+    assert "pet" in walking.catalog_exclusion.categories
+    assert "pet" not in lives_with_dog.catalog_exclusion.categories
+    # 싫다고 한 것은 반려동물을 원한다는 뜻이 아니다.
+    assert "pet" in dislikes_cats.catalog_exclusion.categories
+    assert "pet" not in chose_pets.catalog_exclusion.categories
 
 
 def test_recommendation_inputs_reject_unknown_codes() -> None:

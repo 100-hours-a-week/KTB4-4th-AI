@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     redis_url: RedisDsn | None = None
     chat_session_idle_ttl_seconds: int = Field(default=1800, ge=60)
     chat_session_max_lifetime_seconds: int = Field(default=7200, ge=60)
+    # 관심사별 검색 의도를 추출 모델로 만들어 Redis에 캐시한다. 끄면 추천은 템플릿 쿼리만 쓴다.
+    search_intent_enabled: bool = True
     ai_database_url: str | None = None
 
     # 백엔드 MySQL 원본. 같은 EC2에 있으면 127.0.0.1 로 붙는다.

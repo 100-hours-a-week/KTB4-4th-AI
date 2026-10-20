@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     # models 가 RecommendationGuide 에 이 모듈의 CatalogExclusion 을 담는다.
     from app.domain.recommendation.models import CatalogProduct
 
+# 반려동물 대분류. 반려동물과 관련된 신호가 없는 사용자에게는 이 대분류를 통째로 뺀다.
+# "산책"처럼 사람도 하는 활동이 강아지 산책용품에 걸리는 것을 막는다.
+PET_CATEGORY = "pet"
 # 사람이 먹는 상품. 반려동물 간식은 넣지 않는다.
 _EDIBLE_CATEGORIES = frozenset({"food", "health"})
 _EDIBLE_VOUCHER_SUBCATEGORIES = frozenset({"cafe_drink", "dessert", "meal", "convenience"})
@@ -249,10 +252,12 @@ def build_catalog_exclusion(
     *,
     allergies: Iterable[Allergy] = (),
     gift_exclusions: Iterable[GiftExclusion] = (),
+    exclude_pets: bool = False,
 ) -> CatalogExclusion:
+    """exclude_pets 는 반려동물 신호가 없어 반려동물 대분류를 뺄 때 쓴다."""
     allergies = tuple(allergies)
     gift_exclusions = tuple(gift_exclusions)
-    categories: set[str] = set()
+    categories: set[str] = {PET_CATEGORY} if exclude_pets else set()
     subcategories: set[str] = set(_UNCLASSIFIED_EDIBLE) if allergies else set()
     for allergy in allergies:
         subcategories |= _ALLERGY_SUBCATEGORIES[allergy]

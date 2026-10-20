@@ -22,6 +22,7 @@ from app.application.ports.recommendation_service import RecommendationService
 from app.application.ports.session_store import SessionStore
 from app.application.recommendation_engine import RecommendationEngine
 from app.application.recommendation_service import V1RecommendationService
+from app.application.search_intent_service import SearchIntentService
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
@@ -145,6 +146,7 @@ def create_app(
     recommendation_service: RecommendationService | None = None,
     embedder: Embedder | None = None,
     catalog_repository: CatalogRepository | None = None,
+    search_intent_service: SearchIntentService | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
@@ -206,6 +208,31 @@ def create_app(
                 )
                 resolved_session_store = RedisSessionStore(redis_client)
 
+        # 모델 게이트웨이를 주입받은 테스트에서는 주입받은 검색 의도 서비스만 쓴다.
+        resolved_intents = search_intent_service
+        if (
+            resolved_intents is None
+            and model_gateway is None
+            and resolved_settings.search_intent_enabled
+        ):
+            from app.infrastructure.persistence.memory_search_intent_store import (
+                InMemorySearchIntentStore,
+            )
+            from app.infrastructure.persistence.redis_search_intent_store import (
+                RedisSearchIntentStore,
+            )
+
+            resolved_intents = SearchIntentService(
+                model_gateway=resolved_gateway,
+                model=resolved_settings.extraction_model_name,
+                store=(
+                    RedisSearchIntentStore(redis_client)
+                    if redis_client is not None
+                    else InMemorySearchIntentStore()
+                ),
+                timeout_seconds=resolved_settings.extraction_model_timeout_seconds,
+            )
+
         state_store = ConversationStateStore(
             resolved_session_store,
             idle_ttl_seconds=resolved_settings.chat_session_idle_ttl_seconds,
@@ -227,6 +254,7 @@ def create_app(
             response_model=resolved_settings.response_model_name,
             response_timeout_seconds=resolved_settings.response_model_timeout_seconds,
             summary_timeout_seconds=resolved_settings.summary_model_timeout_seconds,
+            search_intents=resolved_intents,
         )
         resolved_recommendation_service = recommendation_service
         resolved_catalog = catalog_repository
@@ -275,12 +303,15 @@ def create_app(
                 RecommendationEngine(
                     embedder=resolved_embedder,
                     catalog=resolved_catalog,
-                )
+                ),
+                intents=resolved_intents,
             )
         application.state.recommendation_service = resolved_recommendation_service
         try:
             yield
         finally:
+            if resolved_intents is not None:
+                await resolved_intents.aclose()
             if locator_task is not None:
                 locator_task.cancel()
                 with suppress(asyncio.CancelledError):
