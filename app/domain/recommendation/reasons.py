@@ -54,6 +54,15 @@ def _wa(word: str) -> str:
     return f"{word}{'과' if _has_final(word) else '와'}"
 
 
+def _taste(value: str) -> str:
+    """취향 값을 "~ 취향"으로 쓴다.
+
+    "땅콩만 좋아하는 취향"처럼 이미 취향으로 끝나면 붙이지 않는다.
+    """
+    value = value.strip()
+    return value if value.endswith("취향") else f"{value} 취향"
+
+
 def _shown(match: ScoredMatch, mode: RecommendationMode) -> bool:
     """이유 문구에 관심사 이름을 넣어도 되는지. 본인 목록은 늘 된다."""
     signal = match.match.query.signal
@@ -117,8 +126,8 @@ def recommendation_reason(
     elif signal.field == TasteField.PREFERENCES:
         # 취향 쿼리로 찾은 상품. 취향은 친구 공개 항목이라 선물 목록에서도 그대로 보여 준다.
         if gift:
-            return f"{owner}{value} 취향에 맞춰 선물하기 좋은 상품이에요."
-        return f"{value} 취향과 잘 맞는 상품이에요."
+            return f"{owner}{_taste(value)}에 맞춰 선물하기 좋은 상품이에요."
+        return f"{_wa(_taste(value))} 잘 맞는 상품이에요."
     elif gift:
         if signal.field == TasteField.UNAFFORDABLE:
             # 무엇을 못 샀는지는 친구에게 보이지 않는다.
@@ -137,5 +146,5 @@ def recommendation_reason(
         reason = pick(_SELF_INTEREST)
 
     if boost_label and boost_label != value:
-        reason = f"{reason} {boost_label} 취향도 반영했어요."
+        reason = f"{reason} {_taste(boost_label)}도 반영했어요."
     return reason
