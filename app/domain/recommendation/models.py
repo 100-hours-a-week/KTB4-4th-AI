@@ -107,6 +107,11 @@ class SearchQuery:
     modes: frozenset[RecommendationMode]
     space: VectorSpace
     text: str
+    # 카탈로그에 그 관심사의 상품이 없을 때 대신 찾는 탐색 쿼리. 추천 이유와 자리 배분이 다르다.
+    exploration: bool = False
+    # 취향·상황 쿼리를 짝지은 관심사("캠핑 관련 제품 중 미니멀한 디자인"의 캠핑).
+    # 그 관심사가 카탈로그에 없다고 판정되면 이 쿼리도 함께 버린다.
+    anchor: RecommendationSignal | None = None
 
 
 @dataclass(slots=True, frozen=True)

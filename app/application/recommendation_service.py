@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.application.recommendation_engine import RecommendationEngine
+from app.application.search_intent_service import SearchIntentService, intent_targets
 from app.domain.profile.models import DeferralReason, PreferenceAspect, TasteField, Visibility
 from app.domain.profile.onboarding import (
     INTEREST_QUERY_TERMS,
@@ -37,6 +38,11 @@ _BOOST_ASPECTS = {
     PreferenceAspect.CRITERION,
 }
 
+
+# 반려동물 분야. 어떤 항목이든 이 분야로 분류됐으면 반려동물과 관련된 사용자로 본다.
+_PET_INTEREST_PATH = INTEREST_CATEGORIES_BY_KEY["pets"].path
+# 반려동물 신호로 보지 않는 필드. 싫거나 못 쓰는 것은 반려동물을 원한다는 뜻이 아니다.
+_NOT_PET_EVIDENCE = frozenset({TasteField.DISLIKES, TasteField.CONSTRAINTS})
 
 # 온보딩 관심 카테고리의 쿼리 가중치. 쿼리 재료로 늘 쓰이도록 강한 신호 기준(0.55)은 넘기되,
 # 대화에서 구체적으로 나온 관심사(대개 0.7 이상)보다 앞서지 않게 둔다.
@@ -190,6 +196,29 @@ def _values(
     return tuple(values)
 
 
+def _knows_pets(payload: Mapping[str, Any], onboarding: Mapping[str, Any]) -> bool:
+    """반려동물과 관련된 사용자인지. 온보딩에서 반려동물을 골랐거나, 프로필 항목 중 하나라도
+    반려동물 분야로 분류됐으면 그렇다고 본다. 단어 목록이 아니라 판단 모델의 분야 분류를 쓴다.
+    """
+    if InterestCategory.PET in _codes(onboarding, "interestCategoryCodes", InterestCategory):
+        return True
+    profile = payload.get("profile")
+    if not isinstance(profile, Mapping):
+        return False
+    for field in TasteField:
+        if field in _NOT_PET_EVIDENCE:
+            continue
+        items = profile.get(field.value, [])
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            continue
+        if any(
+            isinstance(item, Mapping) and _taxonomy_path(item) == _PET_INTEREST_PATH
+            for item in items
+        ):
+            return True
+    return False
+
+
 def _recommendation_guide(
     payload: Mapping[str, Any],
     onboarding: Mapping[str, Any],
@@ -197,6 +226,7 @@ def _recommendation_guide(
     catalog_exclusion = build_catalog_exclusion(
         allergies=_codes(onboarding, "allergyCodes", Allergy),
         gift_exclusions=_codes(onboarding, "giftExclusionCodes", GiftExclusion),
+        exclude_pets=not _knows_pets(payload, onboarding),
     )
     profile = payload.get("profile")
     if not isinstance(profile, Mapping):
@@ -230,13 +260,29 @@ def _items(recommendations: Sequence[RankedRecommendation]) -> list[dict[str, ob
 
 
 class V1RecommendationService:
-    def __init__(self, engine: RecommendationEngine) -> None:
+    def __init__(
+        self,
+        engine: RecommendationEngine,
+        *,
+        intents: SearchIntentService | None = None,
+    ) -> None:
         self._engine = engine
+        self._intents = intents
 
     async def recommend_lists(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         signals, guide = recommendation_inputs(payload)
+        intents = {}
+        if self._intents is not None:
+            # 추천은 사용자가 기다리는 경로라 캐시만 읽는다. 없는 의도는 다음 추천을 위해
+            # 백그라운드로 만들고, 이번에는 템플릿 쿼리로 찾는다.
+            targets = intent_targets(signals)
+            intents = dict(await self._intents.lookup(targets))
+            self._intents.schedule(target for target in targets if target.key not in intents)
         batch = await self._engine.recommend(
-            signals, guide=guide, recipient_name=_recipient_name(payload)
+            signals,
+            guide=guide,
+            recipient_name=_recipient_name(payload),
+            intents=intents,
         )
         return {
             "generatedAt": datetime.now(UTC).isoformat(),

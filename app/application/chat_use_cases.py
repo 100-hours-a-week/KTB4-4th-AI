@@ -10,6 +10,11 @@ from app.application.conversation_prompts import build_friend_summary_messages
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.ports.model_gateway import ModelGateway
+from app.application.search_intent_service import (
+    SearchIntentService,
+    intent_targets,
+    onboarding_intent_targets,
+)
 from app.domain.conversation.guards import fix_summary_intro, stable_reply_prefix
 from app.domain.conversation.models import (
     CompletionReason,
@@ -127,14 +132,22 @@ class ChatUseCases:
         response_model: str,
         response_timeout_seconds: float = 60.0,
         summary_timeout_seconds: float = 10.0,
+        search_intents: SearchIntentService | None = None,
     ) -> None:
+        """search_intents 가 있으면 새로 들어온 관심사의 검색 의도를 백그라운드로 만들어 둔다."""
         self._conversations = conversations
+        self._search_intents = search_intents
         self._states = states
         self._model_gateway = model_gateway
         self._response_model = response_model
         self._response_timeout_seconds = response_timeout_seconds
         self._summary_timeout_seconds = summary_timeout_seconds
         self._locks: dict[int, asyncio.Lock] = {}
+
+    def _prepare_intents(self, completed: CompletedTurn) -> None:
+        """이번 턴에 저장된 관심사의 검색 의도를 만든다. 세션 종료 때 추천이 캐시를 읽는다."""
+        if self._search_intents is not None:
+            self._search_intents.schedule(intent_targets(completed.merge_result.accepted))
 
     def _lock(self, session_id: int) -> asyncio.Lock:
         return self._locks.setdefault(session_id, asyncio.Lock())
@@ -209,6 +222,8 @@ class ChatUseCases:
             )
             greeting = self._conversations.record_opening(prepared.state, greeting)
             await self._states.save(prepared.state)
+            if self._search_intents is not None and onboarding is not None:
+                self._search_intents.schedule(onboarding_intent_targets(onboarding.interests))
             return StartedSession(state=prepared.state, greeting=greeting)
 
     async def send_message(
@@ -255,6 +270,7 @@ class ChatUseCases:
                 scene=prepared.decision.scene,
             )
             await self._states.save(completed.state)
+            self._prepare_intents(completed)
             return completed
 
     async def find_confirmed_turn(
@@ -343,6 +359,7 @@ class ChatUseCases:
                 )
                 completed.state.last_user_message_id = user_message_id
                 await self._states.save(completed.state)
+                self._prepare_intents(completed)
 
                 if completed.reply.startswith(emitted):
                     if len(completed.reply) > len(emitted):
