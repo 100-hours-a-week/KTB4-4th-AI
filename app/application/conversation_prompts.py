@@ -1,5 +1,7 @@
 import json
 import random
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from app.domain.conversation.energy import asks_back, unsure
 from app.domain.conversation.models import ConversationGoal, ConversationMove, ConversationState
@@ -30,14 +32,22 @@ OPENING_TOPIC_AREAS: dict[str, tuple[str, ...]] = {
     "쉬는 날": (
         "지난 주말이나 쉬는 날에 한 것",
         "아무 일정 없는 하루가 생기면 하고 싶은 것",
+        "쉬는 날 꼭 챙기는 나만의 루틴",
     ),
     "하루의 끝": (
         "요즘 하루 일과가 끝나면 하는 것",
         "요즘 자기 전에 하는 것",
+        "퇴근하거나 수업 끝나고 들르는 곳",
     ),
     "오가는 길": (
         "출근길이나 등굣길에 꼭 하는 것",
         "요즘 자주 걷는 길이나 동네 산책 코스",
+        "오가는 길에 꼭 듣거나 보는 것",
+    ),
+    "일과 공부": (
+        "요즘 일하거나 공부하면서 소소하게 챙기는 낙",
+        "책상 위에 늘 올려 두는 것",
+        "요즘 점심시간에 주로 하는 것",
     ),
     "집과 공간": (
         "요즘 집에서 제일 오래 머무는 자리",
@@ -73,6 +83,27 @@ OPENING_TOPIC_AREAS: dict[str, tuple[str, ...]] = {
     "몸 움직이기": (
         "요즘 몸을 움직이는 것(운동, 산책, 스트레칭 같은 것)",
         "요즘 날씨에 밖에서 하고 싶은 것",
+        "요즘 몸이 개운해지는 순간",
+    ),
+    "나들이와 여행": (
+        "최근에 다녀온 곳 중 또 가고 싶은 곳",
+        "요즘 가 보고 싶은 동네나 장소",
+        "가볍게 바람 쐬러 갈 때 자주 가는 곳",
+    ),
+    "식물과 동물": (
+        "최근에 길에서 본 귀여운 동물이나 식물",
+        "한 번쯤 키워 보고 싶은 동물이나 식물",
+        "요즘 자주 보는 동물 영상이나 사진",
+    ),
+    "만들고 꾸미기": (
+        "최근에 직접 만들거나 고쳐 본 것",
+        "요즘 꾸미고 있는 공간이나 물건",
+        "손으로 하는 것 중 해 보니 재밌었던 것",
+    ),
+    "놀이": (
+        "요즘 하는 게임이나 소소한 놀이",
+        "친구들이랑 모이면 꼭 하는 놀이",
+        "최근에 시간 가는 줄 모르고 한 것",
     ),
     "기분 전환": (
         "기분이 꿀꿀할 때 꼭 하는 것",
@@ -102,8 +133,37 @@ OPENING_TOPIC_AREAS: dict[str, tuple[str, ...]] = {
     "계절": (
         "이 계절에 꼭 하고 싶은 것",
         "요즘 날씨에 제일 생각나는 것",
+        "이 계절이 되면 꼭 꺼내는 물건",
     ),
 }
+# 계절 영역은 모델이 지금 몇 월인지 모르면 "이 계절"을 지어내서 말한다.
+# 이 영역을 고른 첫인사에만 한국 기준 계절을 넣는다. 요일·시간·날씨는 계속 넣지 않는다.
+SEASON_AREA = "계절"
+_KOREA = ZoneInfo("Asia/Seoul")
+_SEASONS = {
+    12: "겨울",
+    1: "겨울",
+    2: "겨울",
+    3: "봄",
+    4: "봄",
+    5: "봄",
+    6: "여름",
+    7: "여름",
+    8: "여름",
+    9: "가을",
+    10: "가을",
+    11: "겨울",
+}
+
+# 첫 질문을 묻는 방식. 소재만 고르면 모델이 대부분 "요즘 ~ 뭐 해요?"로 묻는다.
+# 소재와 따로 골라 조합한다. 소재와 어울리지 않으면 모델이 편하게 묻도록 지시에 적어 둔다.
+OPENING_QUESTION_STYLES: tuple[str, ...] = (
+    "편하게 궁금한 걸 묻는다.",
+    "최근에 있었던 일을 떠올리게 묻는다. (예: 이번 주에 그런 적 있었어요?)",
+    "하나만 꼽아 달라고 묻는다. (예: 요즘 제일 자주 하는 거 하나만 꼽으면요?)",
+    "둘 중 하나를 고르게 묻는다. 두 선택지는 고른 답에 따라 다른 취향이 보이는 것으로 정한다.",
+    "가볍게 상상해 보게 묻는다. (예: 갑자기 하루가 통째로 비면요?)",
+)
 _SUMMARY_FIELD_LABELS = {
     TasteField.HOBBIES: "자주 하는 활동",
     TasteField.INTERESTS: "관심을 보인 것",
@@ -122,6 +182,8 @@ OPENING_INSTRUCTION = (
     "첫인사다. 짧게 인사하고 아래 소재로 가벼운 질문 하나를 한다. "
     "매번 같은 인사말로 시작하지 않도록 표현을 바꾸고, 취미나 관심사를 직접 묻지는 않는다.\n"
     "[소재]\n{topic}\n"
+    "{season}"
+    "[묻는 방식]\n{style} 소재와 어울리지 않으면 이 방식은 버리고 편하게 묻는다.\n"
     "첫 질문은 바로 답할 수 있게 가볍게 한다. 소재가 무거우면 가볍게 바꿔서 묻는다.\n"
     "인사는 한두 문장으로 짧게 하고, 요일이나 날씨, 네 기분 이야기로 시작하지 않는다.\n"
     "인사말 없이 바로 소재로 들어가도 된다. 질문은 하나만 한다."
@@ -581,17 +643,33 @@ def _companion_memo(state: ConversationState) -> str:
     )
 
 
+def season_of(now: datetime) -> str:
+    """한국 기준 계절. 3~5월 봄, 6~8월 여름, 9~10월 가을, 11~2월 겨울."""
+    return _SEASONS[now.astimezone(_KOREA).month]
+
+
 def build_opening_messages(
     *,
     rng: random.Random | None = None,
     name: str | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, str]]:
-    """name 은 대화에서 부를 이름(address_name)이다."""
+    """name 은 대화에서 부를 이름(address_name)이다. now 는 계절 소재의 계절을 정한다."""
     chooser = rng or random
-    topic = chooser.choice(OPENING_TOPIC_AREAS[chooser.choice(tuple(OPENING_TOPIC_AREAS))])
+    area = chooser.choice(tuple(OPENING_TOPIC_AREAS))
+    topic = chooser.choice(OPENING_TOPIC_AREAS[area])
+    style = chooser.choice(OPENING_QUESTION_STYLES)
+    season = (
+        f"[계절]\n지금은 {season_of(now or datetime.now(UTC))}이다.\n"
+        if area == SEASON_AREA
+        else ""
+    )
     messages = [
         {"role": "system", "content": SYSTEM_COMPANION},
-        {"role": "system", "content": OPENING_INSTRUCTION.format(topic=topic)},
+        {
+            "role": "system",
+            "content": OPENING_INSTRUCTION.format(topic=topic, season=season, style=style),
+        },
     ]
     if name:
         messages.append({"role": "system", "content": ADDRESS_NOTE.format(name=name)})
