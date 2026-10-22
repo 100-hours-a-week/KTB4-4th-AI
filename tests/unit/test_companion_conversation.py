@@ -121,14 +121,14 @@ def test_user_asking_back_is_followed_and_answered() -> None:
     assert "네 생각부터 솔직하게 답한다" in card
 
 
-def test_low_energy_twice_lightens_with_play_then_return() -> None:
+def test_low_energy_twice_lightens_with_choices_then_return() -> None:
     state = with_user_turns(companion_state(turn_count=4), "캠핑 진짜 좋아해요", "그냥요")
     state.user_length_avg = 20.0
     state.low_energy_streak = 1
 
-    play = decide_goal(state, "음")
-    assert play.move == ConversationMove.PLAY
-    assert play.scene in COMPANION_SCENES
+    choice = decide_goal(state, "음")
+    assert choice.move == ConversationMove.CHOICE
+    assert choice.scene in COMPANION_SCENES
 
     state.best_topic = "야구"
     back = decide_goal(state, "음")
@@ -173,7 +173,7 @@ def test_two_follow_ups_then_shift_topic() -> None:
     state = followed(companion_state(turn_count=3), "follow")
     assert decide_goal(state, CALM_ANSWER).move == ConversationMove.FOLLOW
 
-    state = followed(companion_state(turn_count=3), "follow", "follow")
+    state = followed(companion_state(turn_count=3), "choice", "follow", "follow")
     decision = decide_goal(state, CALM_ANSWER)
     assert decision.move == ConversationMove.SHIFT
     assert decision.scene in COMPANION_SCENES
@@ -184,19 +184,75 @@ def test_engaged_user_keeps_topic_up_to_four_follow_ups() -> None:
         state = followed(companion_state(turn_count=5), *["follow"] * count)
         assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.FOLLOW
 
-    state = followed(companion_state(turn_count=5), *["follow"] * 4)
+    state = followed(companion_state(turn_count=5), "choice", *["follow"] * 4)
     assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.SHIFT
 
 
 def test_engaged_streak_ends_when_reaction_cools() -> None:
-    state = followed(companion_state(turn_count=5), "follow", "follow", "follow")
+    state = followed(companion_state(turn_count=5), "choice", "follow", "follow", "follow")
 
     assert decide_goal(state, CALM_ANSWER).move == ConversationMove.SHIFT
 
 
+def test_topic_done_offers_choices_when_none_were_offered_recently() -> None:
+    state = followed(companion_state(turn_count=3), "follow", "follow")
+
+    decision = decide_goal(state, CALM_ANSWER)
+    assert decision.move == ConversationMove.CHOICE
+    assert decision.scene in COMPANION_SCENES
+    card = build_reply_messages(
+        state, decision.goal, CALM_ANSWER, move=decision.move, scene=decision.scene
+    )[-2]["content"]
+    assert "열린 질문 대신 선택지를 준다" in card
+    assert decision.scene in card
+
+
+def test_unsure_answer_gets_choices_instead_of_the_same_question() -> None:
+    state = followed(companion_state(turn_count=2), "follow")
+
+    decision = decide_goal(state, "음 잘 모르겠어요")
+    assert decision.move == ConversationMove.CHOICE
+    card = build_reply_messages(
+        state, decision.goal, "음 잘 모르겠어요", move=decision.move, scene=decision.scene
+    )[-2]["content"]
+    assert card.startswith("사용자가 잘 모르겠다고 했다.")
+    assert "앞에서 사용자가 한 이야기" in card
+
+
+def test_answer_to_choices_is_followed_like_any_other_answer() -> None:
+    state = followed(companion_state(turn_count=4), "follow", "choice")
+
+    decision = decide_goal(state, "바다요")
+    assert decision.move == ConversationMove.FOLLOW
+    card = build_reply_messages(state, decision.goal, "바다요", move=decision.move)[-2]["content"]
+    assert card == COMPANION_MOVES[ConversationMove.FOLLOW]
+
+
+def test_short_pick_from_choices_is_not_low_energy() -> None:
+    state = followed(companion_state(turn_count=4), "choice")
+
+    assert turn_energy(state, "바다") >= LOW_ENERGY
+    record_companion_turn(
+        state,
+        utterance="바다",
+        move=ConversationMove.FOLLOW,
+        scene=None,
+        answer_depth=None,
+        new_interests=[],
+    )
+    assert state.low_energy_streak == 0
+    assert state.user_length_avg == 20.0
+
+
+def test_sessions_saved_with_the_old_move_name_still_load() -> None:
+    state = followed(companion_state(turn_count=4), "follow", "play")
+
+    assert state.last_move == ConversationMove.CHOICE
+
+
 def test_topic_change_resets_follow_count_and_add_does_not() -> None:
     assert policy.topic_follow_count(followed(companion_state(), "follow", "shift")) == 0
-    assert policy.topic_follow_count(followed(companion_state(), "play", "follow")) == 1
+    assert policy.topic_follow_count(followed(companion_state(), "choice", "follow")) == 1
     assert policy.topic_follow_count(followed(companion_state(), "follow", "add", "follow")) == 2
 
 
@@ -314,7 +370,7 @@ def test_record_turn_tracks_moves_and_scenes() -> None:
     record_companion_turn(
         state,
         utterance="음",
-        move=ConversationMove.PLAY,
+        move=ConversationMove.CHOICE,
         scene="이번 주말에 하고 싶은 것",
         answer_depth=None,
         new_interests=[],
@@ -335,7 +391,7 @@ def test_record_turn_tracks_moves_and_scenes() -> None:
         answer_depth=None,
         new_interests=[],
     )
-    assert state.move_history == ["follow", "play", "add", "shift"]
+    assert state.move_history == ["follow", "choice", "add", "shift"]
     assert state.used_scenes == ["이번 주말에 하고 싶은 것", "요즘 자주 먹는 것"]
 
 
@@ -355,13 +411,13 @@ def test_move_card_and_memo_replace_state_json() -> None:
     assert messages[-1] == {"role": "user", "content": "요즘 뜨개질 해요"}
 
 
-def test_play_card_carries_scene() -> None:
+def test_choice_card_carries_scene() -> None:
     state = companion_state(turn_count=5)
     card = build_reply_messages(
         state,
         ConversationGoal.CHAT,
         "그렇죠",
-        move=ConversationMove.PLAY,
+        move=ConversationMove.CHOICE,
         scene="요즘 자주 먹는 것",
     )[-2]["content"]
 

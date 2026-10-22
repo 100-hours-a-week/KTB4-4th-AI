@@ -241,9 +241,9 @@ SYSTEM_COMPANION = (
 너는 AI라서 먹고, 다녀오고, 피곤해지는 몸의 경험이 없다. 겪은 일이나 감각처럼 말하지 않고
 "저는 등 운동이 제일 멋있어 보이더라고요"처럼 생각으로 말한다.
 답이 짧거나 말하기 싫어 보이면 캐묻지 않고, 한마디로 답할 수 있는 쪽으로 묻는다.
-자기가 뭘 좋아하는지 모르겠다고 하면 다시 캐묻지 않는다. 앞에서 한 말에서 단서 하나를 골라
-"혹시 누워서 영상 보는 거 좋아해요?"처럼 하나만 제안하고, 아니라고 하면 다른 쪽으로 넘어간다.
-제안에는 상품이나 브랜드 이름을 꺼내지 않는다.
+자기가 뭘 좋아하는지 모르겠다고 하면 다시 캐묻지 않는다. 메모가 선택지를 주라고 하면
+결이 다른 선택지 두 개를 주고 어느 쪽인지 고르게 한다.
+제안과 선택지에는 상품이나 브랜드 이름을 꺼내지 않는다.
 네 말이 엉뚱하다고 하면 길게 사과하지 말고 쉽게 다시 말하거나 사용자 이야기로 돌아간다.
 메모와 사용자의 말이 어긋나면 사용자의 말을 따른다.
 
@@ -301,6 +301,8 @@ UNSURE_NOTE = (
 
 # 이번 턴에 어떻게 반응할지 니쥬에게 건네는 짧은 메모. move마다 한두 문장이다.
 # {scene}은 가볍게 던질 소재나 돌아갈 화제로 채운다.
+# CHOICE는 열린 질문 대신 선택지를 주는 대화 방식이다. 질문-답 흐름을 바꾸고, 답하기 어려운 것도
+# 고르기로 쉽게 답하게 한다. 선택지는 버튼 없이 응답 안에 쓰고 사용자는 글로 고른다.
 COMPANION_MOVES = {
     ConversationMove.FOLLOW: (
         "방금 말을 짧게 받고, 그 말에서 진짜 궁금해진 것 하나를 묻는다. "
@@ -309,9 +311,14 @@ COMPANION_MOVES = {
     ConversationMove.ADD: (
         "이번에는 묻지 않는다. 방금 말을 받고 네 생각이나 한마디를 보탠 뒤 끝낸다."
     ),
-    ConversationMove.PLAY: (
-        "사용자가 좀 지쳐 보인다. 짧게 받고, 한마디로 답할 수 있는 가벼운 질문을 하나 던진다. "
-        "'{scene}' 같은 소재를 써도 된다."
+    ConversationMove.CHOICE: (
+        "이번엔 열린 질문 대신 선택지를 준다. 방금 말을 짧게 받고, '{scene}'에서 결이 확 다른 "
+        "선택지 두 개를 주고 어느 쪽인지 묻는다. 선택지는 둘 다 실제로 있을 법한 음식, 장소, "
+        "물건의 스타일, 보내는 방식 같은 것으로 정하고, 어느 쪽을 고르느냐에 따라 "
+        "맛, 향, 색, 분위기, 혼자인지 같이인지, 활동적인지 정적인지 같은 취향이 갈리게 한다. "
+        "선택지는 평소에 어느 쪽을 더 좋아하는지가 드러나게 정하고 특정한 하루에 묶지 않는다. "
+        "게임이나 이벤트처럼 소개하지 "
+        "않고 대화하다 묻듯이 자연스럽게 묻는다. 이유는 아직 묻지 않는다."
     ),
     ConversationMove.RETURN: (
         "사용자가 앞에서 '{scene}' 이야기를 즐겁게 했다. 지금 말과 이어지면 그 이야기로 돌아가 "
@@ -325,6 +332,9 @@ COMPANION_MOVES = {
 }
 # SHIFT에 쓸 소재가 다 떨어졌을 때 대신 넣는 말.
 SHIFT_FALLBACK_SCENE = "아직 이야기하지 않은 다른 일상"
+# 소재 없이 선택지를 줄 때(잘 모르겠다는 답) 대신 넣는 말.
+CHOICE_FALLBACK_SCENE = "앞에서 사용자가 한 이야기"
+CHOICE_UNSURE_PREFIX = "사용자가 잘 모르겠다고 했다. 다시 캐묻지 않는다. "
 
 # 자연어 메모에 넣는 들은 이야기 수.
 COMPANION_MEMO_ITEMS = 12
@@ -408,6 +418,13 @@ target에는 그 취향이 붙은 관심사를 짧게 쓴다(커피, 여행). �
 사용자 본인이 하고 싶거나 갖고 싶은 것을 말한 답은 추출한다.
 활동이면 interests, 물건이면 wants로 넣고, evidenceType은 inferred, confidence는 0.5 이하로 한다.
 무인도, 초능력, 투명인간처럼 현실과 동떨어진 설정 속의 답은 추출하지 않는다.
+
+[선택지에 답할 때]
+AI가 선택지 두 개를 주고 사용자가 하나를 고르면, 고른 쪽을 사용자의 선호로 본다.
+"평생 하나만"처럼 상황을 과장한 질문이어도 선택지가 실제 있는 것이면 고른 쪽은 추출한다.
+고른 쪽이 맛, 향, 분위기, 방식 같은 결이면 preferences, 대상이나 활동이면 interests로 넣고
+evidenceType은 confirmed, confidence는 0.6 이하로 한다. 고르지 않은 쪽은 dislikes로 넣지 않는다.
+"둘 다 별로"처럼 둘 다 고르지 않으면 추출하지 않는다.
 
 예시:
 - "어제 친구랑 카페 갔어요": 행동만 있으므로 추출하지 않는다.
@@ -507,6 +524,8 @@ AI가 질문에 넣은 표현만으로 후보를 만들지 않는다.
 단, AI가 "혹시 ~도 좋아해요?"처럼 제안한 것에 사용자가 "네 좋아해요", "오 그거 좋죠"처럼
 좋다고 분명히 답하면 그 제안을 후보로 뽑는다.
 "글쎄요", "그냥요"처럼 애매하거나 아니라고 하면 뽑지 않는다.
+AI가 선택지 두 개를 주고 사용자가 하나를 고르면 고른 쪽을 후보로 뽑는다.
+"평생 하나만"처럼 상황을 과장했어도 선택지가 실제 있는 것이면 뽑고, 고르지 않은 쪽은 뽑지 않는다.
 [최근 대화]의 마지막 AI 메시지가 이번 발화 직전에 AI가 한 말이다.
 "산책이요"처럼 짧은 답은 그 메시지와 합쳐서 대상을 정한다.
 "그냥", "아무거나", "상관없어요"처럼 내용이 없는 말은 후보가 아니다.
@@ -643,11 +662,16 @@ def build_reply_messages(
 
 
 def _move_note(move: ConversationMove, scene: str | None, utterance: str) -> str:
-    if move != ConversationMove.ADD and unsure(utterance):
+    if move == ConversationMove.CHOICE:
+        note = COMPANION_MOVES[move].format(scene=scene or CHOICE_FALLBACK_SCENE)
+        if unsure(utterance):
+            note = CHOICE_UNSURE_PREFIX + note
+    elif move != ConversationMove.ADD and unsure(utterance):
         return UNSURE_NOTE
-    fallback = SHIFT_FALLBACK_SCENE if move == ConversationMove.SHIFT else "방금 이야기"
-    note = COMPANION_MOVES[move].format(scene=scene or fallback)
-    if move in {ConversationMove.FOLLOW, ConversationMove.SHIFT} and asks_back(utterance):
+    else:
+        fallback = SHIFT_FALLBACK_SCENE if move == ConversationMove.SHIFT else "방금 이야기"
+        note = COMPANION_MOVES[move].format(scene=scene or fallback)
+    if move != ConversationMove.ADD and asks_back(utterance):
         note = "사용자가 너에게 뭔가 물었다면 네 생각부터 솔직하게 답한다. " + note
     return note
 

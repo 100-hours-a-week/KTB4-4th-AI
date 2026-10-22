@@ -7,6 +7,7 @@ from app.domain.conversation.energy import (
     blended_energy,
     record_energy,
     turn_energy,
+    unsure,
     wants_to_exit,
 )
 from app.domain.conversation.models import (
@@ -53,6 +54,9 @@ MOVE_HISTORY_LIMIT = 8
 # 한 화제만 파면 같은 이야기의 세부만 쌓이고 다른 관심사가 안 나온다.
 TOPIC_FOLLOW_LIMIT = 2
 TOPIC_FOLLOW_LIMIT_ENGAGED = 4
+# 화제를 넘길 때 최근 이만큼의 move 안에 선택지 move가 없으면 열린 질문 대신 선택지를 준다.
+# 질문-답만 이어지는 흐름을 중간중간 바꾼다.
+CHOICE_GAP = 6
 
 # 에너지가 낮을 때나 다른 화제로 넘어갈 때 가볍게 던지는 소재. 한마디로 답할 수 있는 것만 두고,
 # 부족한 추천 항목으로 화제를 고르지 않는다.
@@ -191,14 +195,19 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
             return chat(ConversationMove.SHIFT, _pick_scene(state))
         return chat(ConversationMove.FOLLOW)
     last_move = state.last_move
+    # 답하기 어려워하면 다시 묻지 않고 선택지를 준다. 소재는 앞에서 한 이야기에서 니쥬가 찾는다.
+    if utterance and unsure(utterance) and last_move != ConversationMove.CHOICE:
+        return chat(ConversationMove.CHOICE)
     if low_streak >= COMPANION_LIGHTEN_STREAK:
         topic = _return_topic(state, utterance)
         if topic is not None and last_move != ConversationMove.RETURN:
             return chat(ConversationMove.RETURN, topic)
-        if last_move != ConversationMove.PLAY:
-            return chat(ConversationMove.PLAY, _pick_scene(state))
+        if last_move != ConversationMove.CHOICE:
+            return chat(ConversationMove.CHOICE, _pick_scene(state))
         return chat(ConversationMove.ADD)
     if topic_done:
+        if ConversationMove.CHOICE.value not in state.move_history[-CHOICE_GAP:]:
+            return chat(ConversationMove.CHOICE, _pick_scene(state))
         return chat(ConversationMove.SHIFT, _pick_scene(state))
     return chat(ConversationMove.FOLLOW)
 
@@ -278,7 +287,7 @@ def record_companion_turn(
     state.move_history = [*state.move_history, move.value][-MOVE_HISTORY_LIMIT:]
     if move == ConversationMove.RETURN and scene:
         state.returned_topics.append(scene)
-    if move in {ConversationMove.PLAY, ConversationMove.SHIFT} and scene:
+    if move in {ConversationMove.CHOICE, ConversationMove.SHIFT} and scene:
         state.used_scenes.append(scene)
 
 

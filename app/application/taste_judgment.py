@@ -450,7 +450,10 @@ def build_judgment_request(
                     "What is the user's own attitude toward `candidate`? Judge only by what the "
                     "user said in `user_message`, or in `previous_user_messages` when "
                     "`user_message` refers back to them. `previous_ai_message` only helps to "
-                    "understand short answers; its wording is not the user's attitude."
+                    "understand short answers; its wording is not the user's attitude. "
+                    "If `previous_ai_message` set two options against each other and the user "
+                    "picked one, the picked option counts as liked and the other one is not "
+                    "disliked."
                 ),
             },
             "criteria": {

@@ -23,12 +23,18 @@ class ConversationMove(StrEnum):
     FOLLOW = "follow"
     # 질문 없이 니쥬의 의견, 감상, 아는 이야기를 보탠다.
     ADD = "add"
-    # 밸런스 게임이나 둘 중 고르기로 답하는 부담을 낮춘다.
-    PLAY = "play"
+    # 열린 질문 대신 결이 다른 선택지 두 개를 주고 고르게 한다. 질문-답만 이어지는 흐름을 바꾸고
+    # 답하기 어려운 것도 쉽게 답하게 한다. 한 턴으로 끝나는 대화 방식이다.
+    CHOICE = "choice"
     # 앞에서 신나게 이야기한 화제로 돌아간다.
     RETURN = "return"
     # 한 화제에서 꼬리 질문을 충분히 했으니 다른 생활 이야기로 넘어간다.
     SHIFT = "shift"
+
+    @classmethod
+    def _missing_(cls, value: object) -> ConversationMove | None:
+        # 이전 버전 세션에는 선택지 move가 "play"로 저장돼 있다.
+        return cls.CHOICE if value == "play" else None
 
 
 class SessionStatus(StrEnum):
