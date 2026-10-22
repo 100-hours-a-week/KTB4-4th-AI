@@ -24,10 +24,10 @@ _SPEAKER_LABEL = re.compile(r"^\s*(니쥬|AI|assistant)\s*[:：]\s*", re.IGNOREC
 _WRAPPING_QUOTES = ('"', "“", "”", "'")
 
 _FALLBACK_QUESTIONS = {
-    ConversationGoal.OPENING: "요즘 어떻게 지내세요?",
-    ConversationGoal.CHAT: "그 얘기 조금 더 들려줄래요?",
+    ConversationGoal.OPENING: "반가워요!! 저는 니쥬예요~ 쉬는 날엔 주로 뭐 하면서 지내요?",
+    ConversationGoal.CHAT: "오오 그 얘기 궁금해요!! 조금만 더 들려줄래요?",
     # 마무리 턴은 뒤에 종료 멘트가 붙으므로 정리 안내를 겹쳐 쓰지 않는다.
-    ConversationGoal.WRAP: "이야기 들려주셔서 고마워요.",
+    ConversationGoal.WRAP: "이야기 들려줘서 고마워요!!",
 }
 
 
@@ -54,7 +54,8 @@ def sanitize_response(text: str, goal: ConversationGoal) -> str:
     return cleaned or _FALLBACK_QUESTIONS[goal]
 
 
-_SENTENCE_END_MARKS = (".", "!", "~")
+# 니쥬는 "있죠ㅎㅎ", "아쉬워라ㅠㅠ"처럼 웃음이나 울음 표시로 문장을 끝내기도 한다.
+_SENTENCE_END_MARKS = (".", "!", "~", "ㅋ", "ㅎ", "ㅠ")
 _LABEL_NAMES = ("니쥬", "ai", "assistant")
 
 
@@ -115,14 +116,14 @@ def stable_reply_prefix(partial: str, *, hold_question: bool) -> str:
     return cleaned[:bound]
 
 
-CLOSING_MESSAGE = "들려주신 이야기로 취향과 관심사를 정리해 볼게요."
+CLOSING_MESSAGE = "들려준 이야기로 니쥬가 취향이랑 관심사를 정리해 볼게요!! 조금만 기다려 줘요~"
 
 
 def closing_reply(reply: str) -> str:
     """응답 끝의 질문 문장을 빼고 종료 멘트를 붙인다. 앞의 짧은 반응은 남긴다."""
     text = reply.strip()
     if text.endswith("?"):
-        cut = max(text.rfind(mark, 0, len(text) - 1) for mark in (".", "!", "~"))
+        cut = max(text.rfind(mark, 0, len(text) - 1) for mark in _SENTENCE_END_MARKS)
         text = text[: cut + 1].strip() if cut >= 0 else ""
     return f"{text} {CLOSING_MESSAGE}".strip()
 

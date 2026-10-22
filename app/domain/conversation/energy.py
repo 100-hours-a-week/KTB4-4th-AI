@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import re
 
-from app.domain.conversation.models import ConversationState
+from app.domain.conversation.models import ConversationMove, ConversationState
 
 # 최근 턴에 주는 가중치. 나머지는 이전 에너지에서 온다.
 ENERGY_RECENT_WEIGHT = 0.6
 # 이 아래면 에너지가 낮은 턴으로 센다.
 LOW_ENERGY = 0.35
+# 선택지에 고르기만 한 답의 에너지 하한. 짧게 고르는 게 정상이라 지친 것으로 보지 않는다.
+CHOICE_ANSWER_ENERGY = 0.5
 # 이 이상이면 반응이 좋은 턴으로 본다. 평소 길이 이상으로 답하거나, 조금 짧아도 웃음·감탄이나
 # 되묻기가 섞이면 넘는다.
 ENGAGED_ENERGY = 0.8
@@ -80,7 +82,14 @@ def turn_energy(
     score = max(0.0, min(score, 1.0))
     if answer_depth is not None:
         score = 0.7 * score + 0.3 * max(0.0, min(answer_depth / 2, 1.0))
+    if _answers_choice(state):
+        score = max(score, CHOICE_ANSWER_ENERGY)
     return score
+
+
+def _answers_choice(state: ConversationState) -> bool:
+    """이번 발화가 니쥬가 준 선택지에 대한 답인지."""
+    return state.last_move == ConversationMove.CHOICE
 
 
 def blended_energy(state: ConversationState, current: float) -> float:
@@ -100,6 +109,9 @@ def record_energy(
     state.energy = blended_energy(state, current)
     state.peak_energy = max(state.peak_energy, state.energy)
     state.low_energy_streak = state.low_energy_streak + 1 if current < LOW_ENERGY else 0
+    # 고르기 답은 짧아서 평균에 넣으면 평소 답이 길어 보이게 된다.
+    if _answers_choice(state):
+        return current
     previous_turns = sum(1 for turn in state.history if turn.role == "user")
     length = len(utterance.strip())
     if state.user_length_avg is None:
