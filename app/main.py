@@ -21,6 +21,7 @@ from app.application.ports.model_gateway import ModelGateway
 from app.application.ports.recommendation_service import RecommendationService
 from app.application.ports.session_store import SessionStore
 from app.application.recommendation_engine import RecommendationEngine
+from app.application.recommendation_reason_service import RecommendationReasonService
 from app.application.recommendation_service import V1RecommendationService
 from app.application.search_intent_service import SearchIntentService
 from app.core.config import Settings, get_settings
@@ -306,6 +307,11 @@ def create_app(
                     catalog=resolved_catalog,
                 ),
                 intents=resolved_intents,
+                reasons=RecommendationReasonService(
+                    model_gateway=resolved_gateway,
+                    model=resolved_settings.extraction_model_name,
+                    timeout_seconds=resolved_settings.summary_model_timeout_seconds,
+                ),
             )
         application.state.recommendation_service = resolved_recommendation_service
         try:

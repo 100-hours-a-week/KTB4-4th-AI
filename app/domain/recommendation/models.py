@@ -141,3 +141,5 @@ class RankedRecommendation:
     score: float
     reason: str
     matches: tuple[ScoredMatch, ...]
+    # 취향 가산을 준 선호 값. 추천 이유를 다시 쓸 때 근거로 쓴다.
+    boost_label: str | None = None

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from app.domain.profile.models import TasteField, Visibility
 from app.domain.recommendation.models import RecommendationMode, ScoredMatch
@@ -83,6 +84,71 @@ def _shared_interests(matches: Sequence[ScoredMatch], mode: RecommendationMode) 
         if _shown(scored, mode) and signal.value not in values:
             values.append(signal.value)
     return values
+
+
+_CLUE_KINDS = {
+    TasteField.INTERESTS: "관심사",
+    TasteField.HOBBIES: "즐겨 하는 것",
+    TasteField.PREFERENCES: "취향",
+    TasteField.WANTS: "갖고 싶어 한 것",
+    TasteField.CONSUMABLES: "자주 쓰는 것",
+}
+CLUE_LIMIT = 3
+
+
+@dataclass(slots=True, frozen=True)
+class ReasonClue:
+    value: str
+    kind: str
+
+
+@dataclass(slots=True, frozen=True)
+class ReasonClues:
+    """추천 이유를 모델이 다시 쓸 때 넘기는 근거.
+
+    likes 는 이유에 써도 되는 값이고, hidden 은 이 목록에서 보이면 안 되는 값이다.
+    hesitant 는 갖고 싶지만 못 산 것에 걸린 상품이라는 뜻이다. 무엇인지는 말하지 않는다.
+    """
+
+    likes: tuple[ReasonClue, ...]
+    hidden: tuple[str, ...]
+    exploration: bool
+    hesitant: bool
+
+
+def reason_clues(
+    matches: Sequence[ScoredMatch],
+    mode: RecommendationMode,
+    *,
+    boost_label: str | None = None,
+) -> ReasonClues:
+    """recommendation_reason 과 같은 공개 기준으로 근거를 고른다. matches 는 기여도 순이다."""
+    exploration = all(scored.match.query.exploration for scored in matches)
+    likes: list[ReasonClue] = []
+    hidden: list[str] = []
+    hesitant = False
+    for scored in matches:
+        if scored.match.query.exploration and not exploration:
+            continue
+        signal = scored.match.query.signal
+        if not _shown(scored, mode):
+            hidden.append(signal.value)
+            hesitant = hesitant or signal.field == TasteField.UNAFFORDABLE
+            continue
+        # 첫 근거는 늘 쓰고, 나머지는 이 상품과 충분히 가까울 때만 쓴다.
+        if likes and scored.match.similarity < SHARED_REASON_MIN_SIMILARITY:
+            continue
+        kind = _CLUE_KINDS.get(signal.field)
+        if kind and len(likes) < CLUE_LIMIT and all(like.value != signal.value for like in likes):
+            likes.append(ReasonClue(signal.value, kind))
+    if boost_label and all(like.value != boost_label for like in likes):
+        likes.append(ReasonClue(boost_label, _CLUE_KINDS[TasteField.PREFERENCES]))
+    return ReasonClues(
+        likes=tuple(likes),
+        hidden=tuple(value for value in hidden if all(like.value != value for like in likes)),
+        exploration=exploration,
+        hesitant=hesitant,
+    )
 
 
 def recommendation_reason(
