@@ -396,6 +396,14 @@ def test_closing_reply_replaces_trailing_question_with_closing_message() -> None
     assert closing_reply("부모님 댁 가면 뭐 해요?") == CLOSING_MESSAGE
 
 
+def test_closing_reply_keeps_reaction_that_ends_with_laughter() -> None:
+    from app.domain.conversation.guards import CLOSING_MESSAGE, closing_reply, stable_reply_prefix
+
+    reply = "앗 그 조합은 반칙이죠ㅎㅎ 주말엔 보통 뭐 해요?"
+    assert closing_reply(reply) == f"앗 그 조합은 반칙이죠ㅎㅎ {CLOSING_MESSAGE}"
+    assert stable_reply_prefix(reply, hold_question=True) == "앗 그 조합은 반칙이죠ㅎㅎ"
+
+
 def test_turn_that_completes_readiness_closes_on_the_next_turn() -> None:
     from app.domain.conversation.guards import CLOSING_MESSAGE
 

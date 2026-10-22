@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from app.application.recommendation_engine import RecommendationEngine
+from app.application.recommendation_reason_service import RecommendationReasonService
 from app.application.search_intent_service import SearchIntentService, intent_targets
 from app.domain.profile.models import DeferralReason, PreferenceAspect, TasteField, Visibility
 from app.domain.profile.onboarding import (
@@ -16,6 +18,7 @@ from app.domain.profile.onboarding import (
 )
 from app.domain.profile.taxonomy import INTEREST_CATEGORIES_BY_KEY
 from app.domain.recommendation import (
+    ProductKey,
     RankedRecommendation,
     RecommendationGuide,
     RecommendationSignal,
@@ -247,13 +250,17 @@ def _recipient_name(payload: Mapping[str, Any]) -> str | None:
     return str(name) if name else None
 
 
-def _items(recommendations: Sequence[RankedRecommendation]) -> list[dict[str, object]]:
+def _items(
+    recommendations: Sequence[RankedRecommendation],
+    reasons: Mapping[ProductKey, str],
+) -> list[dict[str, object]]:
+    """reasons 는 다시 쓴 추천 이유다. 없는 상품은 순위를 매길 때 붙은 템플릿 이유를 쓴다."""
     return [
         {
             "platform": recommendation.product.key.platform,
             "externalId": recommendation.product.key.external_id,
             "score": round(recommendation.score, 2),
-            "reason": recommendation.reason,
+            "reason": reasons.get(recommendation.product.key, recommendation.reason),
         }
         for recommendation in recommendations
     ]
@@ -265,9 +272,12 @@ class V1RecommendationService:
         engine: RecommendationEngine,
         *,
         intents: SearchIntentService | None = None,
+        reasons: RecommendationReasonService | None = None,
     ) -> None:
+        """reasons 가 있으면 추천 이유를 상품에 맞는 문장으로 다시 쓴다."""
         self._engine = engine
         self._intents = intents
+        self._reasons = reasons
 
     async def recommend_lists(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         signals, guide = recommendation_inputs(payload)
@@ -278,14 +288,22 @@ class V1RecommendationService:
             targets = intent_targets(signals)
             intents = dict(await self._intents.lookup(targets))
             self._intents.schedule(target for target in targets if target.key not in intents)
+        recipient_name = _recipient_name(payload)
         batch = await self._engine.recommend(
             signals,
             guide=guide,
-            recipient_name=_recipient_name(payload),
+            recipient_name=recipient_name,
             intents=intents,
         )
+        self_reasons: Mapping[ProductKey, str] = {}
+        gift_reasons: Mapping[ProductKey, str] = {}
+        if self._reasons is not None:
+            self_reasons, gift_reasons = await asyncio.gather(
+                self._reasons.rewrite(batch.self),
+                self._reasons.rewrite(batch.gift, recipient_name=recipient_name),
+            )
         return {
             "generatedAt": datetime.now(UTC).isoformat(),
-            "self": {"items": _items(batch.self)},
-            "gift": {"items": _items(batch.gift)},
+            "self": {"items": _items(batch.self, self_reasons)},
+            "gift": {"items": _items(batch.gift, gift_reasons)},
         }

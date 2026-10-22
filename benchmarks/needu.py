@@ -13,6 +13,7 @@ from app.application.chat_use_cases import ChatUseCases, ProfileAnalysis
 from app.application.conversation_service import ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.recommendation_engine import RecommendationEngine
+from app.application.recommendation_reason_service import RecommendationReasonService
 from app.application.recommendation_service import V1RecommendationService, recommendation_inputs
 from app.domain.conversation.models import SessionStatus
 from app.domain.conversation.policy import recommendation_readiness
@@ -206,7 +207,10 @@ class RecordingEmbedder:
             batch["latency_ms"] = (time.perf_counter() - started) * 1000
 
 
-async def finish_recommendation(snapshot, config, settings, client, analysis, catalog=None):
+async def finish_recommendation(
+    snapshot, config, settings, client, analysis, catalog=None, reason_gateway=None
+):
+    """reason_gateway 가 있으면 서비스처럼 추천 이유를 추출 모델로 다시 쓴다."""
     stage = config["recommendation_stage"]
     snapshot["recommendation_stage"] = stage
     if stage == "queries":
@@ -254,7 +258,16 @@ async def finish_recommendation(snapshot, config, settings, client, analysis, ca
                 )
                 catalog = PostgresCatalogRepository(pool=pool)
             service = V1RecommendationService(
-                RecommendationEngine(embedder=recorder, catalog=catalog)
+                RecommendationEngine(embedder=recorder, catalog=catalog),
+                reasons=(
+                    RecommendationReasonService(
+                        model_gateway=reason_gateway,
+                        model="extraction",
+                        timeout_seconds=config["summary_timeout_seconds"],
+                    )
+                    if reason_gateway is not None
+                    else None
+                ),
             )
             snapshot["recommendations"] = await service.recommend_lists(
                 {"profile": recommendation_profile(analysis)}
@@ -298,6 +311,7 @@ def build_chat(config, settings, client, calls, session_backend=None):
         response_model="response",
         response_timeout_seconds=config["response"]["timeout_seconds"],
         summary_timeout_seconds=config["summary_timeout_seconds"],
+        keyword_model="extraction",
     )
     return chat, states
 
@@ -417,7 +431,21 @@ async def execute_needu(store, run, stop=None, *, settings=None, client=None, ca
         snapshot["summary_generated"] = analysis.summary is not None
         snapshot["stop_reason"] = stop_reason
         try:
-            await finish_recommendation(snapshot, config, settings, client, analysis, catalog)
+            await finish_recommendation(
+                snapshot,
+                config,
+                settings,
+                client,
+                analysis,
+                catalog,
+                reason_gateway=RoleGateway(
+                    {
+                        "extraction": RecordingGateway(
+                            client, config["extraction"], settings, calls, "extraction"
+                        )
+                    }
+                ),
+            )
         except Exception:
             # Keep the successful profile/query stages visible if embedding/catalog fails.
             record(

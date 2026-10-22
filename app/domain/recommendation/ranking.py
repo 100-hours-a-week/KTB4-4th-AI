@@ -267,6 +267,7 @@ def rank_recommendations(
                 boost_label=(boost_labels or {}).get(key),
             ),
             matches=scored_matches,
+            boost_label=(boost_labels or {}).get(key),
         )
         for rank, (key, score, scored_matches) in enumerate(final)
     )
