@@ -6,7 +6,11 @@ import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 
-from app.application.conversation_prompts import build_friend_summary_messages
+from app.application.conversation_prompts import (
+    KeywordSetPayload,
+    build_friend_summary_messages,
+    build_keyword_messages,
+)
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.ports.model_gateway import ModelGateway
@@ -24,17 +28,21 @@ from app.domain.conversation.models import (
     SessionStatus,
 )
 from app.domain.conversation.policy import MAX_TURNS, recommendation_readiness
-from app.domain.profile.merger import (
-    friend_summary_values,
-    ranked_friend_signals,
-    taste_rank_score,
+from app.domain.profile.keywords import (
+    KEYWORD_LIMIT,
+    Keyword,
+    composed_keywords,
+    fallback_keywords,
 )
+from app.domain.profile.merger import friend_summary_values, ranked_friend_signals
 from app.domain.profile.models import ProfileState, TasteField
 from app.domain.profile.onboarding import OnboardingProfile
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_KEYWORD_LIMIT = 3
+ANALYSIS_KEYWORD_LIMIT = KEYWORD_LIMIT
+# 키워드를 묶을 때 모델에 넘기는 항목 수. 같은 결의 항목을 합칠 수 있게 노출 한도보다 넉넉히 준다.
+KEYWORD_INPUT_LIMIT = 12
 _TASTE_KEYWORD_FIELDS = (TasteField.PREFERENCES,)
 _INTEREST_KEYWORD_FIELDS = (TasteField.INTERESTS, TasteField.HOBBIES)
 
@@ -133,9 +141,14 @@ class ChatUseCases:
         response_timeout_seconds: float = 60.0,
         summary_timeout_seconds: float = 10.0,
         search_intents: SearchIntentService | None = None,
+        keyword_model: str | None = None,
     ) -> None:
-        """search_intents 가 있으면 새로 들어온 관심사의 검색 의도를 백그라운드로 만들어 둔다."""
+        """search_intents 가 있으면 새로 들어온 관심사의 검색 의도를 백그라운드로 만들어 둔다.
+
+        keyword_model 이 있으면 분석 키워드를 그 모델로 묶고, 없으면 저장 값에서 만든다.
+        """
         self._conversations = conversations
+        self._keyword_model = keyword_model
         self._search_intents = search_intents
         self._states = states
         self._model_gateway = model_gateway
@@ -493,43 +506,86 @@ class ChatUseCases:
                 await self._states.save(state)
                 return self._stored_analysis(state)
 
-            safe_values = friend_summary_values(state.profile)
-            summary = None
-            name = state.onboarding.display_name if state.onboarding else None
-            address = state.onboarding.address_name if state.onboarding else None
-            if any(safe_values.values()):
-                try:
-                    summary = fix_summary_intro(
-                        await self._complete(
-                            build_friend_summary_messages(state.profile, name=name),
-                            timeout_seconds=self._summary_timeout_seconds,
-                            purpose="summary",
-                            session_id=session_id,
-                        ),
-                        name=name,
-                        address=address,
-                    )
-                except ResponseModelUnavailableError:
-                    summary = None
+            # 요약과 키워드는 서로의 결과를 쓰지 않으므로 함께 만든다.
+            summary, (taste_keywords, interest_keywords) = await asyncio.gather(
+                self._friend_summary(state, session_id),
+                self._keywords(state, session_id),
+            )
 
             state.analysis_turn_count = state.turn_count
             state.analysis_summary = summary
-            taste_signals = ranked_friend_signals(state.profile, _TASTE_KEYWORD_FIELDS)[
-                :ANALYSIS_KEYWORD_LIMIT
-            ]
-            interest_signals = ranked_friend_signals(state.profile, _INTEREST_KEYWORD_FIELDS)[
-                :ANALYSIS_KEYWORD_LIMIT
-            ]
-            state.analysis_taste_keywords = [signal.value for signal in taste_signals]
-            state.analysis_interest_keywords = [signal.value for signal in interest_signals]
+            state.analysis_taste_keywords = [keyword.label for keyword in taste_keywords]
+            state.analysis_interest_keywords = [keyword.label for keyword in interest_keywords]
             state.analysis_keyword_scores = {
-                signal.value: taste_rank_score(signal)
-                for signal in (*taste_signals, *interest_signals)
+                keyword.label: keyword.score for keyword in (*taste_keywords, *interest_keywords)
             }
             state.analysis_patch_used = False
             state.status = SessionStatus.REVIEW
             await self._states.save(state)
             return self._stored_analysis(state)
+
+    async def _friend_summary(self, state: ConversationState, session_id: int) -> str | None:
+        if not any(friend_summary_values(state.profile).values()):
+            return None
+        name = state.onboarding.display_name if state.onboarding else None
+        address = state.onboarding.address_name if state.onboarding else None
+        try:
+            return fix_summary_intro(
+                await self._complete(
+                    build_friend_summary_messages(state.profile, name=name),
+                    timeout_seconds=self._summary_timeout_seconds,
+                    purpose="summary",
+                    session_id=session_id,
+                ),
+                name=name,
+                address=address,
+            )
+        except ResponseModelUnavailableError:
+            return None
+
+    async def _keywords(
+        self, state: ConversationState, session_id: int
+    ) -> tuple[list[Keyword], list[Keyword]]:
+        """취향·관심사 키워드. 모델이 저장 값을 묶어 이름 붙이고, 못 쓰면 저장 값에서 만든다.
+
+        취향과 관심사는 따로 검증하고 따로 대체한다. 한쪽만 틀려도 다른 쪽 결과는 살린다.
+        """
+        # 요약처럼 활성 한도 밖으로 밀린 항목도 넘긴다. 같은 결의 항목을 묶는 재료가 된다.
+        tastes = ranked_friend_signals(state.profile, _TASTE_KEYWORD_FIELDS, include_inactive=True)[
+            :KEYWORD_INPUT_LIMIT
+        ]
+        interests = ranked_friend_signals(
+            state.profile, _INTEREST_KEYWORD_FIELDS, include_inactive=True
+        )[:KEYWORD_INPUT_LIMIT]
+        raw: Mapping[str, object] = {}
+        if self._keyword_model is not None and (tastes or interests):
+            started = time.monotonic()
+            try:
+                async with asyncio.timeout(self._summary_timeout_seconds):
+                    raw = await self._model_gateway.structured(
+                        build_keyword_messages(tastes, interests),
+                        model=self._keyword_model,
+                        json_schema=KeywordSetPayload.model_json_schema(),
+                    )
+            except Exception as error:
+                describe = getattr(error, "describe", None)
+                logger.warning(
+                    "keyword model failed: session=%s model=%s elapsed_ms=%d %s",
+                    session_id,
+                    self._keyword_model,
+                    (time.monotonic() - started) * 1000,
+                    describe() if callable(describe) else f"reason={type(error).__name__}",
+                )
+        if not isinstance(raw, Mapping):
+            raw = {}
+        composed = (
+            composed_keywords(raw.get("taste"), tastes, taste=True),
+            composed_keywords(raw.get("interest"), interests, taste=False),
+        )
+        return (
+            composed[0] or fallback_keywords(tastes, taste=True),
+            composed[1] or fallback_keywords(interests, taste=False),
+        )
 
     async def update_analysis(
         self,

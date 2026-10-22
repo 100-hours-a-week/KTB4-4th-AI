@@ -298,6 +298,7 @@ def build_chat(config, settings, client, calls, session_backend=None):
         response_model="response",
         response_timeout_seconds=config["response"]["timeout_seconds"],
         summary_timeout_seconds=config["summary_timeout_seconds"],
+        keyword_model="extraction",
     )
     return chat, states
 

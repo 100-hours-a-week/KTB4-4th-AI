@@ -255,6 +255,7 @@ def create_app(
             response_timeout_seconds=resolved_settings.response_model_timeout_seconds,
             summary_timeout_seconds=resolved_settings.summary_model_timeout_seconds,
             search_intents=resolved_intents,
+            keyword_model=resolved_settings.extraction_model_name,
         )
         resolved_recommendation_service = recommendation_service
         resolved_catalog = catalog_repository
