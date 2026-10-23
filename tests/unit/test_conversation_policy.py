@@ -60,10 +60,11 @@ def two_taste_axes() -> list[ProfileSignal]:
     ]
 
 
-def five_interests() -> list[ProfileSignal]:
+def six_interests() -> list[ProfileSignal]:
     return [
         signal(TasteField.INTERESTS, "캠핑"),
         signal(TasteField.HOBBIES, "핸드드립"),
+        signal(TasteField.INTERESTS, "재즈"),
         signal(TasteField.WANTS, "가벼운 컵", confidence=0.5),
         signal(TasteField.INTERESTS, "사진", confidence=0.5),
         signal(TasteField.HOBBIES, "러닝", confidence=0.5),
@@ -72,7 +73,7 @@ def five_interests() -> list[ProfileSignal]:
 
 def test_ready_profile_does_not_require_dislikes() -> None:
     conversation = state()
-    conversation.profile.signals.extend([*five_interests(), *two_taste_axes()])
+    conversation.profile.signals.extend([*six_interests(), *two_taste_axes()])
 
     readiness = recommendation_readiness(conversation)
 
@@ -95,7 +96,7 @@ def test_one_interest_lists_every_missing_signal() -> None:
 def test_readiness_is_recomputed_when_a_taste_is_replaced() -> None:
     conversation = state()
     tastes = two_taste_axes()
-    conversation.profile.signals.extend([*five_interests(), *tastes])
+    conversation.profile.signals.extend([*six_interests(), *tastes])
     assert recommendation_readiness(conversation).sufficient is True
 
     tastes[1].status = SignalStatus.SUPERSEDED
@@ -103,6 +104,20 @@ def test_readiness_is_recomputed_when_a_taste_is_replaced() -> None:
 
     assert readiness.sufficient is False
     assert readiness.missing_signals == ("taste_axes",)
+
+
+def test_repeated_interest_counts_as_high_confidence() -> None:
+    conversation = state()
+    interests = six_interests()
+    conversation.profile.signals.extend([*interests, *two_taste_axes()])
+    interests[2].confidence = 0.5
+    assert recommendation_readiness(conversation).missing_signals == (
+        "high_confidence_query_signals",
+    )
+
+    # 여러 번 말한 관심사는 신뢰도가 낮게 매겨졌어도 확실한 것으로 센다.
+    interests[3].mention_count = 3
+    assert recommendation_readiness(conversation).sufficient is True
 
 
 def test_owned_item_alone_counts_as_gear() -> None:
@@ -120,14 +135,14 @@ def test_progress_scales_filled_signals_to_100_without_dislikes() -> None:
             signal(TasteField.HOBBIES, "핸드드립", confidence=0.5),
         ]
     )
-    # (관심사 2/5 * 25 + 확신 높은 관심사 1/2 * 25) / 85 * 100
-    assert conversation_progress(conversation) == 26
+    # (관심사 2/6 * 25 + 확신 높은 관심사 1/3 * 25) / 85 * 100
+    assert conversation_progress(conversation) == 20
 
     conversation.profile.signals.append(signal(TasteField.OWNED, "캠핑 의자"))
     # 소지품 15 추가
-    assert conversation_progress(conversation) == 44
+    assert conversation_progress(conversation) == 37
 
-    conversation.profile.signals.extend([*five_interests(), *two_taste_axes()])
+    conversation.profile.signals.extend([*six_interests(), *two_taste_axes()])
     assert conversation_progress(conversation) == 100
 
 

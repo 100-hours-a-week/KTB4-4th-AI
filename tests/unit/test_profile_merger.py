@@ -101,7 +101,7 @@ def test_owned_supersedes_matching_want() -> None:
     assert statuses[TasteField.OWNED] == SignalStatus.ACTIVE
 
 
-def test_only_top_five_query_signals_are_active_but_candidates_are_preserved() -> None:
+def test_only_top_six_query_signals_are_active_but_candidates_are_preserved() -> None:
     merger = ProfileMerger()
     profile = ProfileState()
     for index in range(8):
@@ -115,8 +115,8 @@ def test_only_top_five_query_signals_are_active_but_candidates_are_preserved() -
         ).profile
 
     assert len(profile.signals) == 8
-    assert len(profile.active_signals()) == 5
-    assert sum(signal.status == SignalStatus.INACTIVE for signal in profile.signals) == 3
+    assert len(profile.active_signals()) == 6
+    assert sum(signal.status == SignalStatus.INACTIVE for signal in profile.signals) == 2
 
 
 def test_friend_summary_projection_excludes_sensitive_fields() -> None:

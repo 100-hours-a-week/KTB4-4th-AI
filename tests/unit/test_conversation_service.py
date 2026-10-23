@@ -16,7 +16,7 @@ from app.domain.conversation.models import (
     ConversationTurn,
     SessionStatus,
 )
-from app.domain.conversation.policy import COMPANION_CLOSE_AFTER_TURN, decide_goal
+from app.domain.conversation.policy import decide_goal
 from app.domain.profile.models import (
     EvidenceType,
     IntentType,
@@ -235,12 +235,12 @@ def test_extraction_that_completes_readiness_closes_at_close_turn() -> None:
             profile_signal(TasteField.HOBBIES, "핸드드립"),
             profile_signal(TasteField.INTERESTS, "독서"),
             profile_signal(TasteField.HOBBIES, "러닝"),
+            profile_signal(TasteField.INTERESTS, "재즈"),
             taste_signal("혼자 가는 캠핑", ("취향", "사회", "인원")),
             taste_signal("조용한 카페", ("취향", "분위기", "공간")),
         ]
     )
-    # 준비가 돼도 바로 끝내지 않으므로 끝낼 수 있는 턴 직전으로 둔다.
-    state.turn_count = COMPANION_CLOSE_AFTER_TURN - 1
+    state.turn_count = 5
 
     completed = asyncio.run(
         service.complete_turn(
@@ -252,7 +252,7 @@ def test_extraction_that_completes_readiness_closes_at_close_turn() -> None:
     )
 
     assert completed.readiness.sufficient is True
-    assert completed.state.turn_count == COMPANION_CLOSE_AFTER_TURN
+    assert completed.state.turn_count == 6
     assert completed.next_decision.completion_reason == CompletionReason.SUFFICIENT
     # 이번 질문은 이미 나갔으므로 입력을 잠그지 않고 다음 턴을 마무리로 예약한다.
     assert completed.reply == "사진은 주로 언제 찍으세요?"
@@ -418,12 +418,12 @@ def test_turn_that_completes_readiness_closes_on_the_next_turn() -> None:
             profile_signal(TasteField.HOBBIES, "핸드드립"),
             profile_signal(TasteField.INTERESTS, "독서"),
             profile_signal(TasteField.HOBBIES, "러닝"),
+            profile_signal(TasteField.INTERESTS, "재즈"),
             taste_signal("혼자 가는 캠핑", ("취향", "사회", "인원")),
             taste_signal("조용한 카페", ("취향", "분위기", "공간")),
         ]
     )
-    # 준비가 돼도 바로 끝내지 않으므로 끝낼 수 있는 턴 직전으로 둔다.
-    state.turn_count = COMPANION_CLOSE_AFTER_TURN - 1
+    state.turn_count = 5
 
     completed = asyncio.run(
         service.complete_turn(

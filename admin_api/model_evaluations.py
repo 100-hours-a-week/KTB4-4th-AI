@@ -2,20 +2,44 @@
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 
 from app.application.conversation_prompts import FRIEND_SUMMARY_SYSTEM
 from benchmarks.runner import percentile
+
+# Prefix order matters: gpt-oss must win over a plain gpt prefix.
+FAMILIES = (
+    ("gpt-oss", "GPT-OSS"),
+    ("kanana", "Kanana"),
+    ("qwen", "Qwen"),
+    ("gemma", "Gemma"),
+    ("gemini", "Gemini"),
+    ("claude", "Claude"),
+    ("llama", "Llama"),
+    ("exaone", "EXAONE"),
+)
+
+
+def model_family(model):
+    """Group provider ids and served aliases (kakaocorp/kanana-…, kanana-response) together."""
+    name = model.strip().lower().rsplit("/", 1)[-1]
+    for prefix, label in FAMILIES:
+        if name.startswith(prefix):
+            return label
+    match = re.match(r"[a-z]+", name)
+    return match.group().capitalize() if match else "기타"
 
 
 def model_evaluations(connections, runs, samples, chats):
     models = {}
 
     def register(config):
-        if not config.get("model"):
+        if not str(config.get("model") or "").strip():
             return None
+        # Saved connections can carry stray whitespace; it must not split one model in two.
         identity = {
-            key: config.get(key) or ""
+            key: str(config.get(key) or "").strip()
             for key in ("model", "base_url", "revision", "precision", "hardware")
         }
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
@@ -23,10 +47,12 @@ def model_evaluations(connections, runs, samples, chats):
             models[key] = {
                 "id": key,
                 **identity,
-                "name": config.get("name") or config["model"],
+                "family": model_family(identity["model"]),
+                "name": str(config.get("name") or "").strip() or identity["model"],
                 "connection_ids": [],
                 "probe_ok": None,
                 "sources": {},
+                "timeline": {},
                 "calls": defaultdict(list),
                 "examples": {},
                 "quality": [],
@@ -51,6 +77,20 @@ def model_evaluations(connections, runs, samples, chats):
         }
         model["sources"][f"{kind}:{record['id']}"] = ref
         model["last_at"] = max(model["last_at"] or "", at)
+        review = (record.get("summary") or {}).get("query_review") or {}
+        model["timeline"].setdefault(
+            f"{kind}:{record['id']}",
+            {
+                **ref,
+                "attempted": 0,
+                "failed": 0,
+                "structured": 0,
+                "structured_ok": 0,
+                "condition_score": review.get("score")
+                if record.get("status") == "completed"
+                else None,
+            },
+        )
         return ref
 
     def observe(config, call, kind, record, user_input="", conversational=True):
@@ -63,6 +103,12 @@ def model_evaluations(connections, runs, samples, chats):
             return
         role = call.get("role", "response")
         model["calls"][role].append({**call, "conversational": conversational})
+        point = model["timeline"][f"{kind}:{record['id']}"]
+        point["attempted"] += 1
+        point["failed"] += not call["ok"]
+        if call.get("json_schema") is not None:
+            point["structured"] += 1
+            point["structured_ok"] += call["ok"]
         output = call.get("raw_output") or call.get("output")
         if output is not None and not isinstance(output, str):
             output = json.dumps(output, ensure_ascii=False)
@@ -185,6 +231,7 @@ def model_evaluations(connections, runs, samples, chats):
         ]
         quality = model.pop("quality")
         refs = sorted(model.pop("sources").values(), key=lambda r: r["at"], reverse=True)
+        timeline = sorted(model.pop("timeline").values(), key=lambda p: p["at"])
         attempted = sum(s["attempted"] for s in role_stats.values())
         failed = sum(s["failed"] for s in role_stats.values())
         result.append(
@@ -197,6 +244,7 @@ def model_evaluations(connections, runs, samples, chats):
                 "run_count": sum(r["kind"] == "run" for r in refs),
                 "chat_count": sum(r["kind"] == "chat" for r in refs),
                 "sources": refs[:5],
+                "timeline": timeline,
                 "response_style": {
                     "count": len(responses),
                     "median_chars": percentile([len(text) for text in responses], 0.5),
@@ -247,9 +295,13 @@ def service_evaluations(runs, samples):
         )
         key = json.dumps(settings, sort_keys=True)
         if key not in groups:
+            response_model = pipeline["response"]["model"].strip()
+            extraction_model = pipeline["extraction"]["model"].strip()
             groups[key] = {
-                "response_model": pipeline["response"]["model"],
-                "extraction_model": pipeline["extraction"]["model"],
+                "response_model": response_model,
+                "extraction_model": extraction_model,
+                "response_family": model_family(response_model),
+                "extraction_family": model_family(extraction_model),
                 "response_precision": pipeline["response"].get("precision"),
                 "extraction_precision": pipeline["extraction"].get("precision"),
                 "judgment_enabled": pipeline.get("judgment_enabled"),
