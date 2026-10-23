@@ -97,7 +97,10 @@ class Stance(StrEnum):
 
 # Jev는 영어로 주로 학습했고 질문을 글자 그대로 읽는다. 선택지마다 조건을 영어로 분명히 적는다.
 _STANCE_CRITERIA = {
-    Stance.LIKE: ("The user personally likes, enjoys, is into, or regularly chooses to do it now"),
+    Stance.LIKE: (
+        "The user personally likes, enjoys, is into, or regularly chooses to do it now, "
+        "including things they often eat, watch, listen to, or visit in daily life"
+    ),
     Stance.DISLIKE: (
         "The user personally dislikes it, finds it unpleasant or bothersome, or wants to avoid it"
     ),

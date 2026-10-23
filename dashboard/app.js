@@ -7,6 +7,16 @@ const state = {
   serviceError: null,
   page: "overview",
   selectedModel: null,
+  selectedFamily: "",
+  familySearch: "",
+  trendModel: "",
+  trendWindow: 20,
+  trendPoints: [],
+  runFilter: "all",
+  rankMetric: "condition",
+  rankScope: "all",
+  overviewSignature: "",
+  overviewChanged: false,
   modelSearch: "",
   modelFilter: "tested",
   modelExamplesOpen: false,
@@ -71,6 +81,14 @@ const date = (value) =>
         day: "2-digit",
         hour: "2-digit",
         minute: "2-digit",
+      })
+    : "—";
+const day = (value) =>
+  value
+    ? new Date(value).toLocaleDateString("ko-KR", {
+        timeZone: "Asia/Seoul",
+        month: "2-digit",
+        day: "2-digit",
       })
     : "—";
 const active = (run) => ["queued", "running"].includes(run.status);
@@ -268,35 +286,515 @@ function serviceResults(models) {
   return `<section class="card"><div class="card-head"><div><h2>서비스 조합별 검증</h2><small>대화부터 취향 추출·추천 쿼리까지 실행한 결과</small></div><span class="pill">${groups.length}개 조합</span></div><div class="table-wrap"><table class="service-result-table"><thead><tr><th>응답 / 추출 모델</th><th>완료 / 실행</th><th>기대 조건 반영</th><th>제외 조건 반영</th><th>주의 쿼리</th><th>추출 실패 턴</th><th>턴 지연 p95</th><th>근거</th></tr></thead><tbody>${groups.map((g) => `<tr><td><strong>${e(g.response_model)}</strong><small>추출: ${e(g.extraction_model)}</small><small>${e(g.response_precision || "정밀도 미기록")} / ${e(g.extraction_precision || "정밀도 미기록")} · 판단 ${g.judgment_enabled ? "켜짐" : "꺼짐"} · ${e(g.recommendation_stage)}</small></td><td>${g.completed} / ${g.run_ids.length}<small>완료 ${g.reviewed_runs}개 조건 평가</small></td><td>${pct(g.condition_rate)}</td><td>${pct(g.exclusion_rate)}</td><td>${g.reviewed_runs ? `${g.forbidden_count}개` : "미측정"}</td><td>${pct(g.extraction_failure_rate)}<small>기록된 ${g.turn_count}턴 기준</small></td><td>${ms(g.turn_latency_p95_ms)}<small>서비스 전체 턴</small></td><td>${modelSourceButton({ kind: "run", id: g.run_ids[0] })}</td></tr>`).join("")}</tbody></table></div><p class="persona-help">기대·제외 조건은 평가 기준이 있는 완료 실험만 집계합니다. 조건 유사도는 추천 쿼리의 표현 일치이며 취향 정확도의 정답 점수가 아닙니다. 응답·추출·판단 설정을 함께 사용한 결과이므로 단일 모델의 성적으로 해석하지 않습니다.</p></section>`;
 }
 
-function overviewResults() {
+function modelResults() {
   const models = visibleModels();
   if (!models.some((m) => m.id === state.selectedModel))
     state.selectedModel = models[0]?.id || null;
   return `<section class="card model-registry"><div class="card-head"><div><h2>모델별 검증 결과</h2><small>모델을 선택하면 역할별 결과 지표와 검증 근거를 확인할 수 있습니다.</small></div><span class="pill">${models.length}개 실행 조건</span></div>${modelTable(models)}<p class="persona-help">모델·서버·revision·정밀도·하드웨어가 다른 기록은 별도로 표시합니다. 호출 성공은 답변 품질의 합격 판정이 아니며, 서로 다른 입력의 지연을 순위로 해석하지 않습니다.</p></section>${serviceResults(models)}${modelDetail(models.find((m) => m.id === state.selectedModel))}`;
 }
 
-function overviewPage() {
+function modelsPage() {
+  return (
+    heading(
+      "NEED U / MODEL RESULTS",
+      "모델 결과표",
+      "모든 실행 조건의 역할별 지표와 서비스 조합 결과를 표로 비교하세요.",
+      `<a class="btn" href="#overview">실험 현황으로</a>`,
+    ) +
+    modelFilters() +
+    `<div id="model-results">${modelResults()}</div>`
+  );
+}
+
+// Fixed per family so a filter or a new family never repaints the others.
+const FAMILY_TONES = ["Kanana", "Qwen", "Gemma", "Gemini", "Claude", "GPT-OSS", "Llama", "EXAONE"];
+const familyTone = (name) => {
+  const fixed = FAMILY_TONES.indexOf(name);
+  return fixed >= 0
+    ? fixed
+    : [...name].reduce((n, c) => n + c.charCodeAt(0), 0) % FAMILY_TONES.length;
+};
+const familyDot = (name) =>
+  `<span class="family-dot fam-${familyTone(name)}" aria-hidden="true"></span>`;
+const EXPAND_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6 M10 20H4v-6 M20 4l-7 7 M4 20l7-7" /></svg>`;
+const expandLink = (href, label) =>
+  `<a class="icon-btn" href="${href}" aria-label="${label}" title="${label}">${EXPAND_ICON}</a>`;
+const LIVE_CONTROLS = [
+  "model-search",
+  "model-filter",
+  "family-search",
+  "trend-model",
+  "trend-window",
+  "run-filter",
+  "rank-metric",
+  "rank-scope",
+];
+
+const recordIds = (models, kind) =>
+  new Set(models.flatMap((m) => m.timeline.filter((p) => p.kind === kind).map((p) => p.id)));
+
+function familyGroups() {
+  const groups = new Map();
+  for (const m of state.overview.model_evaluations || []) {
+    if (!groups.has(m.family)) groups.set(m.family, []);
+    groups.get(m.family).push(m);
+  }
+  return [...groups]
+    .map(([name, models]) => ({
+      name,
+      models,
+      runs: recordIds(models, "run").size,
+      chats: recordIds(models, "chat").size,
+      last: models.reduce((last, m) => (m.last_at > last ? m.last_at : last), ""),
+      best: (state.overview.service_evaluations || [])
+        .filter(
+          (g) =>
+            g.condition_rate != null &&
+            (g.response_family === name || g.extraction_family === name),
+        )
+        .reduce((best, g) => Math.max(best ?? 0, g.condition_rate), null),
+    }))
+    .sort((a, b) => b.last.localeCompare(a.last));
+}
+
+function scopedModels(family = state.selectedFamily) {
+  return (state.overview.model_evaluations || []).filter((m) => !family || m.family === family);
+}
+
+function familyOf(model) {
+  return (state.overview.model_evaluations || []).find((m) => m.model === String(model).trim())
+    ?.family;
+}
+
+function runModels(run) {
+  const pipeline = run.manifest?.pipeline;
+  return pipeline
+    ? [pipeline.response?.model, pipeline.extraction?.model].filter(Boolean)
+    : [run.connection.model];
+}
+
+function familyCards() {
+  const query = state.familySearch.trim().toLowerCase();
+  const groups = familyGroups().filter(
+    (g) =>
+      !query ||
+      `${g.name} ${g.models.map((m) => `${m.model} ${m.name}`).join(" ")}`
+        .toLowerCase()
+        .includes(query),
+  );
+  const all = state.overview.model_evaluations || [];
+  const card = (g, label) => {
+    const selected = state.selectedFamily === g.name;
+    return `<li><button class="family-card" data-action="family" data-id="${e(g.name)}" aria-pressed="${selected}"><span class="family-head">${g.name ? familyDot(g.name) : `<span class="family-dot all" aria-hidden="true"></span>`}<strong>${e(label)}</strong><span class="family-count" title="실행 조건 수">${g.models.length}</span></span><span class="family-meta">실험 ${g.runs} · 대화 ${g.chats} · 최근 ${day(g.last)}</span><span class="family-best"><small>기대 조건 최고</small><b>${pct(g.best)}</b></span></button>${
+      selected && g.name
+        ? `<ul class="family-models" aria-label="${e(label)} 실행 조건">${g.models.map((m) => `<li><button class="family-model" data-action="select-model" data-id="${e(m.id)}" aria-pressed="${state.selectedModel === m.id}"><span>${e(m.model)}</span><small>${e(m.name)} · 호출 ${num(m.attempted)}회</small></button></li>`).join("")}</ul>`
+        : ""
+    }</li>`;
+  };
+  const total = {
+    name: "",
+    models: all,
+    runs: recordIds(all, "run").size,
+    chats: recordIds(all, "chat").size,
+    last: all.reduce((last, m) => (m.last_at > last ? m.last_at : last), ""),
+    best: (state.overview.service_evaluations || []).reduce(
+      (best, g) => (g.condition_rate == null ? best : Math.max(best ?? 0, g.condition_rate)),
+      null,
+    ),
+  };
+  return (
+    (query ? "" : card(total, "전체 모델")) + groups.map((g) => card(g, g.name)).join("") ||
+    `<li class="empty">검색에 맞는 모델이 없습니다.</li>`
+  );
+}
+
+function familyPanel() {
+  return `<section class="card area-family" aria-labelledby="family-title"><div class="card-head"><div><h2 id="family-title">모델 카테고리</h2><small>고른 모델군으로 추이·실험·조합이 좁혀집니다.</small></div></div><div class="field search-field"><label class="sr-only" for="family-search">모델 검색</label><input id="family-search" type="search" value="${e(state.familySearch)}" placeholder="모델군 또는 모델 ID 검색"></div><ul class="family-list" id="family-list">${familyCards()}</ul></section>`;
+}
+
+const TREND_SERIES = ["호출 성공률", "추출 파싱 성공률", "기대 조건 반영률"];
+const statusTone = (status) =>
+  ["completed", "closed", "review"].includes(status)
+    ? "ok"
+    : ["queued", "running", "active", "starting"].includes(status)
+      ? "running"
+      : "bad";
+
+function trendData() {
+  const models = scopedModels().filter((m) => !state.trendModel || m.id === state.trendModel);
+  const points = new Map();
+  for (const m of models) {
+    for (const p of m.timeline) {
+      const key = `${p.kind}:${p.id}`;
+      const point = points.get(key) || {
+        ...p,
+        attempted: 0,
+        failed: 0,
+        structured: 0,
+        structured_ok: 0,
+      };
+      point.attempted += p.attempted;
+      point.failed += p.failed;
+      point.structured += p.structured;
+      point.structured_ok += p.structured_ok;
+      point.condition_score ??= p.condition_score;
+      points.set(key, point);
+    }
+  }
+  return [...points.values()]
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .slice(-state.trendWindow)
+    .map((p) => ({
+      ...p,
+      values: [
+        p.attempted ? (p.attempted - p.failed) / p.attempted : null,
+        p.structured ? p.structured_ok / p.structured : null,
+        p.condition_score ?? null,
+      ],
+    }));
+}
+
+function recordLabel(point) {
+  if (point.kind === "chat")
+    return state.chatSessions.find((c) => c.id === point.id)?.title || "직접 대화";
+  const run = state.overview.runs.find((r) => r.id === point.id);
+  const persona = state.personas.find((p) => p.id === run?.spec.persona_id);
+  return `${modeLabel(run?.spec.mode)}${persona ? ` · ${persona.name}` : ""}`;
+}
+
+const recordAction = (point) => (point.kind === "chat" ? "evaluation-chat" : "detail");
+
+function trendSvg(points) {
+  const [W, H, left, right, top, bottom] = [760, 250, 40, 12, 12, 46];
+  const plotW = W - left - right;
+  const plotH = H - top - bottom;
+  const band = plotW / points.length;
+  const x = (i) => left + band * (i + 0.5);
+  const y = (v) => top + (1 - v) * plotH;
+  const grid = [0, 0.25, 0.5, 0.75, 1]
+    .map(
+      (v) =>
+        `<line x1="${left}" x2="${W - right}" y1="${y(v)}" y2="${y(v)}"></line><text x="${left - 8}" y="${y(v) + 3}" text-anchor="end">${v * 100}%</text>`,
+    )
+    .join("");
+  // Missing values break the line instead of being interpolated.
+  const lines = TREND_SERIES.map((_, s) => {
+    let d = "";
+    let open = false;
+    points.forEach((p, i) => {
+      const v = p.values[s];
+      if (v == null) {
+        open = false;
+        return;
+      }
+      d += `${open ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`;
+      open = true;
+    });
+    const dots = points
+      .map((p, i) =>
+        p.values[s] == null
+          ? ""
+          : `<circle class="trend-dot" cx="${x(i).toFixed(1)}" cy="${y(p.values[s]).toFixed(1)}" r="4"></circle>`,
+      )
+      .join("");
+    return `<g class="s${s}">${d ? `<path class="trend-line" d="${d}"></path>` : ""}${dots}</g>`;
+  }).join("");
+  const barW = Math.max(2, Math.min(24, band - 4));
+  const strip = points
+    .map(
+      (p, i) =>
+        `<rect class="trend-status ${statusTone(p.status)}" x="${(x(i) - barW / 2).toFixed(1)}" y="${top + plotH + 10}" width="${barW.toFixed(1)}" height="4" rx="2"></rect>`,
+    )
+    .join("");
+  let lastLabel = -Infinity;
+  const dates = points
+    .map((p, i) => {
+      const label = day(p.at);
+      if (label === day(points[i - 1]?.at) || x(i) - lastLabel < 40) return "";
+      lastLabel = x(i);
+      return `<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="middle">${e(label)}</text>`;
+    })
+    .join("");
+  const hits = points
+    .map(
+      (p, i) =>
+        `<rect class="trend-hit" data-index="${i}" data-action="${recordAction(p)}" data-id="${e(p.id)}" x="${(left + band * i).toFixed(1)}" y="${top}" width="${band.toFixed(1)}" height="${plotH + 18}"></rect>`,
+    )
+    .join("");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="실험별 호출 성공률·추출 파싱 성공률·기대 조건 반영률 추이"><g class="trend-grid">${grid}</g>${lines}<g>${strip}</g><g class="trend-dates">${dates}</g><line class="trend-cross" x1="0" x2="0" y1="${top}" y2="${top + plotH}" visibility="hidden"></line>${hits}</svg>`;
+}
+
+function trendCard() {
+  const models = scopedModels();
+  if (state.trendModel && !models.some((m) => m.id === state.trendModel)) state.trendModel = "";
+  const points = trendData();
+  state.trendPoints = points;
+  const latest = TREND_SERIES.map((_, s) => [...points].reverse().find((p) => p.values[s] != null));
+  const controls = `<div class="card-tools"><label class="sr-only" for="trend-model">추이 모델</label><select id="trend-model"><option value="">${e(state.selectedFamily || "전체")} 모델 전체</option>${models
+    .filter((m) => m.timeline.length)
+    .map(
+      (m) =>
+        `<option value="${e(m.id)}" ${state.trendModel === m.id ? "selected" : ""}>${e(m.model)} · ${e(m.name)}</option>`,
+    )
+    .join(
+      "",
+    )}</select><label class="sr-only" for="trend-window">기록 수</label><select id="trend-window">${[10, 20, 50].map((n) => `<option value="${n}" ${state.trendWindow === n ? "selected" : ""}>최근 ${n}개</option>`).join("")}</select>${expandLink("#history", "실험 이력 전체 보기")}</div>`;
+  const body = points.length
+    ? `<ul class="trend-legend">${TREND_SERIES.map((name, s) => `<li class="s${s}"><span class="legend-key" aria-hidden="true"></span>${name}<b>${pct(latest[s]?.values[s])}</b></li>`).join("")}</ul><div class="trend-plot">${trendSvg(points)}<div class="trend-tooltip" hidden></div></div><details class="sample trend-table"><summary>표로 보기 · ${points.length}개 기록</summary><div class="sample-body table-wrap"><table><thead><tr><th>기록</th><th>시각</th><th>상태</th>${TREND_SERIES.map((name) => `<th>${name}</th>`).join("")}</tr></thead><tbody>${[
+        ...points,
+      ]
+        .reverse()
+        .map(
+          (p) =>
+            `<tr><td><button class="link" data-action="${recordAction(p)}" data-id="${e(p.id)}">${e(recordLabel(p))}</button><small>${p.kind === "chat" ? "직접 대화" : "실험"} · ${e(p.id.slice(0, 8))}</small></td><td>${date(p.at)}</td><td>${p.kind === "chat" ? `<span class="pill">${e(chatStatus(p.status))}</span>` : pill(p.status)}</td>${p.values.map((v) => `<td>${pct(v)}</td>`).join("")}</tr>`,
+        )
+        .join("")}</tbody></table></div></details>`
+    : `<div class="empty"><strong>선택한 범위에 기록된 실험이 없어요</strong>카테고리나 모델을 바꾸거나 새 실험을 시작하세요.</div>`;
+  return `<section class="card area-trend" aria-labelledby="trend-title"><div class="card-head"><div><h2 id="trend-title">실험별 추이</h2><small>${e(state.selectedFamily || "전체 모델")} · 기록 순서 기준 · 미측정 구간은 끊어서 표시</small></div>${controls}</div>${body}</section>`;
+}
+
+function bindTrend() {
+  const plot = $(".trend-plot");
+  if (!plot) return;
+  const svg = plot.querySelector("svg");
+  const cross = plot.querySelector(".trend-cross");
+  const tip = plot.querySelector(".trend-tooltip");
+  const hide = () => {
+    cross.setAttribute("visibility", "hidden");
+    tip.hidden = true;
+  };
+  const show = (hit) => {
+    const point = state.trendPoints[Number(hit.dataset.index)];
+    if (!point) return;
+    const cx = Number(hit.getAttribute("x")) + Number(hit.getAttribute("width")) / 2;
+    cross.setAttribute("x1", cx);
+    cross.setAttribute("x2", cx);
+    cross.setAttribute("visibility", "visible");
+    // Labels come from stored records, so build the readout with textContent.
+    const head = document.createElement("div");
+    head.className = "trend-tip-head";
+    head.textContent = `${recordLabel(point)} · ${date(point.at)}`;
+    const rows = TREND_SERIES.map((name, s) => {
+      const row = document.createElement("div");
+      row.className = `trend-tip-row s${s}`;
+      const key = document.createElement("span");
+      key.className = "legend-key";
+      const value = document.createElement("strong");
+      value.textContent = pct(point.values[s]);
+      const label = document.createElement("span");
+      label.textContent = name;
+      row.append(key, value, label);
+      return row;
+    });
+    tip.replaceChildren(head, ...rows);
+    tip.hidden = false;
+    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+    const px = cx * scale;
+    const width = tip.offsetWidth;
+    tip.style.left = `${px + 12 + width > plot.clientWidth ? px - 12 - width : px + 12}px`;
+  };
+  plot.addEventListener("pointermove", (event) => {
+    const hit = event.target.closest(".trend-hit");
+    if (hit) show(hit);
+    else hide();
+  });
+  plot.addEventListener("pointerleave", hide);
+}
+
+function runsCard() {
+  const filters = {
+    all: () => true,
+    active,
+    completed: (r) => r.status === "completed",
+    failed: (r) => !active(r) && r.status !== "completed",
+  };
+  const runs = state.overview.runs
+    .filter(
+      (r) =>
+        !state.selectedFamily || runModels(r).some((m) => familyOf(m) === state.selectedFamily),
+    )
+    .filter(filters[state.runFilter]);
+  const rows = [...runs.filter(active), ...runs.filter((r) => !active(r))].slice(0, 6);
+  const select = `<div class="card-tools"><label class="sr-only" for="run-filter">실험 상태</label><select id="run-filter">${[
+    ["all", "전체 상태"],
+    ["active", "진행 중"],
+    ["completed", "완료"],
+    ["failed", "실패·중단"],
+  ]
+    .map(
+      ([key, text]) =>
+        `<option value="${key}" ${state.runFilter === key ? "selected" : ""}>${text}</option>`,
+    )
+    .join("")}</select>${expandLink("#history", "실험 이력 전체 보기")}</div>`;
+  const list = rows.length
+    ? `<ul class="run-list">${rows
+        .map((r) => {
+          const persona = state.personas.find((p) => p.id === r.spec.persona_id);
+          const models = [...new Set(runModels(r).map((m) => m.trim()))];
+          const planned = r.spec.requests || 0;
+          const done = Math.min(r.completed ?? 0, planned || Infinity);
+          return `<li><button class="run-row" data-action="detail" data-id="${e(r.id)}"><span class="run-name"><strong>${models.map((m) => familyDot(familyOf(m) || m)).join("")}${e(modeLabel(r.spec.mode))}${persona ? ` · ${e(persona.name)}` : ""}</strong><small>${e(models.join(" / "))} · ${date(r.created_at)}</small></span><span class="run-progress"><progress value="${done}" max="${planned || 1}" aria-label="완료 단계 ${done} / ${planned}"></progress><small>${done} / ${planned}</small></span>${pill(r.status)}</button></li>`;
+        })
+        .join("")}</ul>`
+    : `<div class="empty"><strong>해당하는 실험이 없어요</strong>상태 필터나 카테고리를 바꿔 보세요.</div>`;
+  return `<section class="card area-runs" aria-labelledby="runs-title"><div class="card-head"><div><h2 id="runs-title">실험 진행</h2><small>진행 중인 실험을 먼저 보여줍니다.</small></div>${select}</div>${list}</section>`;
+}
+
+const RANK_METRICS = {
+  condition: { label: "기대 조건 반영률", min: 2, sample: "평가된 완료 실험" },
+  parse: { label: "추출 파싱 성공률", min: 20, sample: "추출 호출" },
+  success: { label: "호출 성공률", min: 20, sample: "모델 호출" },
+  response_p95: { label: "응답 p95", min: 20, sample: "성공 응답 호출", lower: true },
+  extraction_p95: { label: "추출 p95", min: 20, sample: "성공 추출 호출", lower: true },
+};
+
+function rankEntries() {
+  const family = state.rankScope === "category" ? state.selectedFamily : "";
+  if (state.rankMetric === "condition") {
+    return (state.overview.service_evaluations || [])
+      .filter((g) => !family || g.response_family === family || g.extraction_family === family)
+      .map((g) => ({
+        target: scopedModels("").find((m) => m.model === g.response_model)?.id,
+        model: g.response_model,
+        family: g.response_family,
+        detail: `추출 ${g.extraction_model} · ${g.recommendation_stage} · 판단 ${g.judgment_enabled ? "켜짐" : "꺼짐"}`,
+        meta: `실험 ${g.run_ids.length} · 평가 ${g.reviewed_runs} · ${g.turn_count}턴`,
+        value: g.condition_rate,
+        sample: g.reviewed_runs,
+      }));
+  }
+  return scopedModels(family).map((m) => {
+    const response = m.roles.response;
+    const extraction = m.roles.extraction;
+    const [value, sample] = {
+      parse: [extraction?.structured_success_rate, extraction?.structured_count || 0],
+      success: [m.success_rate, m.attempted],
+      response_p95: [response?.latency_p95_ms, response ? response.attempted - response.failed : 0],
+      extraction_p95: [
+        extraction?.latency_p95_ms,
+        extraction ? extraction.attempted - extraction.failed : 0,
+      ],
+    }[state.rankMetric];
+    return {
+      target: m.id,
+      model: m.model,
+      family: m.family,
+      detail: m.name,
+      meta: `실험 ${m.run_count} · 대화 ${m.chat_count} · 호출 ${num(m.attempted)}`,
+      value,
+      sample,
+    };
+  });
+}
+
+function rankCard() {
+  const metric = RANK_METRICS[state.rankMetric];
+  const entries = rankEntries();
+  const measured = entries.filter((r) => r.value != null);
+  const order = (a, b) =>
+    (metric.lower ? a.value - b.value : b.value - a.value) || b.sample - a.sample;
+  const ranked = measured.filter((r) => r.sample >= metric.min).sort(order);
+  const thin = measured.filter((r) => r.sample < metric.min).sort(order);
+  const value = (r) => (state.rankMetric.endsWith("p95") ? ms(r.value) : pct(r.value));
+  const row = (r, rank) => {
+    const content = `<span class="rank-no ${rank === 1 ? "top" : ""}">${rank ?? "–"}</span><span class="rank-name"><strong>${familyDot(r.family)}${e(r.model)}</strong><small>${e(r.detail)}</small><small>${e(r.meta)}</small></span><span class="rank-value">${value(r)}</span>`;
+    return `<li>${r.target ? `<button class="rank-row" data-action="select-model" data-id="${e(r.target)}" aria-pressed="${state.selectedModel === r.target}">${content}</button>` : `<div class="rank-row">${content}</div>`}</li>`;
+  };
+  const controls = `<div class="card-tools"><label class="sr-only" for="rank-metric">순위 지표</label><select id="rank-metric">${Object.entries(
+    RANK_METRICS,
+  )
+    .map(
+      ([key, m]) =>
+        `<option value="${key}" ${state.rankMetric === key ? "selected" : ""}>${m.label}</option>`,
+    )
+    .join(
+      "",
+    )}</select><label class="sr-only" for="rank-scope">순위 범위</label><select id="rank-scope"><option value="all">전체</option><option value="category" ${state.rankScope === "category" ? "selected" : ""} ${state.selectedFamily ? "" : "disabled"}>${e(state.selectedFamily || "카테고리")} 안에서</option></select>${expandLink("#models", "모델 결과표 열기")}</div>`;
+  // The card shares a row with the run list, so the rest lives in the results table.
+  const hidden = Math.max(0, ranked.length - 5) + Math.max(0, thin.length - 3);
+  const body =
+    ranked.length || thin.length
+      ? `${
+          ranked.length
+            ? `<ol class="rank-list">${ranked
+                .slice(0, 5)
+                .map((r, i) => row(r, i + 1))
+                .join("")}</ol>`
+            : `<p class="rank-group">기준을 채운 항목이 아직 없습니다.</p>`
+        }${
+          thin.length
+            ? `<p class="rank-group">표본 부족 · ${metric.sample} ${metric.min}개 미만</p><ul class="rank-list thin">${thin
+                .slice(0, 3)
+                .map((r) => row(r))
+                .join("")}</ul>`
+            : ""
+        }${hidden ? `<p class="rank-group">외 ${hidden}개는 <a class="link" href="#models">모델 결과표</a>에서 확인하세요.</p>` : ""}`
+      : `<div class="empty"><strong>측정된 값이 없어요</strong>다른 지표를 고르거나 실험을 실행하세요.</div>`;
+  return `<section class="card area-rank" aria-labelledby="rank-title"><div class="card-head"><div><h2 id="rank-title">모델 순위</h2><small>${metric.label} · ${metric.lower ? "낮을수록" : "높을수록"} 위</small></div>${controls}</div>${body}<p class="persona-help">순위 기준: ${metric.sample} ${metric.min}개 이상${entries.length - measured.length ? ` · 미측정 ${entries.length - measured.length}개 제외` : ""}${state.rankMetric === "condition" ? " · 응답·추출 조합 단위 결과라 단일 모델 성적이 아닙니다." : ""}</p></section>`;
+}
+
+function comboCard() {
+  const groups = (state.overview.service_evaluations || [])
+    .filter(
+      (g) =>
+        !state.selectedFamily ||
+        g.response_family === state.selectedFamily ||
+        g.extraction_family === state.selectedFamily,
+    )
+    .sort(
+      (a, b) =>
+        (b.condition_rate ?? -1) - (a.condition_rate ?? -1) || b.run_ids.length - a.run_ids.length,
+    );
+  const table = groups.length
+    ? `<div class="table-wrap"><table class="combo-table"><thead><tr><th>응답 / 추출 모델</th><th>기대 조건</th><th>제외 조건</th><th>턴 p95</th></tr></thead><tbody>${groups
+        .slice(0, 5)
+        .map(
+          (g) =>
+            `<tr><td><button class="link" data-action="detail" data-id="${e(g.run_ids[0])}">${familyDot(g.response_family)}${e(g.response_model)}</button><small>추출 ${e(g.extraction_model)} · ${e(g.recommendation_stage)} · 실험 ${g.run_ids.length}개</small></td><td>${pct(g.condition_rate)}</td><td>${pct(g.exclusion_rate)}</td><td>${ms(g.turn_latency_p95_ms)}</td></tr>`,
+        )
+        .join("")}</tbody></table></div>`
+    : `<div class="empty"><strong>서비스 조합 실험이 없어요</strong>니쥬 서비스 시나리오를 실행하면 표시됩니다.</div>`;
+  return `<section class="card area-combo" aria-labelledby="combo-title"><div class="card-head"><div><h2 id="combo-title">서비스 조합별 검증</h2><small>대화부터 추천 쿼리까지 · 상위 ${Math.min(5, groups.length)}개 / 전체 ${groups.length}개</small></div><div class="card-tools">${expandLink("#models", "서비스 조합 전체 표 열기")}</div></div>${table}</section>`;
+}
+
+function feedbackCard() {
+  return `<section class="card area-feedback" aria-labelledby="feedback-title"><div class="card-head"><h2 id="feedback-title">추천 피드백 반영</h2><span class="pill">설계 예정</span></div><div class="slot-empty">추천 피드백 반영 로직이 이 영역에 표시됩니다.</div></section>`;
+}
+
+function kpiTiles() {
   const { runs, model_evaluations: models = [] } = state.overview;
   const tested = models.filter((m) => m.attempted);
-  const stats = [
-    ["등록·실행 모델 조건", models.length],
-    ["결과 있는 모델", tested.length],
-    ["미검증 모델", models.length - tested.length],
-    ["검토 필요 모델", models.filter((m) => modelStatus(m)[1] === "bad").length],
-    ["기록된 모델 호출", num(models.reduce((n, m) => n + m.attempted, 0))],
-    ["진행 중 실험", runs.filter(active).length],
-  ];
+  const attention = models.filter((m) => modelStatus(m)[1] === "bad").length;
+  return [
+    ["실행 모델 조건", models.length, `${familyGroups().length}개 카테고리`],
+    ["결과 있는 모델", tested.length, `미검증 ${models.length - tested.length}개`],
+    ["검토 필요 모델", attention, "호출 실패 또는 정답 불일치 · 결과표에서 보기", "attention"],
+    [
+      "기록된 모델 호출",
+      num(models.reduce((n, m) => n + m.attempted, 0)),
+      `진행 중 실험 ${runs.filter(active).length}개`,
+    ],
+  ]
+    .map(([label, value, hint, filter]) =>
+      filter
+        ? `<button class="card kpi" data-action="model-filter" data-mode="${filter}"><span class="label">${label}</span><span class="value">${value}</span><span class="hint">${hint}</span></button>`
+        : `<div class="card kpi"><span class="label">${label}</span><span class="value">${value}</span><span class="hint">${hint}</span></div>`,
+    )
+    .join("");
+}
+
+function overviewPage() {
+  const models = state.overview.model_evaluations || [];
+  if (!models.some((m) => m.id === state.selectedModel))
+    state.selectedModel = (models.find((m) => m.attempted) || models[0])?.id || null;
   return (
     heading(
       "NEED U / MODEL EVALUATION",
       "모델 실험 결과",
-      "실험한 모델의 성공률·지연·추출 결과를 한눈에 비교하세요.",
+      "카테고리를 고르면 추이·실험 진행·서비스 조합이 그 모델군으로 좁혀집니다.",
       `<a class="btn" href="#chat">대화 테스트</a><a class="btn primary" href="#experiments">새 실험 시작</a>`,
     ) +
-    `<div class="stat-strip">${stats.map(([label, value]) => `<div><small>${label}</small><strong>${value}</strong></div>`).join("")}</div>` +
-    modelFilters() +
-    `<div id="model-results">${overviewResults()}</div>` +
-    `<section class="card"><div class="card-head"><h2>최근 실험</h2><a class="link" href="#history">전체 이력</a></div>${runTable(runs.slice(0, 5))}</section>` +
+    `<div class="home-grid">${kpiTiles()}${familyPanel()}${trendCard()}${runsCard()}${rankCard()}${comboCard()}${feedbackCard()}<div class="area-detail" id="model-detail">${modelDetail(models.find((m) => m.id === state.selectedModel))}</div></div>` +
     `<p class="evaluation-scope">최근 실험 100개 · 최근 생성한 대화 50개 기준. 응답 길이·질문 포함률은 대화 출력의 문체 관찰이며, 자연스러움·취향 정확도·thinking 여부는 자동 채점하지 않습니다.</p>`
   );
 }
@@ -904,6 +1402,7 @@ function render() {
   });
   const pages = {
     overview: overviewPage,
+    models: modelsPage,
     connections: connectionsPage,
     experiments: experimentsPage,
     history: historyPage,
@@ -913,11 +1412,23 @@ function render() {
     chat: chatPage,
   };
   main.innerHTML = pages[state.page]();
+  $("#crumb").textContent =
+    document.querySelector(`nav [data-page="${state.page}"]`)?.textContent.trim() || "";
+  if (state.page === "overview") bindTrend();
   if (state.page === "experiments") updateBudget();
   if (state.page === "chat" || state.page === "history") {
     const feed = $(".chat-feed");
     if (feed) feed.scrollTop = feed.scrollHeight;
   }
+}
+
+function renderKeepingFocus() {
+  const focused = main.contains(document.activeElement) ? document.activeElement : null;
+  const { action, id } = focused?.dataset || {};
+  const controlId = focused?.id;
+  render();
+  if (controlId) document.getElementById(controlId)?.focus({ preventScroll: true });
+  else if (action && id != null) focusOverviewControl(action, id);
 }
 
 function updateRunDetail(resetScroll = false) {
@@ -968,6 +1479,14 @@ function updateBudget() {
 
 async function refresh(renderPage = false) {
   state.overview = await api("/overview");
+  // Worker heartbeats change every poll; only result changes should redraw the home.
+  const signature = JSON.stringify([
+    state.overview.runs,
+    state.overview.model_evaluations,
+    state.overview.service_evaluations,
+  ]);
+  state.overviewChanged = signature !== state.overviewSignature;
+  state.overviewSignature = signature;
   $("#worker-dot").classList.toggle("online", state.overview.worker.online);
   $("#worker-label").textContent = state.overview.worker.online
     ? "테스트 워커 준비됨"
@@ -1093,7 +1612,12 @@ main.addEventListener(
 main.addEventListener("input", (event) => {
   if (event.target.id === "model-search") {
     state.modelSearch = event.target.value;
-    $("#model-results").innerHTML = overviewResults();
+    $("#model-results").innerHTML = modelResults();
+    return;
+  }
+  if (event.target.id === "family-search") {
+    state.familySearch = event.target.value;
+    $("#family-list").innerHTML = familyCards();
     return;
   }
   if (event.target.id === "persona-search") {
@@ -1106,7 +1630,20 @@ main.addEventListener("input", (event) => {
 main.addEventListener("change", (event) => {
   if (event.target.id === "model-filter") {
     state.modelFilter = event.target.value;
-    $("#model-results").innerHTML = overviewResults();
+    $("#model-results").innerHTML = modelResults();
+    return;
+  }
+  const homeControl = {
+    "trend-model": "trendModel",
+    "trend-window": "trendWindow",
+    "run-filter": "runFilter",
+    "rank-metric": "rankMetric",
+    "rank-scope": "rankScope",
+  }[event.target.id];
+  if (homeControl) {
+    state[homeControl] =
+      homeControl === "trendWindow" ? Number(event.target.value) : event.target.value;
+    renderKeepingFocus();
     return;
   }
   if (
@@ -1153,8 +1690,30 @@ main.addEventListener("click", async (event) => {
     if (action === "select-model") {
       state.selectedModel = id;
       state.modelExamplesOpen = false;
-      $("#model-results").innerHTML = overviewResults();
-      focusOverviewControl("select-model", id);
+      if (state.page === "models") {
+        $("#model-results").innerHTML = modelResults();
+        focusOverviewControl("select-model", id);
+      } else {
+        renderKeepingFocus();
+        // The detail sits below the fold; bring it up so the selection visibly lands.
+        const detail = $("#model-detail");
+        if (detail && detail.getBoundingClientRect().top > window.innerHeight - 120)
+          detail.scrollIntoView({
+            behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+            block: "start",
+          });
+      }
+    } else if (action === "family") {
+      state.selectedFamily = id;
+      state.trendModel = "";
+      if (!id) state.rankScope = "all";
+      const models = scopedModels();
+      if (!models.some((m) => m.id === state.selectedModel))
+        state.selectedModel = (models.find((m) => m.attempted) || models[0])?.id || null;
+      renderKeepingFocus();
+    } else if (action === "model-filter") {
+      state.modelFilter = mode;
+      location.hash = "models";
     } else if (action === "evaluation-chat") {
       if (state.chatBusy) return;
       state.chatDetail = await api(`/chats/${id}`);
@@ -1318,6 +1877,7 @@ async function navigate() {
   const page = location.hash.slice(1) || "overview";
   state.page = [
     "overview",
+    "models",
     "connections",
     "experiments",
     "history",
@@ -1377,14 +1937,9 @@ setInterval(async () => {
   try {
     const oldDetail = state.detail;
     await refresh(false);
-    if (state.page === "overview") {
-      if (!main.contains(document.activeElement)) render();
-      else if (!["model-search", "model-filter"].includes(document.activeElement.id)) {
-        const focusId = document.activeElement.dataset.id;
-        const focusAction = document.activeElement.dataset.action;
-        render();
-        if (focusAction && focusId) focusOverviewControl(focusAction, focusId);
-      }
+    if (["overview", "models"].includes(state.page)) {
+      if (state.overviewChanged && !LIVE_CONTROLS.includes(document.activeElement.id))
+        renderKeepingFocus();
     } else if (state.page === "compare") render();
     else if (
       state.page === "history" &&

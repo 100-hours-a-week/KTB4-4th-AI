@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from admin_api.main import create_app
-from admin_api.model_evaluations import model_evaluations, service_evaluations
+from admin_api.model_evaluations import model_evaluations, model_family, service_evaluations
 from app.application.conversation_prompts import FRIEND_SUMMARY_SYSTEM
 
 
@@ -171,6 +171,51 @@ def test_service_metrics_use_completed_reviews_and_weight_actual_conditions():
     assert group["forbidden_count"] == 2
     assert group["extraction_failure_rate"] == 0.5
     assert group["turn_latency_p95_ms"] == 195
+
+
+def test_family_groups_provider_ids_and_served_aliases():
+    assert model_family("kakaocorp/kanana-1.5-8b-instruct-2505") == "Kanana"
+    assert model_family("kanana-response") == "Kanana"
+    assert model_family(" google/gemma-4-12b-qat") == "Gemma"
+    assert model_family("openai/gpt-oss-20b") == "GPT-OSS"
+    assert model_family("Qwen/Qwen3.5-9B:deepinfra") == "Qwen"
+    assert model_family("mistral-small") == "Mistral"
+    assert model_family("7b") == "기타"
+
+
+def test_whitespace_does_not_split_a_model_and_timeline_follows_each_record():
+    runs = [run("r1", response=" chat", extraction="chat"), run("r2", response="chat")]
+    runs[0]["summary"] = {"query_review": {"score": 0.5}}
+    runs[1]["created_at"] = "2026-10-15T00:00:00Z"
+    runs[1]["status"] = "failed"
+    runs[1]["summary"] = {"query_review": {"score": 1.0}}
+    samples = [
+        {
+            "run_id": "r1",
+            "stage": "turn",
+            "model_calls": [
+                {"role": "response", "ok": True, "latency_ms": 10, "output": "응"},
+                {"role": "extraction", "ok": False, "json_schema": {}, "error": "bad"},
+            ],
+        },
+        {
+            "run_id": "r2",
+            "stage": "turn",
+            "model_calls": [{"role": "response", "ok": True, "latency_ms": 10, "output": "응"}],
+        },
+    ]
+    models = model_evaluations([], runs, samples, [])
+    chat = next(m for m in models if m["model"] == "chat")
+    assert [m["model"] for m in models].count("chat") == 1
+    assert chat["family"] == "Chat"
+    first, second = chat["timeline"]
+    assert (first["id"], first["attempted"], first["failed"]) == ("r1", 2, 1)
+    assert (first["structured"], first["structured_ok"], first["condition_score"]) == (1, 0, 0.5)
+    # Only completed runs carry a query review score.
+    assert (second["id"], second["condition_score"]) == ("r2", None)
+    group = service_evaluations(runs[:1], samples)[0]
+    assert group["response_model"] == "chat"
+    assert group["response_family"] == "Chat"
 
 
 def test_overview_returns_saved_results_without_model_requests(tmp_path):

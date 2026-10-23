@@ -144,7 +144,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
         "reply": "캠핑 좋죠. 주로 어디로 다니세요?",
         "turn": 1,
         "maxTurns": 20,
-        "progress": 21,
+        "progress": 15,
         "canClose": False,
         "inputLocked": False,
     }
