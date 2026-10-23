@@ -39,8 +39,9 @@ POSITIVE_FIELDS = {
 }
 NEGATIVE_FIELDS = SAFETY_FIELDS
 
-# 대화에서 모으는 취향은 최대 5개이고, 이 안에서 taste_rank_score 순으로 순위를 매긴다.
-MAX_ACTIVE_QUERY_SIGNALS = 5
+# 대화에서 모으는 취향은 최대 6개이고, 이 안에서 taste_rank_score 순으로 순위를 매긴다.
+# policy의 MIN_QUERY_SIGNALS와 같게 둔다.
+MAX_ACTIVE_QUERY_SIGNALS = 6
 MAX_ACTIVE_WEIGHT_SIGNALS = 3
 REPETITION_BONUS = 0.05
 HOBBY_BONUS = 0.05

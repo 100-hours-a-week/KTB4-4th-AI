@@ -23,7 +23,6 @@ from app.domain.conversation.models import (
     SessionStatus,
 )
 from app.domain.conversation.policy import (
-    COMPANION_CLOSE_AFTER_TURN,
     COMPANION_SCENES,
     MAX_TURNS,
     conversation_progress,
@@ -300,32 +299,16 @@ def test_conversation_scene_does_not_depend_on_missing_recommendation_fields(mon
 # ---- 종료 ----
 
 
-def test_ready_but_still_fun_keeps_talking(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ready_wraps_even_while_fun(monkeypatch: pytest.MonkeyPatch) -> None:
     ready(monkeypatch)
     state = companion_state(turn_count=5)
     state.energy = 0.8
     state.peak_energy = 0.8
     state.user_length_avg = 20.0
 
-    assert decide_goal(state, "요즘 러닝에 빠져서 매일 뛰어요 ㅋㅋ").goal == ConversationGoal.CHAT
-
-
-def test_ready_and_long_conversation_wraps(monkeypatch: pytest.MonkeyPatch) -> None:
-    ready(monkeypatch)
-    state = companion_state(turn_count=COMPANION_CLOSE_AFTER_TURN)
-
-    decision = decide_goal(state, "좋아요")
+    decision = decide_goal(state, "요즘 러닝에 빠져서 매일 뛰어요 ㅋㅋ")
     assert decision.goal == ConversationGoal.WRAP
     assert decision.completion_reason == CompletionReason.SUFFICIENT
-
-
-def test_ready_and_energy_dropping_wraps(monkeypatch: pytest.MonkeyPatch) -> None:
-    ready(monkeypatch)
-    state = companion_state(turn_count=6)
-    state.energy = 0.5
-    state.peak_energy = 0.9
-
-    assert decide_goal(state, "").goal == ConversationGoal.WRAP
 
 
 def test_exit_intent_wraps_immediately() -> None:

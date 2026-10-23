@@ -4,7 +4,6 @@ from app.domain.conversation.energy import (
     ENGAGED_ENERGY,
     LOW_ENERGY,
     asks_back,
-    blended_energy,
     record_energy,
     turn_energy,
     unsure,
@@ -19,13 +18,14 @@ from app.domain.conversation.models import (
     ReadinessResult,
     SessionStatus,
 )
-from app.domain.profile.merger import normalize_text
+from app.domain.profile.merger import normalize_text, taste_rank_score
 from app.domain.profile.models import LinkRole, SignalStatus, TasteField
 
 MAX_TURNS = 20
 # 충분하다고 보는 취향 개수. merger의 MAX_ACTIVE_QUERY_SIGNALS와 같아서 이 이상은 모으지 않는다.
-MIN_QUERY_SIGNALS = 5
-MIN_HIGH_CONFIDENCE_QUERY_SIGNALS = 2
+MIN_QUERY_SIGNALS = 6
+# 확실한 취향은 여러 번 말했거나 반복하는 활동이면 그만큼 더 쳐 준다(taste_rank_score).
+MIN_HIGH_CONFIDENCE_QUERY_SIGNALS = 3
 HIGH_CONFIDENCE_THRESHOLD = 0.6
 # 서로 다른 축에서 이만큼 취향이 나와야 추천에 쓸 만하다고 본다.
 MIN_TASTE_AXES = 2
@@ -45,9 +45,6 @@ _TOTAL_PROGRESS_WEIGHT = (
 # 바꿔도 계속 낮으면 그만하고 싶은 것으로 본다.
 COMPANION_LIGHTEN_STREAK = 2
 COMPANION_WRAP_STREAK = 4
-# 준비가 된 뒤 니쥬가 먼저 끝내는 때: 이 턴을 넘겼거나, 최고 에너지에서 이만큼 떨어졌을 때.
-COMPANION_CLOSE_AFTER_TURN = 14
-COMPANION_CLOSE_ENERGY_DROP = 0.2
 MOVE_HISTORY_LIMIT = 8
 # 한 화제에서 이어 묻는 꼬리 질문 수. 화제를 꺼낸 질문(첫인사, 화제 전환, 놀이, 되돌아가기)은
 # 세지 않는다. 기본은 두 번이고, 사용자 반응이 좋으면 네 번까지 이어 간다.
@@ -101,12 +98,14 @@ def _gear_known(state: ConversationState) -> bool:
     )
 
 
+def _high_confidence_count(query_signals) -> int:
+    return sum(taste_rank_score(signal) >= HIGH_CONFIDENCE_THRESHOLD for signal in query_signals)
+
+
 def recommendation_readiness(state: ConversationState) -> ReadinessResult:
     """추천에 쓸 만큼 모였는지. 싫어하는 것은 필수로 두면 별로였던 경험을 캐묻게 돼서 뺀다."""
     query_signals = _query_signals(state)
-    high_confidence_count = sum(
-        signal.confidence >= HIGH_CONFIDENCE_THRESHOLD for signal in query_signals
-    )
+    high_confidence_count = _high_confidence_count(query_signals)
     missing: list[str] = []
     if len(query_signals) < MIN_QUERY_SIGNALS:
         missing.append("query_signals")
@@ -129,9 +128,7 @@ def conversation_progress(state: ConversationState) -> int:
         return 100
 
     query_signals = _query_signals(state)
-    high_confidence_count = sum(
-        signal.confidence >= HIGH_CONFIDENCE_THRESHOLD for signal in query_signals
-    )
+    high_confidence_count = _high_confidence_count(query_signals)
     progress = (
         min(len(query_signals) / MIN_QUERY_SIGNALS, 1.0) * QUERY_PROGRESS_WEIGHT
         + min(high_confidence_count / MIN_HIGH_CONFIDENCE_QUERY_SIGNALS, 1.0)
@@ -172,16 +169,14 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     current: float | None = None
     if utterance:
         current = turn_energy(state, utterance)
-        energy: float | None = blended_energy(state, current)
         low_streak = state.low_energy_streak + 1 if current < LOW_ENERGY else 0
     else:
-        energy = state.energy
         low_streak = state.low_energy_streak
     if low_streak >= COMPANION_WRAP_STREAK:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
 
-    readiness = recommendation_readiness(state)
-    if readiness.sufficient and _good_moment_to_close(state, energy):
+    # 진행률이 100%가 되면 끝낸다. 화면의 진행률과 실제 종료가 어긋나지 않게 한다.
+    if recommendation_readiness(state).sufficient:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.SUFFICIENT)
 
     def chat(move: ConversationMove, scene: str | None = None) -> GoalDecision:
@@ -231,16 +226,6 @@ def _topic_done(state: ConversationState, current: float | None) -> bool:
     if count < TOPIC_FOLLOW_LIMIT:
         return False
     return current is None or current < ENGAGED_ENERGY
-
-
-def _good_moment_to_close(state: ConversationState, energy: float | None) -> bool:
-    """준비가 됐어도 즐겁게 이어지면 끝내지 않는다.
-
-    오래 했거나 에너지가 꺾이기 시작할 때 끝낸다.
-    """
-    if state.turn_count >= COMPANION_CLOSE_AFTER_TURN:
-        return True
-    return energy is not None and state.peak_energy - energy >= COMPANION_CLOSE_ENERGY_DROP
 
 
 def _return_topic(state: ConversationState, utterance: str) -> str | None:
