@@ -30,3 +30,7 @@ data/
 # Local catalog test databases
 .local/
 scripts/local_catalog/env.sh
+
+# Local Claude Code skills
+.claude/
+skills-lock.json
