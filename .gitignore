@@ -34,3 +34,7 @@ scripts/local_catalog/env.sh
 # Local Claude Code skills
 .claude/
 skills-lock.json
+
+# Local monitoring (vLLM 키, 실제 Pod 주소)
+monitoring/prometheus/secrets/
+monitoring/prometheus/targets/vllm.json
