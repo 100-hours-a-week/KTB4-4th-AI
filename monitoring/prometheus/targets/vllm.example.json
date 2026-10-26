@@ -1,0 +1,9 @@
+[
+  {
+    "targets": ["<pod-id>-8000.proxy.runpod.net"],
+    "labels": {
+      "pod": "<pod-id>",
+      "run": "baseline"
+    }
+  }
+]

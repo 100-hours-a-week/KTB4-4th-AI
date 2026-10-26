@@ -168,33 +168,33 @@ CALM_ANSWER = "네 친구랑 같이 갔어요"
 EXCITED_ANSWER = "그 캠핑장 별이 진짜 장난 아니었어요 ㅋㅋ 또 가고 싶어요"
 
 
-def test_two_follow_ups_then_shift_topic() -> None:
-    state = followed(companion_state(turn_count=3), "follow")
+def test_one_follow_up_then_shift_topic() -> None:
+    state = followed(companion_state(turn_count=3), "choice")
     assert decide_goal(state, CALM_ANSWER).move == ConversationMove.FOLLOW
 
-    state = followed(companion_state(turn_count=3), "choice", "follow", "follow")
+    state = followed(companion_state(turn_count=3), "choice", "follow")
     decision = decide_goal(state, CALM_ANSWER)
     assert decision.move == ConversationMove.SHIFT
     assert decision.scene in COMPANION_SCENES
 
 
-def test_engaged_user_keeps_topic_up_to_four_follow_ups() -> None:
-    for count in (2, 3):
+def test_engaged_user_keeps_topic_up_to_three_follow_ups() -> None:
+    for count in (1, 2):
         state = followed(companion_state(turn_count=5), *["follow"] * count)
         assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.FOLLOW
 
-    state = followed(companion_state(turn_count=5), "choice", *["follow"] * 4)
+    state = followed(companion_state(turn_count=5), "choice", *["follow"] * 3)
     assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.SHIFT
 
 
 def test_engaged_streak_ends_when_reaction_cools() -> None:
-    state = followed(companion_state(turn_count=5), "choice", "follow", "follow", "follow")
+    state = followed(companion_state(turn_count=5), "choice", "follow", "follow")
 
     assert decide_goal(state, CALM_ANSWER).move == ConversationMove.SHIFT
 
 
 def test_topic_done_offers_choices_when_none_were_offered_recently() -> None:
-    state = followed(companion_state(turn_count=3), "follow", "follow")
+    state = followed(companion_state(turn_count=3), "follow")
 
     decision = decide_goal(state, CALM_ANSWER)
     assert decision.move == ConversationMove.CHOICE
@@ -256,7 +256,7 @@ def test_topic_change_resets_follow_count_and_add_does_not() -> None:
 
 
 def test_asking_back_after_topic_is_done_answers_then_shifts() -> None:
-    state = followed(companion_state(turn_count=6), *["follow"] * 4)
+    state = followed(companion_state(turn_count=6), *["follow"] * 3)
 
     decision = decide_goal(state, "니쥬는 캠핑 가봤어요?")
     assert decision.move == ConversationMove.SHIFT

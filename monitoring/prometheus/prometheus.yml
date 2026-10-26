@@ -1,0 +1,21 @@
+global:
+  # 부하 테스트 중 대기열 변화를 놓치지 않도록 짧게 긁는다.
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: vllm
+    scheme: https
+    metrics_path: /metrics
+    # vLLM --api-key가 /metrics까지 막는 경우를 대비해 키를 같이 보낸다. 막지 않으면 무시된다.
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/vllm_api_key
+    # Pod 주소와 실험 이름(run)은 이 파일만 고치면 재시작 없이 반영된다.
+    file_sd_configs:
+      - files: [/etc/prometheus/targets/vllm.json]
+        refresh_interval: 15s
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

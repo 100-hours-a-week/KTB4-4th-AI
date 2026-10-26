@@ -719,6 +719,58 @@ def test_judgment_failure_marks_extraction_failed_without_breaking_turn() -> Non
     assert completed.reply == "언제 뛰세요?"
 
 
+def test_judgment_path_preserves_experience_motive_without_character_values() -> None:
+    gateway = FakeModelGateway(
+        [
+            {
+                "candidates": [
+                    {"subject": "내 마음대로 하는 시간", "kind": "attribute", "target": "여행"},
+                    {"subject": "성공을 위한 희생", "kind": "attribute", "target": "영화"},
+                ]
+            }
+        ]
+    )
+    judge = FakeJudgmentGateway(
+        {
+            "stance_0": {"type": "choice", "choice": "like", "confidence": 0.55},
+            "material_0": {"type": "choice", "choice": "taste", "confidence": 0.95},
+            "taste_axis_0": {"type": "choice", "choice": "motive.freedom", "confidence": 0.9},
+            "explicit_0": {"type": "noul", "noul": 0.9},
+            "evidence_0": {"type": "choice", "choice": "s0", "confidence": 0.9},
+            "stance_1": {"type": "choice", "choice": "other_person", "confidence": 0.95},
+            "material_1": {"type": "choice", "choice": "not_material", "confidence": 0.95},
+        }
+    )
+    service = ConversationService(
+        model_gateway=gateway,
+        extraction_model="extractor",
+        judgment_gateway=judge,
+        judgment_model="~typesafe/jev-latest",
+    )
+    state = ConversationState(user_id=1, conversation_room_id=101)
+
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance=(
+                "여행에선 내 마음대로 할 수 있어서 좋아요. "
+                "그 영화 주인공은 성공을 위해 다 포기했지만 제 얘기는 아니에요"
+            ),
+            raw_reply="그런 자유로움이 좋군요. 여행 말고도 마음 가는 대로 즐기는 게 있어요?",
+            goal=ConversationGoal.CHAT,
+        )
+    )
+
+    assert completed.extraction_failed is False
+    (motive,) = list(completed.state.profile.active_signals())
+    assert motive.field == TasteField.PREFERENCES
+    assert motive.value == "내 마음대로 하는 시간"
+    assert motive.aspect == PreferenceAspect.MOTIVE
+    assert motive.target == "여행"
+    assert motive.taxonomy_path == ("취향", "동기", "자유")
+    assert motive.evidence == "여행에선 내 마음대로 할 수 있어서 좋아요."
+
+
 def test_judgment_path_replaces_corrected_item_with_the_new_one() -> None:
     gateway = FakeModelGateway([{"candidates": [{"subject": "등산", "kind": "activity"}]}])
     judge = FakeJudgmentGateway(
