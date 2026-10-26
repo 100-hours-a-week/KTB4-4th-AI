@@ -1,6 +1,6 @@
 """판단 모델(TypeSafe Jev)로 취향을 추출한다.
 
-추출 모델은 발화에 나온 대상(후보)만 찾고, 후보마다 사용자의 태도는 판단 모델이 확률로 답한다.
+추출 모델은 문맥에서 대상과 선호·동기의 후보를 찾고, 사용자의 태도는 판단 모델이 확률로 답한다.
 어느 항목(field)에 넣을지는 태도와 대상 종류를 보고 코드가 정한다. 추출 모델이 칸부터 고르면
 "러닝은 싫어요"의 러닝이 관심사로 들어가는 식의 오류를 막을 방법이 없어서 역할을 나눴다.
 """
@@ -139,18 +139,24 @@ _MATERIAL_CRITERIA = {
     ),
     Material.TASTE: (
         "A quality, style, sensory feature, setting, or way of doing things that the user "
-        "prefers or avoids, such as a color, a flavor, doing things alone, or quiet places"
+        "prefers or avoids, such as a color, a flavor, doing things alone, or quiet places. "
+        "Also includes what the user explicitly values or seeks in an experience, such as "
+        "recharging, immersion, growth, connection, self-expression, or freedom"
     ),
     Material.LIFE_CONTEXT: "The user's ongoing living situation or routine that affects what "
     "they need",
     Material.NOT_MATERIAL: (
         "Too temporary, incidental, or not about the user to reveal what they like, such as "
-        "today's meal, the weather, being busy, a feeling, a reason, or someone else's taste"
+        "today's meal, the weather, being busy, a passing feeling or bodily reaction, or "
+        "someone else's taste. A fictional character's actions or values are not the user's. "
+        "An explicitly valued outcome or reason for choosing an experience is a taste clue, "
+        "not merely a passing feeling"
     ),
 }
 _TASTE_AXIS_CRITERIA = {
     **{axis.key: f"{axis.group}/{axis.name}: {axis.description}" for axis in TASTE_AXES},
-    "none": "None of these; it is not a preference about quality, style, or way of doing things",
+    "none": "None of these; it is not a preference about quality, style, way of doing things, "
+    "or what the user seeks in an experience",
 }
 _INTEREST_CATEGORY_CRITERIA = {
     **{category.key: category.description for category in INTEREST_CATEGORIES},
@@ -199,7 +205,8 @@ _QUERY_FIELDS = frozenset(
 # 같은 키를 쓰되 선호의 방향만 묻는다.
 _TASTE_STANCE_CRITERIA = {
     Stance.LIKE: (
-        "The user prefers, enjoys, deliberately chooses, or usually does things this way"
+        "The user prefers, enjoys, deliberately chooses, or usually does things this way, "
+        "or explicitly values or seeks this outcome in an experience"
     ),
     Stance.DISLIKE: "The user dislikes or avoids this quality, style, or way of doing things",
     Stance.USED_TO_LIKE: "The user preferred it in the past but no longer does",
