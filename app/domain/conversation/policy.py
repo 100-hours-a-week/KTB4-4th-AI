@@ -47,10 +47,10 @@ COMPANION_LIGHTEN_STREAK = 2
 COMPANION_WRAP_STREAK = 4
 MOVE_HISTORY_LIMIT = 8
 # 한 화제에서 이어 묻는 꼬리 질문 수. 화제를 꺼낸 질문(첫인사, 화제 전환, 놀이, 되돌아가기)은
-# 세지 않는다. 기본은 두 번이고, 사용자 반응이 좋으면 네 번까지 이어 간다.
+# 세지 않는다. 기본은 한 번이고, 사용자 반응이 좋으면 세 번까지 이어 간다.
 # 한 화제만 파면 같은 이야기의 세부만 쌓이고 다른 관심사가 안 나온다.
-TOPIC_FOLLOW_LIMIT = 2
-TOPIC_FOLLOW_LIMIT_ENGAGED = 4
+TOPIC_FOLLOW_LIMIT = 1
+TOPIC_FOLLOW_LIMIT_ENGAGED = 3
 # 화제를 넘길 때 최근 이만큼의 move 안에 선택지 move가 없으면 열린 질문 대신 선택지를 준다.
 # 질문-답만 이어지는 흐름을 중간중간 바꾼다.
 CHOICE_GAP = 6
