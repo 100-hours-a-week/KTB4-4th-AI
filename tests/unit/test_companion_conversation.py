@@ -178,19 +178,12 @@ def test_one_follow_up_then_shift_topic() -> None:
     assert decision.scene in COMPANION_SCENES
 
 
-def test_engaged_user_keeps_topic_up_to_three_follow_ups() -> None:
-    for count in (1, 2):
-        state = followed(companion_state(turn_count=5), *["follow"] * count)
-        assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.FOLLOW
+def test_engaged_user_keeps_topic_up_to_two_follow_ups() -> None:
+    state = followed(companion_state(turn_count=5), "choice", "follow")
+    assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.FOLLOW
 
-    state = followed(companion_state(turn_count=5), "choice", *["follow"] * 3)
-    assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.SHIFT
-
-
-def test_engaged_streak_ends_when_reaction_cools() -> None:
     state = followed(companion_state(turn_count=5), "choice", "follow", "follow")
-
-    assert decide_goal(state, CALM_ANSWER).move == ConversationMove.SHIFT
+    assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.SHIFT
 
 
 def test_topic_done_offers_choices_when_none_were_offered_recently() -> None:
