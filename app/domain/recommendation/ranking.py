@@ -51,11 +51,12 @@ def _match_contribution(
     match: VectorMatch,
     mode: RecommendationMode,
     now: datetime,
+    signal_weight: float = 1.0,
 ) -> float:
-    contribution = _normalized_similarity(match.similarity) * _decayed_confidence(
-        match,
-        mode,
-        now,
+    contribution = (
+        _normalized_similarity(match.similarity)
+        * _decayed_confidence(match, mode, now)
+        * signal_weight
     )
     if mode == RecommendationMode.GIFT:
         contribution *= _DEFERRAL_WEIGHT[match.query.signal.deferral_reason]
@@ -185,8 +186,12 @@ def rank_recommendations(
     boosts: Mapping[ProductKey, float] | None = None,
     boost_labels: Mapping[ProductKey, str] | None = None,
     recipient_name: str | None = None,
+    signal_weights: Mapping[str, float] | None = None,
+    product_weights: Mapping[ProductKey, float] | None = None,
 ) -> tuple[RankedRecommendation, ...]:
     """recipient_name 은 선물 목록 추천 이유에 넣는 받는 사람 이름이다. self 목록은 쓰지 않는다.
+
+    signal_weights 는 쿼리(query_id)마다, product_weights 는 상품마다 곱하는 피드백 배율이다.
 
     boost_labels 는 취향 가산을 준 선호 문장이다. 추천 이유에 "~ 취향도 반영했어요"로 붙는다.
     탐색 상품은 관심사 상품 뒤에 두고, 점수도 관심사 상품의 마지막 점수를 넘지 않게 맞춘다.
@@ -217,7 +222,12 @@ def rank_recommendations(
                 (
                     ScoredMatch(
                         match=match,
-                        contribution=_match_contribution(match, mode, evaluated_at),
+                        contribution=_match_contribution(
+                            match,
+                            mode,
+                            evaluated_at,
+                            (signal_weights or {}).get(match.query.query_id, 1.0),
+                        ),
                     )
                     for match in candidate_matches
                 ),
@@ -227,7 +237,9 @@ def rank_recommendations(
         )
         unique_signal_count = len({scored.match.query.query_id for scored in scored_matches})
         bonus = min(max(unique_signal_count - 1, 0) * _MULTI_SIGNAL_BONUS, 0.10)
-        raw_score = scored_matches[0].contribution + bonus + (boosts or {}).get(key, 0.0)
+        raw_score = (scored_matches[0].contribution + bonus + (boosts or {}).get(key, 0.0)) * (
+            product_weights or {}
+        ).get(key, 1.0)
         score = min(max(raw_score / _MAX_RAW_SCORE[mode], 0.0), 1.0)
         if score >= threshold:
             ranked.append((key, score, scored_matches))

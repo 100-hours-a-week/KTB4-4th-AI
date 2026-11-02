@@ -11,6 +11,7 @@ from app.application.ports.embedder import Embedder
 from app.domain.recommendation import (
     CatalogExclusion,
     CatalogSearchResult,
+    FeedbackSummary,
     ProductKey,
     RankedRecommendation,
     RecommendationGuide,
@@ -25,7 +26,9 @@ from app.domain.recommendation import (
     intent_key,
     is_coverage_query,
     is_interest_query,
+    owned_similar_weights,
     rank_recommendations,
+    signal_weights,
 )
 
 # 싫어하는 것·제약 조건과 이만큼 가까운 상품은 후보에서 뺀다. 코사인 유사도 기준이며
@@ -80,11 +83,14 @@ class RecommendationEngine:
         categories: Sequence[str] | None = None,
         recipient_name: str | None = None,
         intents: Mapping[str, SearchIntent] | None = None,
+        feedback: FeedbackSummary | None = None,
     ) -> RecommendationBatch:
         """categories 를 주면 그 카테고리 안에서만 찾는다(v2 카테고리 탭).
 
         recipient_name 은 선물 목록 추천 이유에 넣는 받는 사람 이름이다.
         intents 는 관심사별 검색 의도다. 없는 관심사는 템플릿 쿼리로 찾는다.
+        feedback 은 지난 추천에 남긴 피드백이다. 싫어요·구매 상품은 빼고, 그 상품을 고른 취향의
+        가중치와 이미 가진 것과 비슷한 상품의 점수를 조정한다.
         """
         queries = build_search_queries(signals, intents=intents)
         if not queries:
@@ -186,6 +192,13 @@ class RecommendationEngine:
             matches, guide.exclusions, exclusion_searches, guide.catalog_exclusion
         )
         boosts, boost_labels = _preference_boosts(guide.preferences, preference_searches)
+        query_weights: Mapping[str, float] = {}
+        product_weights: Mapping[ProductKey, float] = {}
+        if feedback is not None:
+            # 피드백 상품이 어느 취향에 걸렸는지는 제외하기 전의 검색 결과로 찾는다.
+            excluded = excluded | feedback.excluded
+            query_weights = signal_weights(matches, feedback)
+            product_weights = owned_similar_weights(matches, feedback)
         return RecommendationBatch(
             self=rank_recommendations(
                 matches,
@@ -195,6 +208,8 @@ class RecommendationEngine:
                 excluded=excluded,
                 boosts=boosts,
                 boost_labels=boost_labels,
+                signal_weights=query_weights,
+                product_weights=product_weights,
             ),
             gift=rank_recommendations(
                 matches,
@@ -205,6 +220,8 @@ class RecommendationEngine:
                 boosts=boosts,
                 boost_labels=boost_labels,
                 recipient_name=recipient_name,
+                signal_weights=query_weights,
+                product_weights=product_weights,
             ),
         )
 

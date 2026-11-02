@@ -320,7 +320,9 @@ def test_recommendation_reads_cached_intents_and_schedules_the_missing_ones() ->
     seen = {}
 
     class Engine:
-        async def recommend(self, signals, *, guide=None, recipient_name=None, intents=None):
+        async def recommend(
+            self, signals, *, guide=None, recipient_name=None, intents=None, feedback=None
+        ):
             seen.update(intents)
             return RecommendationBatch(self=(), gift=())
 

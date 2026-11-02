@@ -1,6 +1,13 @@
 """V1 search-query policy, ranking, score floors, and diversity rules."""
 
 from app.domain.recommendation.exclusions import CatalogExclusion, build_catalog_exclusion
+from app.domain.recommendation.feedback import (
+    FeedbackAction,
+    FeedbackSummary,
+    ProductFeedback,
+    owned_similar_weights,
+    signal_weights,
+)
 from app.domain.recommendation.intents import (
     INTENT_VERSION,
     InvalidSearchIntent,
@@ -33,7 +40,10 @@ __all__ = [
     "CatalogExclusion",
     "CatalogProduct",
     "CatalogSearchResult",
+    "FeedbackAction",
+    "FeedbackSummary",
     "InvalidSearchIntent",
+    "ProductFeedback",
     "ProductKey",
     "RankedRecommendation",
     "RecommendationGuide",
@@ -50,5 +60,7 @@ __all__ = [
     "interest_field_name",
     "is_coverage_query",
     "is_interest_query",
+    "owned_similar_weights",
     "rank_recommendations",
+    "signal_weights",
 ]
