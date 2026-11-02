@@ -52,6 +52,13 @@ from app.domain.conversation.policy import (
     recommendation_readiness,
     record_companion_turn,
 )
+from app.domain.profile.memory import (
+    LongTermMemory,
+    dropped_memory_keys,
+    long_absence,
+    opening_topic,
+    remembered_signals,
+)
 from app.domain.profile.merger import MergeResult, ProfileMerger, normalize_text
 from app.domain.profile.models import (
     DeferralReason,
@@ -62,6 +69,7 @@ from app.domain.profile.models import (
     IntentType,
     LinkRole,
     PreferenceAspect,
+    ProfileState,
     TasteField,
     utc_now,
 )
@@ -276,6 +284,7 @@ class ConversationService:
         user_id: int,
         conversation_room_id: int,
         onboarding: OnboardingProfile | None = None,
+        memory: LongTermMemory | None = None,
         now: datetime | None = None,
     ) -> PreparedSession:
         invalid_user_id = isinstance(user_id, bool) or user_id <= 0
@@ -289,11 +298,19 @@ class ConversationService:
             created_at=resolved_now,
             last_active_at=resolved_now,
             onboarding=onboarding,
+            memory=memory,
         )
         name = onboarding.address_name if onboarding else None
-        return PreparedSession(
-            state=state, messages=tuple(build_opening_messages(name=name, now=resolved_now))
+        topic = opening_topic(memory, resolved_now)
+        if topic is not None:
+            state.memory_recalled.append(topic)
+        messages = build_opening_messages(
+            name=name,
+            now=resolved_now,
+            memory_topic=topic,
+            long_absence=long_absence(memory, resolved_now),
         )
+        return PreparedSession(state=state, messages=tuple(messages))
 
     def record_opening(
         self,
@@ -426,11 +443,17 @@ class ConversationService:
         if extracted is None:
             return ExtractionDelta(), True
         candidates, axes = extracted
+        # 지난 대화의 기억도 이미 아는 값이다. 다시 나오면 판단에 넣어 확인한 시각을 새로 한다.
+        remembered = ProfileState(signals=remembered_signals(state.memory, state.last_active_at))
         candidates = without_frequency_variants(
             candidates,
-            known={signal.normalized_value for signal in state.profile.stored_signals()},
+            known={
+                signal.normalized_value
+                for signal in (*state.profile.stored_signals(), *remembered.signals)
+            },
         )
         candidates.extend(remention_candidates(state.profile, utterance, candidates))
+        candidates.extend(remention_candidates(remembered, utterance, candidates))
         request = build_judgment_request(
             state,
             utterance,
@@ -518,6 +541,9 @@ class ConversationService:
             context_utterances=state.user_turns()[-EXTRACTION_CONTEXT_USER_TURNS:],
         )
         state.profile = merge_result.profile
+        for key in dropped_memory_keys(state.memory, delta.drop):
+            if key not in state.memory_dropped:
+                state.memory_dropped.append(key)
         new_interests = [
             signal.value
             for signal in merge_result.accepted

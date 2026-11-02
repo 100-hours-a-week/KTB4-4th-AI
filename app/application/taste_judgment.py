@@ -16,6 +16,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from app.domain.conversation.models import ConversationState
+from app.domain.profile.memory import remembered_signals
 from app.domain.profile.merger import normalize_text
 from app.domain.profile.models import (
     DeferralReason,
@@ -376,6 +377,13 @@ def correction_targets(state: ConversationState, utterance: str) -> list[Profile
         return bool(signal.target) and normalize_text(signal.target or "") in text
 
     mentioned = [signal for signal in stored if mentioned_in_text(signal)]
+    # 지난 대화의 기억은 이번 발화에 나왔을 때만 고칠 대상이 된다. "요즘은 캠핑 안 가요"
+    heard = {(signal.field, signal.normalized_value) for signal in stored}
+    mentioned.extend(
+        signal
+        for signal in remembered_signals(state.memory, state.last_active_at)
+        if (signal.field, signal.normalized_value) not in heard and mentioned_in_text(signal)
+    )
     recent_turn = state.turn_count - RECENT_CORRECTION_TURNS + 1
     recent = sorted(
         (signal for signal in stored if signal.source_turn >= recent_turn),
