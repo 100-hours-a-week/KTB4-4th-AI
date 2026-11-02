@@ -162,7 +162,12 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
         "summary",
         "keywords",
         "recommendations",
+        "memory",
     }
+    assert closed.json()["memory"]["schemaVersion"] == "1.0"
+    assert closed.json()["memory"]["userId"] == 10293
+    assert closed.json()["memory"]["sessionCount"] == 1
+    assert [signal["value"] for signal in closed.json()["memory"]["signals"]] == ["캠핑"]
     assert closed.json()["conversationId"] == 45678
     assert closed.json()["summary"] == analysis.json()["profile"]["summary"]
     assert closed.json()["keywords"] == analysis.json()["profile"]["keywords"]
@@ -821,3 +826,178 @@ def test_summary_intro_is_corrected_to_the_full_username() -> None:
     )
     summary_prompt = gateway.completed_messages[2][0]["content"]
     assert '첫 문장은 "니쥬가 보기에 서동휘님은"으로 시작해서' in summary_prompt
+
+
+def _memory_app(recommendation_service: FakeRecommendationService, gateway: FakeModelGateway):
+    return create_app(
+        Settings(
+            app_env="test",
+            service_token="test-token",
+            redis_url=None,
+            response_model_base_url=None,
+            extraction_model_base_url=None,
+        ),
+        model_gateway=gateway,
+        session_store=InMemorySessionStore(),
+        recommendation_service=recommendation_service,
+    )
+
+
+def test_memory_from_one_conversation_carries_into_the_next() -> None:
+    recommendation_service = FakeRecommendationService()
+    gateway = FakeModelGateway(
+        completions=[
+            "안녕하세요! 요즘 어떻게 지내세요?",
+            "캠핑 좋죠. 주로 어디로 다니세요?",
+            "캠핑을 즐기는 분입니다.",
+            "또 왔네요! 요즘도 캠핑 자주 가요?",
+            "역시 캠핑이죠. 이번엔 어디 가요?",
+            "캠핑을 즐기는 분입니다.",
+        ]
+    )
+    app = _memory_app(recommendation_service, gateway)
+    headers = {"Authorization": "Bearer test-token"}
+    feedback = {
+        "items": [
+            {
+                "platform": "COUPANG",
+                "externalId": "12345",
+                "action": "DISLIKE",
+                "context": "PERSONAL",
+                "occurredAt": "2026-10-30T00:00:00Z",
+            }
+        ]
+    }
+
+    def talk(room: int, memory: dict | None, close_body: dict) -> dict:
+        created = client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": room, "memory": memory},
+        )
+        assert created.status_code == 201
+        client.post(
+            f"/v1/chat/sessions/{room}/messages",
+            headers=headers,
+            json={"userId": 10293, "message": "주말마다 캠핑 가요"},
+        )
+        client.post(f"/v1/chat/sessions/{room}/analysis", headers=headers)
+        closed = client.post(f"/v1/chat/sessions/{room}/close", headers=headers, json=close_body)
+        assert closed.status_code == 200
+        return closed.json()
+
+    with TestClient(app) as client:
+        first = talk(1, None, {"userId": 10293})
+        assert "feedback" not in recommendation_service.lists_payload
+        second = talk(2, first["memory"], {"userId": 10293, "feedback": feedback})
+
+    assert first["memory"]["sessionCount"] == 1
+    assert second["memory"]["sessionCount"] == 2
+    camping = second["memory"]["signals"][0]
+    assert camping["value"] == "캠핑"
+    assert camping["mentionCount"] == 2
+    assert second["memory"]["recalled"] == ["캠핑"]
+    assert recommendation_service.lists_payload["feedback"] == feedback
+
+
+def test_memory_of_another_user_is_rejected() -> None:
+    app = _memory_app(FakeRecommendationService(), FakeModelGateway())
+    memory = {
+        "schemaVersion": "1.0",
+        "userId": 1,
+        "sessionCount": 1,
+        "updatedAt": "2026-10-30T00:00:00Z",
+        "signals": [],
+        "axes": [],
+        "recalled": [],
+    }
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/chat/sessions",
+            headers={"Authorization": "Bearer test-token"},
+            json={"userId": 10293, "conversationRoomId": 3, "memory": memory},
+        )
+
+    assert created.status_code == 400
+    assert created.json()["code"] == "MEMORY_USER_MISMATCH"
+
+
+def test_summary_and_keywords_use_only_this_conversation_but_recommendations_use_memory() -> None:
+    class RecordingGateway(FakeModelGateway):
+        def __init__(self) -> None:
+            super().__init__(
+                completions=[
+                    "안녕하세요!",
+                    "캠핑 좋죠.",
+                    "캠핑을 즐기는 분입니다.",
+                    "또 왔네요!",
+                    "뜨개질 좋죠.",
+                    "뜨개질을 즐기는 분입니다.",
+                ]
+            )
+            self.completed: list[Sequence[Message]] = []
+
+        async def complete(self, messages: Sequence[Message], *, model: str) -> str:
+            self.completed.append(messages)
+            return await super().complete(messages, model=model)
+
+        async def structured(self, messages, *, model, json_schema):
+            utterance = "요즘 뜨개질 해요" if "뜨개질" in messages[-1]["content"] else "캠핑 가요"
+            value = "뜨개질" if utterance == "요즘 뜨개질 해요" else "캠핑"
+            return {
+                "items": [
+                    {
+                        "field": "hobbies",
+                        "value": value,
+                        "confidence": 0.9,
+                        "evidence": utterance,
+                        "evidenceType": "explicit",
+                        "intentType": "both",
+                        "deferralReason": None,
+                    }
+                ],
+                "axes": [],
+                "drop": [],
+            }
+
+    gateway = RecordingGateway()
+    recommendation_service = FakeRecommendationService()
+    app = _memory_app(recommendation_service, gateway)
+    headers = {"Authorization": "Bearer test-token"}
+
+    def talk(room: int, message: str, memory: dict | None) -> tuple[dict, dict]:
+        client.post(
+            "/v1/chat/sessions",
+            headers=headers,
+            json={"userId": 10293, "conversationRoomId": room, "memory": memory},
+        )
+        client.post(
+            f"/v1/chat/sessions/{room}/messages",
+            headers=headers,
+            json={"userId": 10293, "message": message},
+        )
+        analysis = client.post(f"/v1/chat/sessions/{room}/analysis", headers=headers)
+        closed = client.post(
+            f"/v1/chat/sessions/{room}/close", headers=headers, json={"userId": 10293}
+        )
+        return analysis.json(), closed.json()
+
+    with TestClient(app) as client:
+        _, first = talk(1, "캠핑 가요", None)
+        analysis, second = talk(2, "요즘 뜨개질 해요", first["memory"])
+
+    # 시스템 프롬프트의 작성 예시에도 캠핑이 나오므로 입력값만 본다.
+    summary_input = gateway.completed[-1][-1]
+    assert summary_input["role"] == "user"
+    assert "뜨개질" in summary_input["content"]
+    assert "캠핑" not in summary_input["content"]
+    assert [item["value"] for item in analysis["profile"]["keywords"]["interest"]] == ["뜨개질"]
+    assert [item["value"] for item in second["keywords"]["interest"]] == ["뜨개질"]
+    assert {
+        item["value"] for item in recommendation_service.lists_payload["profile"]["hobbies"]
+    } == {
+        "캠핑",
+        "뜨개질",
+    }
+    assert {signal["value"] for signal in second["memory"]["signals"]} == {"캠핑", "뜨개질"}

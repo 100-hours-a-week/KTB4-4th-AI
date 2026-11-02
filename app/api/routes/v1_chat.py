@@ -22,8 +22,9 @@ from app.api.schemas.chat import (
     UpdateChatAnalysisRequest,
 )
 from app.api.schemas.common import JAVA_LONG_MAX, ApiModel, to_camel
+from app.api.schemas.memory import ConversationMemory
 from app.api.schemas.profile import ProfileItem, ScoredProfileKeywords, TasteProfile
-from app.api.schemas.recommendation import RecommendationLists
+from app.api.schemas.recommendation import RecommendationFeedback, RecommendationLists
 from app.application.chat_use_cases import (
     AnalysisAlreadyCorrectedError,
     AnalysisKeywordsCanOnlyBeDeletedError,
@@ -51,6 +52,7 @@ from app.domain.conversation.policy import (
     conversation_progress,
     recommendation_readiness,
 )
+from app.domain.profile.memory import LongTermMemory
 from app.domain.profile.merger import taste_rank_score
 from app.domain.profile.models import ProfileSignal, TasteField
 
@@ -207,14 +209,22 @@ def recommendation_profile(result: ProfileAnalysis) -> dict[str, Any]:
     }
 
 
-def recommendation_payload(result: ProfileAnalysis) -> dict[str, Any]:
-    """추천 서비스 요청. 온보딩 값이 있으면 알레르기·선물 제외 조건과 관심 카테고리도 넘긴다."""
+def recommendation_payload(
+    result: ProfileAnalysis,
+    feedback: RecommendationFeedback | None = None,
+) -> dict[str, Any]:
+    """추천 서비스 요청. 온보딩 값이 있으면 알레르기·선물 제외 조건과 관심 카테고리도 넘긴다.
+
+    feedback 이 있으면 싫어요·구매 상품을 빼고 그 상품을 고른 취향의 가중치를 조정한다.
+    """
     payload: dict[str, Any] = {
         "userId": result.state.user_id,
         "profile": recommendation_profile(result),
     }
     if result.state.onboarding is not None:
         payload["onboarding"] = result.state.onboarding.recommendation_payload()
+    if feedback is not None:
+        payload["feedback"] = feedback.model_dump(mode="json", by_alias=True)
     return payload
 
 
@@ -245,6 +255,19 @@ def _analysis_response(analysis: ProfileAnalysis) -> AnalyzeChatSessionResponse:
     )
 
 
+def _memory(body: CreateChatSessionRequest) -> LongTermMemory | None:
+    """다른 사용자의 기억이 섞여 들어오면 대화에 쓰지 않고 거절한다."""
+    if body.memory is None:
+        return None
+    if body.memory.user_id != body.user_id:
+        raise ApiError(
+            status_code=400,
+            code="MEMORY_USER_MISMATCH",
+            message="memory.userId가 요청의 userId와 다릅니다.",
+        )
+    return body.memory.to_domain()
+
+
 @router.post(
     "/sessions",
     response_model=CreateChatSessionResponse,
@@ -259,6 +282,7 @@ async def create_chat_session(
             user_id=body.user_id,
             conversation_room_id=body.conversation_room_id,
             onboarding=body.user_profile.to_domain() if body.user_profile else None,
+            memory=_memory(body),
         )
     except Exception as error:
         _raise_chat_error(error)
@@ -485,7 +509,7 @@ async def close_chat_session(
             user_id=body.user_id,
         )
         recommendation_result = await recommendation_service.recommend_lists(
-            recommendation_payload(closable)
+            recommendation_payload(closable, body.feedback)
         )
         recommendations = RecommendationLists.model_validate(recommendation_result)
         finalized = await use_cases.close_session(conversation_room_id, user_id=body.user_id)
@@ -497,4 +521,5 @@ async def close_chat_session(
         summary=finalized.summary,
         keywords=_scored_keywords(finalized),
         recommendations=recommendations,
+        memory=ConversationMemory.from_domain(finalized.memory),
     )

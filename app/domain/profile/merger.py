@@ -76,7 +76,7 @@ _CONFIDENCE_CEILING = {
     EvidenceType.INFERRED: 0.65,
 }
 
-_EVIDENCE_PRIORITY = {
+EVIDENCE_PRIORITY = {
     EvidenceType.EXPLICIT: 3,
     EvidenceType.CONFIRMED: 2,
     EvidenceType.INFERRED: 1,
@@ -155,26 +155,38 @@ def _signal_sort_key(signal: ProfileSignal) -> tuple[float, ...]:
     return (
         taste_rank_score(signal),
         signal.confidence,
-        float(_EVIDENCE_PRIORITY[signal.evidence_type]),
+        float(EVIDENCE_PRIORITY[signal.evidence_type]),
         float(signal.mention_count),
         specificity,
         signal.updated_at.timestamp(),
     )
 
 
+# 새 상태가 들어오면 대체되는 이전 상태. 갖고 싶던 것을 사면 갖고 싶음에서 빠진다.
+PREVIOUS_STATES: dict[TasteField, frozenset[TasteField]] = {
+    TasteField.UNAFFORDABLE: frozenset({TasteField.WANTS}),
+    TasteField.WANTS: frozenset({TasteField.UNAFFORDABLE}),
+    TasteField.OWNED: frozenset({TasteField.WANTS, TasteField.UNAFFORDABLE}),
+}
+
+
 def _supersede_previous_state(signals: list[ProfileSignal], item: ExtractedItem) -> None:
-    transitions: dict[TasteField, set[TasteField]] = {
-        TasteField.UNAFFORDABLE: {TasteField.WANTS},
-        TasteField.WANTS: {TasteField.UNAFFORDABLE},
-        TasteField.OWNED: {TasteField.WANTS, TasteField.UNAFFORDABLE},
-    }
-    previous_fields = transitions.get(item.field, set())
+    previous_fields = PREVIOUS_STATES.get(item.field, frozenset())
     if not previous_fields:
         return
     normalized = normalize_text(item.value)
     for signal in signals:
         if signal.field in previous_fields and signal.normalized_value == normalized:
             signal.status = SignalStatus.SUPERSEDED
+
+
+def opposite_fields(field: TasteField) -> set[TasteField]:
+    """같은 대상이 함께 남으면 안 되는 반대쪽 칸."""
+    if field in POSITIVE_FIELDS:
+        return NEGATIVE_FIELDS
+    if field in NEGATIVE_FIELDS:
+        return POSITIVE_FIELDS
+    return set()
 
 
 def _polarity(field: TasteField) -> str:
@@ -242,7 +254,7 @@ def rank_by_group_strength(
     return ordered
 
 
-def _apply_working_set(signals: list[ProfileSignal]) -> None:
+def apply_working_set(signals: list[ProfileSignal]) -> None:
     eligible = [signal for signal in signals if signal.status != SignalStatus.SUPERSEDED]
     for signal in eligible:
         signal.status = SignalStatus.INACTIVE
@@ -370,8 +382,8 @@ class ProfileMerger:
                 existing.mention_count += 1
                 existing.evidence = item.evidence
                 if (
-                    _EVIDENCE_PRIORITY[item.evidence_type]
-                    >= _EVIDENCE_PRIORITY[existing.evidence_type]
+                    EVIDENCE_PRIORITY[item.evidence_type]
+                    >= EVIDENCE_PRIORITY[existing.evidence_type]
                 ):
                     existing.evidence_type = item.evidence_type
                 existing.intent_type = item.intent_type or existing.intent_type
@@ -418,7 +430,7 @@ class ProfileMerger:
             if len(merged.axes) < MAX_AXES:
                 merged.axes.append(cleaned)
 
-        _apply_working_set(merged.signals)
+        apply_working_set(merged.signals)
         return MergeResult(
             profile=merged,
             accepted=tuple(accepted),

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.conversation.energy import asks_back, unsure
 from app.domain.conversation.models import ConversationGoal, ConversationMove, ConversationState
+from app.domain.profile.memory import known_memory
 from app.domain.profile.merger import friend_signal_groups, taste_rank_score
 from app.domain.profile.models import ProfileSignal, ProfileState, TasteField
 from app.domain.profile.taxonomy import (
@@ -199,6 +200,19 @@ OPENING_INSTRUCTION = (
     "질문은 하나만 한다."
 )
 
+# 지난 대화가 있는 사용자의 첫인사. 지난 이야기는 코드가 하나만 골라 주고, 그것만 짧게 꺼낸다.
+# 기억을 길게 늘어놓으면 감시당하는 느낌이 들고 새 이야기가 나오지 않는다.
+RETURNING_OPENING_INSTRUCTION = (
+    "다시 찾아온 사용자와의 첫인사다. {absence}다시 만난 친구에게 하듯 반갑게 인사한다. "
+    "니쥬라고 다시 길게 소개하지 않는다.\n"
+    "[지난 이야기]\n지난번에 사용자가 '{topic}' 이야기를 했다.\n"
+    "이 이야기를 한마디로 짧게 꺼내고, 요즘은 어떤지 가볍게 하나만 묻는다. "
+    "지난번에 들은 다른 이야기를 덧붙이거나, 말하지 않은 내용을 기억하는 척하지 않는다.\n"
+    "인사는 한두 문장으로 짧게 하고, 요일이나 날씨, 지어낸 네 하루 이야기로 시작하지 않는다.\n"
+    "질문은 하나만 한다."
+)
+LONG_ABSENCE_NOTE = "꽤 오랜만에 왔다. "
+
 # 니쥬 대화의 시스템 프롬프트.
 # 니쥬가 어떤 대화 상대인지 풀어 쓰고, 제약은 응답 모양·질문·화제·말투로 묶어 한 번씩만 쓴다.
 # 응답은 받는 말 한마디 다음에 궁금한 것 하나를 묻는 모양이 기본이다.
@@ -361,6 +375,14 @@ COMPANION_MOVES = {
     ConversationMove.RETURN: (
         "사용자가 앞에서 '{scene}' 이야기를 즐겁게 했다. 지금 말과 이어지면 그 이야기로 돌아가 "
         "다른 쪽을 묻고, 어색하면 지금 이야기를 따라간다."
+    ),
+    ConversationMove.RECALL: (
+        "지금 이야기는 충분히 들었다. 방금 말을 짧게 받고, 이 이야기는 더 묻지 않는다. "
+        "지난번 대화에서 사용자가 '{scene}' 이야기를 했다. 오래된 기억이라 지금도 그런지 모른다. "
+        '"예전에 ~ 좋아한다고 하셨던 것 같은데 요즘도 그래요?"처럼 단정하지 않고 '
+        "가볍게 한 번 묻는다. "
+        "지금 이야기와 억지로 엮지 않고, 공통점이 없으면 지난 이야기가 생각났다고 솔직하게 꺼낸다. "
+        "질문은 하나만 한다."
     ),
     ConversationMove.SHIFT: (
         "지금 이야기는 충분히 들었다. 방금 말을 짧게 받고, 이 이야기는 더 묻지 않는다. "
@@ -736,7 +758,7 @@ KEYWORD_SYSTEM = """니쥬가 한 사람과 이야기하며 모은 취향 항목
 - 위 예시 단어는 형태만 보여 주는 것이다. 입력 항목에 없는 결을 예시에서 가져와 쓰지 않는다.
 
 [관심사]
-관심사는 "무엇에 관심을 가지고 있는가"에 대한 답이다.
+관심사는 "현재 무엇에 관심을 가지고 있는가"에 대한 답이다.
 시간과 마음을 쓰는 분야, 대상, 활동을 명사로 쓴다.
 - 언제, 어떻게 하는지 묘사한 말은 그 대상이나 활동 이름으로 바꾼다.
   ("샤워 후 바디로션 바르기" → "바디케어", "퇴근 후 요리" → "요리")
@@ -839,6 +861,16 @@ def build_reply_messages(
                 "이번 말에서 바꾼 내용이 있으면 이번 말을 따른다.",
             }
         )
+    memory_memo = _memory_memo(state)
+    if memory_memo:
+        messages.append(
+            {
+                "role": "system",
+                "content": f"지난 대화에서 알게 된 것: {memory_memo}. 이미 아는 것이라 다시 묻지 "
+                "않는다. 사용자가 먼저 꺼내지 않으면 지난 이야기를 끌어오지 않고, 지난번에 "
+                "들었다고 매번 말하지 않는다. 이번 말과 다르면 이번 말을 따른다.",
+            }
+        )
     messages.extend(turn.to_dict() for turn in state.history[-MAX_HISTORY_MESSAGES:])
     if goal == ConversationGoal.WRAP:
         # 정리하겠다는 안내는 응답 뒤에 고정 문장으로 붙는다(closing_reply).
@@ -880,6 +912,20 @@ def _companion_memo(state: ConversationState) -> str:
     )
 
 
+def _memory_memo(state: ConversationState) -> str:
+    """지난 대화에서 확실하게 알게 된 것 중 이번 대화에서 아직 나오지 않은 것."""
+    heard = {signal.normalized_value for signal in state.profile.stored_signals()}
+    signals = [
+        signal
+        for signal in known_memory(state.memory, state.last_active_at, limit=COMPANION_MEMO_ITEMS)
+        if signal.normalized_value not in heard
+    ]
+    return ", ".join(
+        f"{signal.value}({_MEMO_FIELD_LABELS.get(signal.field, signal.field.value)})"
+        for signal in signals
+    )
+
+
 def season_of(now: datetime) -> str:
     """한국 기준 계절. 3~5월 봄, 6~8월 여름, 9~10월 가을, 11~2월 겨울."""
     return _SEASONS[now.astimezone(_KOREA).month]
@@ -890,8 +936,27 @@ def build_opening_messages(
     rng: random.Random | None = None,
     name: str | None = None,
     now: datetime | None = None,
+    memory_topic: str | None = None,
+    long_absence: bool = False,
 ) -> list[dict[str, str]]:
-    """name 은 대화에서 부를 이름(address_name)이다. now 는 계절 소재의 계절을 정한다."""
+    """name 은 대화에서 부를 이름(address_name)이다. now 는 계절 소재의 계절을 정한다.
+
+    memory_topic 이 있으면 지난 대화가 있는 사용자다. 소재 대신 그 이야기를 짧게 꺼낸다.
+    """
+    if memory_topic:
+        messages = [
+            {"role": "system", "content": SYSTEM_COMPANION},
+            {
+                "role": "system",
+                "content": RETURNING_OPENING_INSTRUCTION.format(
+                    topic=memory_topic,
+                    absence=LONG_ABSENCE_NOTE if long_absence else "",
+                ),
+            },
+        ]
+        if name:
+            messages.append({"role": "system", "content": ADDRESS_NOTE.format(name=name)})
+        return messages
     chooser = rng or random
     area = chooser.choice(tuple(OPENING_TOPIC_AREAS))
     topic = chooser.choice(OPENING_TOPIC_AREAS[area])

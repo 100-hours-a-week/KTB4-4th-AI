@@ -34,8 +34,9 @@ from app.domain.profile.keywords import (
     composed_keywords,
     fallback_keywords,
 )
+from app.domain.profile.memory import LongTermMemory, combined_profile, merge_memory
 from app.domain.profile.merger import friend_summary_values, ranked_friend_signals
-from app.domain.profile.models import ProfileState, TasteField
+from app.domain.profile.models import ProfileState, TasteField, utc_now
 from app.domain.profile.onboarding import OnboardingProfile
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,8 @@ class ProfileAnalysis:
     interest_keywords: tuple[str, ...]
     keyword_scores: Mapping[str, float]
     readiness: ReadinessResult
+    # 대화를 닫을 때만 채운다. Backend가 저장했다가 다음 대화방을 만들 때 다시 보낸다.
+    memory: LongTermMemory | None = None
 
 
 class ChatUseCases:
@@ -217,6 +220,7 @@ class ChatUseCases:
         user_id: int,
         conversation_room_id: int,
         onboarding: OnboardingProfile | None = None,
+        memory: LongTermMemory | None = None,
     ) -> StartedSession:
         lock = self._lock(conversation_room_id)
         async with lock:
@@ -226,6 +230,7 @@ class ChatUseCases:
                 user_id=user_id,
                 conversation_room_id=conversation_room_id,
                 onboarding=onboarding,
+                memory=memory,
             )
             greeting = await self._complete(
                 prepared.messages,
@@ -451,15 +456,34 @@ class ChatUseCases:
         if state.status in {SessionStatus.INPUT_LOCKED, SessionStatus.REVIEW}:
             raise SessionInputLockedError(state.session_id)
 
-    def _stored_analysis(self, state: ConversationState) -> ProfileAnalysis:
+    @staticmethod
+    def _analysis_profile(state: ConversationState) -> ProfileState:
+        """추천에 쓰는 프로필. 지난 대화의 기억 위에 이번 대화 결과를 얹는다.
+
+        요약과 키워드는 그날 대화만 보여 주므로 state.profile 을 쓴다.
+        """
+        return combined_profile(
+            state.memory,
+            state.profile,
+            now=state.last_active_at,
+            dropped=state.memory_dropped,
+        )
+
+    def _stored_analysis(
+        self,
+        state: ConversationState,
+        *,
+        memory: LongTermMemory | None = None,
+    ) -> ProfileAnalysis:
         return ProfileAnalysis(
             state=state,
-            profile=state.profile,
+            profile=self._analysis_profile(state),
             summary=state.analysis_summary,
             taste_keywords=tuple(state.analysis_taste_keywords),
             interest_keywords=tuple(state.analysis_interest_keywords),
             keyword_scores=dict(state.analysis_keyword_scores),
             readiness=recommendation_readiness(state),
+            memory=memory,
         )
 
     @staticmethod
@@ -508,8 +532,8 @@ class ChatUseCases:
 
             # 요약과 키워드는 서로의 결과를 쓰지 않으므로 함께 만든다.
             summary, (taste_keywords, interest_keywords) = await asyncio.gather(
-                self._friend_summary(state, session_id),
-                self._keywords(state, session_id),
+                self._friend_summary(state, state.profile, session_id),
+                self._keywords(state.profile, session_id),
             )
 
             state.analysis_turn_count = state.turn_count
@@ -524,15 +548,17 @@ class ChatUseCases:
             await self._states.save(state)
             return self._stored_analysis(state)
 
-    async def _friend_summary(self, state: ConversationState, session_id: int) -> str | None:
-        if not any(friend_summary_values(state.profile).values()):
+    async def _friend_summary(
+        self, state: ConversationState, profile: ProfileState, session_id: int
+    ) -> str | None:
+        if not any(friend_summary_values(profile).values()):
             return None
         name = state.onboarding.display_name if state.onboarding else None
         address = state.onboarding.address_name if state.onboarding else None
         try:
             return fix_summary_intro(
                 await self._complete(
-                    build_friend_summary_messages(state.profile, name=name),
+                    build_friend_summary_messages(profile, name=name),
                     timeout_seconds=self._summary_timeout_seconds,
                     purpose="summary",
                     session_id=session_id,
@@ -544,19 +570,19 @@ class ChatUseCases:
             return None
 
     async def _keywords(
-        self, state: ConversationState, session_id: int
+        self, profile: ProfileState, session_id: int
     ) -> tuple[list[Keyword], list[Keyword]]:
         """취향·관심사 키워드. 모델이 저장 값을 묶어 이름 붙이고, 못 쓰면 저장 값에서 만든다.
 
         취향과 관심사는 따로 검증하고 따로 대체한다. 한쪽만 틀려도 다른 쪽 결과는 살린다.
         """
         # 요약처럼 활성 한도 밖으로 밀린 항목도 넘긴다. 같은 결의 항목을 묶는 재료가 된다.
-        tastes = ranked_friend_signals(state.profile, _TASTE_KEYWORD_FIELDS, include_inactive=True)[
+        tastes = ranked_friend_signals(profile, _TASTE_KEYWORD_FIELDS, include_inactive=True)[
             :KEYWORD_INPUT_LIMIT
         ]
-        interests = ranked_friend_signals(
-            state.profile, _INTEREST_KEYWORD_FIELDS, include_inactive=True
-        )[:KEYWORD_INPUT_LIMIT]
+        interests = ranked_friend_signals(profile, _INTEREST_KEYWORD_FIELDS, include_inactive=True)[
+            :KEYWORD_INPUT_LIMIT
+        ]
         raw: Mapping[str, object] = {}
         if self._keyword_model is not None and (tastes or interests):
             started = time.monotonic()
@@ -637,4 +663,12 @@ class ChatUseCases:
             )
             state.finalized = True
             await self._states.save(state)
-            return self._stored_analysis(state)
+            memory = merge_memory(
+                state.memory,
+                state.profile,
+                user_id=state.user_id,
+                now=utc_now(),
+                dropped=state.memory_dropped,
+                recalled=state.memory_recalled,
+            )
+            return self._stored_analysis(state, memory=memory)

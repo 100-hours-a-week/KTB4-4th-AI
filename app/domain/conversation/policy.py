@@ -18,6 +18,7 @@ from app.domain.conversation.models import (
     ReadinessResult,
     SessionStatus,
 )
+from app.domain.profile.memory import recheck_topic
 from app.domain.profile.merger import normalize_text, taste_rank_score
 from app.domain.profile.models import LinkRole, SignalStatus, TasteField
 
@@ -47,13 +48,16 @@ COMPANION_LIGHTEN_STREAK = 2
 COMPANION_WRAP_STREAK = 4
 MOVE_HISTORY_LIMIT = 8
 # 한 화제에서 이어 묻는 꼬리 질문 수. 화제를 꺼낸 질문(첫인사, 화제 전환, 놀이, 되돌아가기)은
-# 세지 않는다. 기본은 한 번이고, 사용자 반응이 좋으면 세 번까지 이어 간다.
+# 세지 않는다. 기본은 한 번이고, 사용자 반응이 좋으면 두 번까지 이어 간다.
 # 한 화제만 파면 같은 이야기의 세부만 쌓이고 다른 관심사가 안 나온다.
 TOPIC_FOLLOW_LIMIT = 1
-TOPIC_FOLLOW_LIMIT_ENGAGED = 3
+TOPIC_FOLLOW_LIMIT_ENGAGED = 2
 # 화제를 넘길 때 최근 이만큼의 move 안에 선택지 move가 없으면 열린 질문 대신 선택지를 준다.
 # 질문-답만 이어지는 흐름을 중간중간 바꾼다.
 CHOICE_GAP = 6
+# 지난 대화의 기억을 다시 확인하는 건 이 턴 이후 한 번만 한다. 첫인사에서 이미 지난 이야기를
+# 꺼냈으니 대화 초반에는 이번 대화 이야기를 먼저 듣는다.
+MIN_RECALL_TURN = 4
 
 # 에너지가 낮을 때나 다른 화제로 넘어갈 때 가볍게 던지는 소재. 한마디로 답할 수 있는 것만 두고,
 # 부족한 추천 항목으로 화제를 고르지 않는다.
@@ -201,6 +205,9 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
             return chat(ConversationMove.CHOICE, _pick_scene(state))
         return chat(ConversationMove.ADD)
     if topic_done:
+        recall = _recall_topic(state)
+        if recall is not None:
+            return chat(ConversationMove.RECALL, recall)
         if ConversationMove.CHOICE.value not in state.move_history[-CHOICE_GAP:]:
             return chat(ConversationMove.CHOICE, _pick_scene(state))
         return chat(ConversationMove.SHIFT, _pick_scene(state))
@@ -243,6 +250,18 @@ def _return_topic(state: ConversationState, utterance: str) -> str | None:
     return topic
 
 
+def _recall_topic(state: ConversationState) -> str | None:
+    """다시 확인할 지난 대화의 관심사. 이번 대화에서 이미 나온 것과 꺼낸 것은 빼고 한 번만 한다."""
+    if state.memory is None or state.memory_rechecked or state.turn_count < MIN_RECALL_TURN:
+        return None
+    heard = [signal.value for signal in state.profile.signals]
+    return recheck_topic(
+        state.memory,
+        state.last_active_at,
+        exclude=[*heard, *state.memory_recalled],
+    )
+
+
 def _pick_scene(state: ConversationState) -> str | None:
     """사용하지 않은 참고 소재를 고른다. 실제 화제는 사용자 발화의 맥락이 결정한다."""
     offset = state.conversation_room_id % len(COMPANION_SCENES)
@@ -274,6 +293,9 @@ def record_companion_turn(
         state.returned_topics.append(scene)
     if move in {ConversationMove.CHOICE, ConversationMove.SHIFT} and scene:
         state.used_scenes.append(scene)
+    if move == ConversationMove.RECALL and scene:
+        state.memory_recalled.append(scene)
+        state.memory_rechecked = True
 
 
 def known_query_values(state: ConversationState) -> set[str]:

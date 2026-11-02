@@ -3,8 +3,9 @@ from datetime import date, datetime
 from pydantic import Field
 
 from app.api.schemas.common import ApiModel, ConversationRoomId, MessageId, UserId
+from app.api.schemas.memory import ConversationMemory
 from app.api.schemas.profile import ProfileKeywords, ScoredProfileKeywords
-from app.api.schemas.recommendation import RecommendationLists
+from app.api.schemas.recommendation import RecommendationFeedback, RecommendationLists
 from app.domain.profile.onboarding import (
     Allergy,
     Gender,
@@ -40,6 +41,8 @@ class CreateChatSessionRequest(ApiModel):
     conversation_room_id: ConversationRoomId
     # 없으면 온보딩 조건 없이 추천한다.
     user_profile: OnboardingUserProfile | None = None
+    # 지난 대화를 닫을 때 받은 memory 를 그대로 보낸다. 첫 대화면 null 이다.
+    memory: ConversationMemory | None = None
 
 
 class CreateChatSessionResponse(ApiModel):
@@ -103,6 +106,8 @@ class UpdateChatAnalysisRequest(ApiModel):
 
 class CloseChatSessionRequest(ApiModel):
     user_id: UserId
+    # 지난 추천에 남긴 피드백. 없으면 피드백 없이 추천한다.
+    feedback: RecommendationFeedback | None = None
 
 
 class CloseChatSessionResponse(ApiModel):
@@ -111,3 +116,5 @@ class CloseChatSessionResponse(ApiModel):
     summary: str | None
     keywords: ScoredProfileKeywords
     recommendations: RecommendationLists
+    # 이번 대화를 합친 새 장기 기억. Backend는 기존 값을 이 값으로 바꿔 저장한다.
+    memory: ConversationMemory
