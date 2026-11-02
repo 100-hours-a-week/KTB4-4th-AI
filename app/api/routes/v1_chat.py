@@ -23,7 +23,7 @@ from app.api.schemas.chat import (
 )
 from app.api.schemas.common import JAVA_LONG_MAX, ApiModel, to_camel
 from app.api.schemas.profile import ProfileItem, ScoredProfileKeywords, TasteProfile
-from app.api.schemas.recommendation import RecommendationLists
+from app.api.schemas.recommendation import RecommendationFeedback, RecommendationLists
 from app.application.chat_use_cases import (
     AnalysisAlreadyCorrectedError,
     AnalysisKeywordsCanOnlyBeDeletedError,
@@ -207,14 +207,22 @@ def recommendation_profile(result: ProfileAnalysis) -> dict[str, Any]:
     }
 
 
-def recommendation_payload(result: ProfileAnalysis) -> dict[str, Any]:
-    """추천 서비스 요청. 온보딩 값이 있으면 알레르기·선물 제외 조건과 관심 카테고리도 넘긴다."""
+def recommendation_payload(
+    result: ProfileAnalysis,
+    feedback: RecommendationFeedback | None = None,
+) -> dict[str, Any]:
+    """추천 서비스 요청. 온보딩 값이 있으면 알레르기·선물 제외 조건과 관심 카테고리도 넘긴다.
+
+    feedback 이 있으면 싫어요·구매 상품을 빼고 그 상품을 고른 취향의 가중치를 조정한다.
+    """
     payload: dict[str, Any] = {
         "userId": result.state.user_id,
         "profile": recommendation_profile(result),
     }
     if result.state.onboarding is not None:
         payload["onboarding"] = result.state.onboarding.recommendation_payload()
+    if feedback is not None:
+        payload["feedback"] = feedback.model_dump(mode="json", by_alias=True)
     return payload
 
 
@@ -485,7 +493,7 @@ async def close_chat_session(
             user_id=body.user_id,
         )
         recommendation_result = await recommendation_service.recommend_lists(
-            recommendation_payload(closable)
+            recommendation_payload(closable, body.feedback)
         )
         recommendations = RecommendationLists.model_validate(recommendation_result)
         finalized = await use_cases.close_session(conversation_room_id, user_id=body.user_id)

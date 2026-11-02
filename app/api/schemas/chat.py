@@ -4,7 +4,7 @@ from pydantic import Field
 
 from app.api.schemas.common import ApiModel, ConversationRoomId, MessageId, UserId
 from app.api.schemas.profile import ProfileKeywords, ScoredProfileKeywords
-from app.api.schemas.recommendation import RecommendationLists
+from app.api.schemas.recommendation import RecommendationFeedback, RecommendationLists
 from app.domain.profile.onboarding import (
     Allergy,
     Gender,
@@ -103,6 +103,8 @@ class UpdateChatAnalysisRequest(ApiModel):
 
 class CloseChatSessionRequest(ApiModel):
     user_id: UserId
+    # 지난 추천에 남긴 피드백. 없으면 피드백 없이 추천한다.
+    feedback: RecommendationFeedback | None = None
 
 
 class CloseChatSessionResponse(ApiModel):
