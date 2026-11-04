@@ -22,6 +22,7 @@ from app.application.conversation_prompts import (
     build_opening_messages,
     build_reply_messages,
 )
+from app.application.llm_trace import llm_call
 from app.application.ports.judgment_gateway import JudgmentGateway
 from app.application.ports.model_gateway import Message, ModelGateway
 from app.application.taste_judgment import (
@@ -369,11 +370,12 @@ class ConversationService:
             async with asyncio.timeout(self._extraction_timeout_seconds):
                 for _ in range(self._extraction_retries + 1):
                     try:
-                        raw = await self._model_gateway.structured(
-                            messages,
-                            model=self._extraction_model,
-                            json_schema=schema,
-                        )
+                        with llm_call("extraction"):
+                            raw = await self._model_gateway.structured(
+                                messages,
+                                model=self._extraction_model,
+                                json_schema=schema,
+                            )
                         delta, dropped = parse_extraction(raw)
                         if dropped:
                             logger.info("extraction items dropped: %s", dropped)
@@ -406,11 +408,12 @@ class ConversationService:
             async with asyncio.timeout(self._extraction_timeout_seconds):
                 for _ in range(self._extraction_retries + 1):
                     try:
-                        raw = await self._model_gateway.structured(
-                            messages,
-                            model=self._extraction_model,
-                            json_schema=schema,
-                        )
+                        with llm_call("candidates"):
+                            raw = await self._model_gateway.structured(
+                                messages,
+                                model=self._extraction_model,
+                                json_schema=schema,
+                            )
                         candidates, axes, dropped = parse_candidates(raw)
                         if dropped:
                             logger.info("candidates dropped: %s", dropped)
@@ -467,11 +470,12 @@ class ConversationService:
             async with asyncio.timeout(self._judgment_timeout_seconds):
                 for _ in range(self._extraction_retries + 1):
                     try:
-                        body = await judgment_gateway.decide(
-                            request.state,
-                            request.questions,
-                            model=judgment_model,
-                        )
+                        with llm_call("judgment"):
+                            body = await judgment_gateway.decide(
+                                request.state,
+                                request.questions,
+                                model=judgment_model,
+                            )
                         break
                     except Exception as error:
                         logger.warning(

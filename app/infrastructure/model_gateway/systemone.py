@@ -5,7 +5,11 @@ from typing import Any
 
 import httpx
 
-from app.infrastructure.model_gateway.openai_compatible import ModelGatewayError, request_error
+from app.infrastructure.model_gateway.openai_compatible import (
+    ModelGatewayError,
+    openrouter_trace_fields,
+    request_error,
+)
 
 
 class SystemOneJudgmentGateway:
@@ -17,10 +21,12 @@ class SystemOneJudgmentGateway:
         client: httpx.AsyncClient,
         base_url: str,
         api_key: str | None = None,
+        trace_environment: str | None = None,
     ) -> None:
         self._client = client
         self._url = f"{base_url.rstrip('/')}/systemone"
         self._api_key = api_key
+        self._trace_environment = trace_environment
 
     async def decide(
         self,
@@ -34,7 +40,12 @@ class SystemOneJudgmentGateway:
             response = await self._client.post(
                 self._url,
                 headers=headers,
-                json={"model": model, "state": state, "questions": questions},
+                json={
+                    "model": model,
+                    "state": state,
+                    "questions": questions,
+                    **openrouter_trace_fields(self._url, self._trace_environment),
+                },
             )
             response.raise_for_status()
             body = response.json()

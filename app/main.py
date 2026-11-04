@@ -89,6 +89,7 @@ def _build_model_gateway(
                 model_base_urls={fallback_model: str(base_url)},
                 model_max_tokens={fallback_model: max_tokens},
                 api_key=fallback_api_key,
+                trace_environment=settings.app_env,
             ),
             model=fallback_model,
         )
@@ -102,6 +103,7 @@ def _build_model_gateway(
             settings.document_model_name: settings.document_model_max_tokens,
         },
         api_key=api_key,
+        trace_environment=settings.app_env,
         # 폴백이 없으면 기다리는 것 말고 할 수 있는 게 없으니 제한을 걸지 않는다.
         timeout=(
             httpx.Timeout(
@@ -196,6 +198,7 @@ def create_app(
                 client=http_client,
                 base_url=str(resolved_settings.judgment_model_base_url),
                 api_key=openrouter_api_key,
+                trace_environment=resolved_settings.app_env,
             )
 
         resolved_session_store = session_store

@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.application.llm_trace import llm_call
 from app.application.ports.model_gateway import ModelGateway
 from app.application.ports.search_intent_store import SearchIntentStore
 from app.application.search_intent_prompts import (
@@ -150,13 +151,14 @@ class SearchIntentService:
         # 관심사 값은 사용자 발화에서 온 것이라 로그에 남기지 않는다.
         try:
             async with self._semaphore, asyncio.timeout(self._timeout_seconds):
-                payload = await self._gateway.structured(
-                    build_search_intent_messages(
-                        target.value, interest_field_name(target.taxonomy_path)
-                    ),
-                    model=self._model,
-                    json_schema=SEARCH_INTENT_SCHEMA,
-                )
+                with llm_call("search_intent"):
+                    payload = await self._gateway.structured(
+                        build_search_intent_messages(
+                            target.value, interest_field_name(target.taxonomy_path)
+                        ),
+                        model=self._model,
+                        json_schema=SEARCH_INTENT_SCHEMA,
+                    )
             await self._store.save(target.key, SearchIntent.from_payload(intent_payload(payload)))
             return 1
         except asyncio.CancelledError:

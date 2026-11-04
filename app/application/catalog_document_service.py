@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.application.catalog_document_prompts import build_document_messages, build_json_schema
+from app.application.llm_trace import llm_call
 from app.application.ports.model_gateway import ModelGateway
 from app.domain.catalog.labels import (
     CATEGORY_LABELS,
@@ -107,11 +108,12 @@ class CatalogDocumentService:
 
     async def generate(self, product: DocumentSourceProduct) -> ProductEnrichment:
         async with self._semaphore:
-            payload = await self._gateway.structured(
-                build_document_messages(product),
-                model=self._model,
-                json_schema=build_json_schema(product),
-            )
+            with llm_call("catalog_document"):
+                payload = await self._gateway.structured(
+                    build_document_messages(product),
+                    model=self._model,
+                    json_schema=build_json_schema(product),
+                )
         return self._to_enrichment(product, payload)
 
     def _to_enrichment(

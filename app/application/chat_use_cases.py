@@ -13,6 +13,7 @@ from app.application.conversation_prompts import (
 )
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
+from app.application.llm_trace import bind_llm_session, llm_call
 from app.application.ports.model_gateway import ModelGateway
 from app.application.search_intent_service import (
     SearchIntentService,
@@ -185,10 +186,11 @@ class ChatUseCases:
         started = time.monotonic()
         try:
             async with asyncio.timeout(timeout_seconds):
-                return await self._model_gateway.complete(
-                    messages,
-                    model=self._response_model,
-                )
+                with llm_call(purpose):
+                    return await self._model_gateway.complete(
+                        messages,
+                        model=self._response_model,
+                    )
         except TimeoutError as error:
             logger.warning(
                 "response model failed: purpose=%s session=%s model=%s elapsed_ms=%d "
@@ -222,6 +224,7 @@ class ChatUseCases:
         onboarding: OnboardingProfile | None = None,
         memory: LongTermMemory | None = None,
     ) -> StartedSession:
+        bind_llm_session(conversation_room_id, user_id=user_id)
         lock = self._lock(conversation_room_id)
         async with lock:
             if await self._states.load(conversation_room_id) is not None:
@@ -251,6 +254,7 @@ class ChatUseCases:
         *,
         user_id: int,
     ) -> CompletedTurn:
+        bind_llm_session(session_id, user_id=user_id)
         lock = self._lock(session_id)
         if lock.locked():
             raise TurnInProgressError(session_id)
@@ -326,6 +330,7 @@ class ChatUseCases:
         턴은 끝까지 생성하고 정리한 뒤에만 저장한다. 도중에 실패하거나 호출한 쪽이 끊으면(취소)
         저장하지 않으므로, 같은 메시지를 다시 보내 처음부터 생성할 수 있다.
         """
+        bind_llm_session(session_id, user_id=user_id)
         lock = self._lock(session_id)
         if lock.locked():
             raise TurnInProgressError(session_id)
@@ -421,11 +426,12 @@ class ChatUseCases:
         started = time.monotonic()
         try:
             async with asyncio.timeout(self._response_timeout_seconds):
-                async for token in self._model_gateway.stream(
-                    messages,
-                    model=self._response_model,
-                ):
-                    yield token
+                with llm_call("reply"):
+                    async for token in self._model_gateway.stream(
+                        messages,
+                        model=self._response_model,
+                    ):
+                        yield token
         except TimeoutError as error:
             logger.warning(
                 "response model failed: purpose=reply_stream session=%s model=%s elapsed_ms=%d "
@@ -530,6 +536,7 @@ class ChatUseCases:
                 await self._states.save(state)
                 return self._stored_analysis(state)
 
+            bind_llm_session(session_id, user_id=state.user_id)
             # 요약과 키워드는 서로의 결과를 쓰지 않으므로 함께 만든다.
             summary, (taste_keywords, interest_keywords) = await asyncio.gather(
                 self._friend_summary(state, state.profile, session_id),
@@ -588,11 +595,12 @@ class ChatUseCases:
             started = time.monotonic()
             try:
                 async with asyncio.timeout(self._summary_timeout_seconds):
-                    raw = await self._model_gateway.structured(
-                        build_keyword_messages(tastes, interests),
-                        model=self._keyword_model,
-                        json_schema=KeywordSetPayload.model_json_schema(),
-                    )
+                    with llm_call("keywords"):
+                        raw = await self._model_gateway.structured(
+                            build_keyword_messages(tastes, interests),
+                            model=self._keyword_model,
+                            json_schema=KeywordSetPayload.model_json_schema(),
+                        )
             except Exception as error:
                 describe = getattr(error, "describe", None)
                 logger.warning(

@@ -305,7 +305,14 @@ def test_judgment_uses_openrouter_key_while_responses_use_vllm_key(
     keys: dict[str, str | None] = {}
 
     class CapturingJudgment:
-        def __init__(self, *, client: httpx.AsyncClient, base_url: str, api_key: str | None):
+        def __init__(
+            self,
+            *,
+            client: httpx.AsyncClient,
+            base_url: str,
+            api_key: str | None,
+            trace_environment: str | None,
+        ):
             keys["judgment"] = api_key
 
     monkeypatch.setattr(main_module, "SystemOneJudgmentGateway", CapturingJudgment)

@@ -6,10 +6,34 @@ from typing import Any
 
 import httpx
 
+from app.application.llm_trace import current_llm_trace
 from app.application.ports.model_gateway import Message
 
 # 로그에 남기는 상위 응답 본문의 최대 길이.
 UPSTREAM_DETAIL_CHARS = 300
+
+OPENROUTER_HOST = "openrouter.ai"
+
+
+def openrouter_trace_fields(url: str, environment: str | None) -> dict[str, Any]:
+    """OpenRouter Broadcast가 Langfuse로 넘기는 값. 다른 엔드포인트에는 보내지 않는다."""
+    if httpx.URL(url).host != OPENROUTER_HOST:
+        return {}
+    current = current_llm_trace()
+    fields: dict[str, Any] = {}
+    if current.session_id is not None:
+        fields["session_id"] = current.session_id
+    if current.user_id is not None:
+        fields["user"] = current.user_id
+    trace: dict[str, str] = {}
+    if current.name is not None:
+        trace["trace_name"] = current.name
+        trace["generation_name"] = current.name
+    if environment is not None:
+        trace["environment"] = environment
+    if trace:
+        fields["trace"] = trace
+    return fields
 
 
 class ModelGatewayError(RuntimeError):
@@ -100,8 +124,10 @@ class OpenAICompatibleModelGateway:
         model_temperatures: Mapping[str, float] | None = None,
         model_stop_sequences: Mapping[str, Sequence[str]] | None = None,
         timeout: httpx.Timeout | None = None,
+        trace_environment: str | None = None,
     ) -> None:
         self._client = client
+        self._trace_environment = trace_environment
         # 폴백이 있는 1차 엔드포인트만 짧은 타임아웃을 건다. 없으면 클라이언트 설정을 따른다.
         self._request_options: dict[str, Any] = {} if timeout is None else {"timeout": timeout}
         # 주소 대신 함수를 받으면 호출할 때마다 물어본다(RunPod Pod처럼 주소가 바뀌는 경우).
@@ -153,10 +179,11 @@ class OpenAICompatibleModelGateway:
 
     async def _post(self, model: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
+            url = self._url(model)
             response = await self._client.post(
-                self._url(model),
+                url,
                 headers=self._headers(),
-                json=payload,
+                json={**payload, **openrouter_trace_fields(url, self._trace_environment)},
                 **self._request_options,
             )
             response.raise_for_status()
@@ -249,11 +276,15 @@ class OpenAICompatibleModelGateway:
         model: str,
     ) -> AsyncIterator[str]:
         try:
+            url = self._url(model)
             async with self._client.stream(
                 "POST",
-                self._url(model),
+                url,
                 headers=self._headers(),
-                json=self._payload(model, messages=list(messages), stream=True),
+                json={
+                    **self._payload(model, messages=list(messages), stream=True),
+                    **openrouter_trace_fields(url, self._trace_environment),
+                },
                 **self._request_options,
             ) as response:
                 response.raise_for_status()
