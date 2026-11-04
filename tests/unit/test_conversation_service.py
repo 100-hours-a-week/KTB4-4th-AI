@@ -100,7 +100,7 @@ def test_prepare_session_uses_room_as_session_id_and_records_safe_opening() -> N
     )
 
     assert prepared.state.session_id == 101
-    assert len(prepared.messages) == 2
+    assert len(prepared.messages) == 3
     assert greeting == "반가워요! 요즘 어떻게 지내세요?"
     assert prepared.state.history[0].content == greeting
     assert prepared.state.history[0].created_at == now
@@ -356,37 +356,24 @@ def test_opening_topics_do_not_contain_each_other() -> None:
     assert not [(a, b) for a in topics for b in topics if a != b and a in b]
 
 
-def test_opening_combines_a_question_style_and_adds_season_only_for_season_topics() -> None:
+def test_opening_combines_a_question_style_and_tells_today() -> None:
     import random
     from datetime import UTC, datetime
 
     from app.application.conversation_prompts import (
         OPENING_QUESTION_STYLES,
-        OPENING_TOPIC_AREAS,
-        SEASON_AREA,
         build_opening_messages,
-        season_of,
     )
 
-    # 10월 31일 23시(UTC)는 한국 기준 11월 1일이라 겨울이다.
+    # 10월 31일 23시(UTC)는 한국 기준 11월 1일이다.
     now = datetime(2026, 10, 31, 23, tzinfo=UTC)
-    seasonal = set(OPENING_TOPIC_AREAS[SEASON_AREA])
-    seen_season = seen_other = False
-    for seed in range(200):
-        content = build_opening_messages(rng=random.Random(seed), now=now)[1]["content"]
-        assert sum(style in content for style in OPENING_QUESTION_STYLES) == 1
-        if any(topic in content for topic in seasonal):
-            assert "[계절]\n지금은 겨울이다." in content
-            seen_season = True
-        else:
-            assert "[계절]" not in content
-            seen_other = True
-    assert seen_season and seen_other
+    for seed in range(50):
+        messages = build_opening_messages(rng=random.Random(seed), now=now)
+        assert sum(style in messages[1]["content"] for style in OPENING_QUESTION_STYLES) == 1
+        assert "오늘은 2026년 11월 1일이다." in messages[2]["content"]
 
-    assert season_of(datetime(2026, 2, 28, 16, tzinfo=UTC)) == "봄"
-    assert season_of(datetime(2026, 12, 1, tzinfo=UTC)) == "겨울"
-    assert season_of(datetime(2026, 10, 15, tzinfo=UTC)) == "가을"
-    assert season_of(datetime(2026, 7, 15, tzinfo=UTC)) == "여름"
+    returning = build_opening_messages(now=now, memory_topic="호빵")
+    assert "오늘은 2026년 11월 1일이다." in returning[2]["content"]
 
 
 def test_closing_reply_replaces_trailing_question_with_closing_message() -> None:

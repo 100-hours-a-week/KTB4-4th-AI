@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from app.domain.conversation.energy import (
-    ENGAGED_ENERGY,
     LOW_ENERGY,
     asks_back,
+    corrects,
     record_energy,
     turn_energy,
     unsure,
@@ -48,10 +48,8 @@ COMPANION_LIGHTEN_STREAK = 2
 COMPANION_WRAP_STREAK = 4
 MOVE_HISTORY_LIMIT = 8
 # 한 화제에서 이어 묻는 꼬리 질문 수. 화제를 꺼낸 질문(첫인사, 화제 전환, 놀이, 되돌아가기)은
-# 세지 않는다. 기본은 한 번이고, 사용자 반응이 좋으면 두 번까지 이어 간다.
-# 한 화제만 파면 같은 이야기의 세부만 쌓이고 다른 관심사가 안 나온다.
-TOPIC_FOLLOW_LIMIT = 1
-TOPIC_FOLLOW_LIMIT_ENGAGED = 2
+# 세지 않는다. 한 소재는 두 번까지만 묻고 다른 소재로 넘어간다. 다음 소재는 모델이 고른다.
+TOPIC_FOLLOW_LIMIT = 2
 # 화제를 넘길 때 최근 이만큼의 move 안에 선택지 move가 없으면 열린 질문 대신 선택지를 준다.
 # 질문-답만 이어지는 흐름을 중간중간 바꾼다.
 CHOICE_GAP = 6
@@ -59,20 +57,9 @@ CHOICE_GAP = 6
 # 꺼냈으니 대화 초반에는 이번 대화 이야기를 먼저 듣는다.
 MIN_RECALL_TURN = 4
 
-# 에너지가 낮을 때나 다른 화제로 넘어갈 때 가볍게 던지는 소재. 한마디로 답할 수 있는 것만 두고,
-# 부족한 추천 항목으로 화제를 고르지 않는다.
-COMPANION_SCENES: tuple[str, ...] = (
-    "요즘 자주 웃게 되는 것",
-    "요즘 자주 먹는 것",
-    "요즘 자주 듣는 노래",
-    "쉬는 날에 주로 하는 것",
-    "요즘 빠져 있는 것",
-    "최근에 처음 해 본 것",
-    "요즘 자주 가는 곳",
-    "집에 있을 때 주로 하는 것",
-    "요즘 폰으로 제일 많이 보는 것",
-    "해 보고 싶은데 아직 못 해 본 것",
-)
+# 답이 이 길이 이하면 단답으로 본다.
+# "치킨이요", "한참 있다가요"는 들고 "난 매운 거 좋아해"는 들지 않는다.
+TERSE_ANSWER_LENGTH = 8
 
 
 def _query_signals(state: ConversationState):
@@ -186,31 +173,32 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     def chat(move: ConversationMove, scene: str | None = None) -> GoalDecision:
         return GoalDecision(ConversationGoal.CHAT, move=move, scene=scene)
 
-    topic_done = _topic_done(state, current)
+    # 사용자가 니쥬의 말을 고치고 있으면 화제를 넘기지 않고 그 말부터 듣는다.
+    if utterance and corrects(utterance) and not unsure(utterance):
+        return chat(ConversationMove.FOLLOW)
+    topic_done = topic_follow_count(state) >= TOPIC_FOLLOW_LIMIT
     # 사용자가 되물었으면 먼저 답하고 그 이야기를 따라간다.
     # 이 화제의 꼬리 질문을 다 썼으면 답한 뒤 다른 이야기로 넘어간다.
     if utterance and asks_back(utterance):
         if topic_done:
-            return chat(ConversationMove.SHIFT, _pick_scene(state))
+            return chat(ConversationMove.SHIFT)
         return chat(ConversationMove.FOLLOW)
     last_move = state.last_move
-    # 답하기 어려워하면 다시 묻지 않고 선택지를 준다. 소재는 앞에서 한 이야기에서 니쥬가 찾는다.
-    if utterance and unsure(utterance) and last_move != ConversationMove.CHOICE:
-        return chat(ConversationMove.CHOICE)
+    # 답하기 어려워하거나 단답이 이어지면 다른 소재로 넘어가 선택지를 준다. 소재는 모델이 고른다.
+    if utterance and last_move != ConversationMove.CHOICE:
+        if unsure(utterance) or _keeps_answering_short(state, utterance):
+            return chat(ConversationMove.CHOICE)
     if low_streak >= COMPANION_LIGHTEN_STREAK:
-        topic = _return_topic(state, utterance)
-        if topic is not None and last_move != ConversationMove.RETURN:
-            return chat(ConversationMove.RETURN, topic)
         if last_move != ConversationMove.CHOICE:
-            return chat(ConversationMove.CHOICE, _pick_scene(state))
+            return chat(ConversationMove.CHOICE)
         return chat(ConversationMove.ADD)
     if topic_done:
         recall = _recall_topic(state)
         if recall is not None:
             return chat(ConversationMove.RECALL, recall)
         if ConversationMove.CHOICE.value not in state.move_history[-CHOICE_GAP:]:
-            return chat(ConversationMove.CHOICE, _pick_scene(state))
-        return chat(ConversationMove.SHIFT, _pick_scene(state))
+            return chat(ConversationMove.CHOICE)
+        return chat(ConversationMove.SHIFT)
     return chat(ConversationMove.FOLLOW)
 
 
@@ -225,29 +213,12 @@ def topic_follow_count(state: ConversationState) -> int:
     return count
 
 
-def _topic_done(state: ConversationState, current: float | None) -> bool:
-    """이 화제의 꼬리 질문을 다 썼는지. 반응이 좋은 동안만 기본 한도를 넘겨 이어 간다."""
-    count = topic_follow_count(state)
-    if count >= TOPIC_FOLLOW_LIMIT_ENGAGED:
-        return True
-    if count < TOPIC_FOLLOW_LIMIT:
+def _keeps_answering_short(state: ConversationState, utterance: str) -> bool:
+    """단답이 이어지는지. 선택지를 고른 답은 원래 짧아서 이번 답에서 세지 않는다."""
+    if state.last_move == ConversationMove.CHOICE or len(utterance.strip()) > TERSE_ANSWER_LENGTH:
         return False
-    return current is None or current < ENGAGED_ENERGY
-
-
-def _return_topic(state: ConversationState, utterance: str) -> str | None:
-    """앞에서 가장 신나게 이야기한 관심사.
-
-    최근에 다시 나왔거나 이미 돌아간 적 있으면 쓰지 않는다.
-    """
-    topic = state.best_topic
-    if topic is None or topic in state.returned_topics:
-        return None
-    recent = [utterance, *_recent_user_messages(state)[-2:]]
-    normalized = normalize_text(topic)
-    if any(normalized and normalized in normalize_text(message) for message in recent):
-        return None
-    return topic
+    previous = _recent_user_messages(state)[-1:]
+    return bool(previous) and len(previous[0]) <= TERSE_ANSWER_LENGTH
 
 
 def _recall_topic(state: ConversationState) -> str | None:
@@ -260,13 +231,6 @@ def _recall_topic(state: ConversationState) -> str | None:
         state.last_active_at,
         exclude=[*heard, *state.memory_recalled],
     )
-
-
-def _pick_scene(state: ConversationState) -> str | None:
-    """사용하지 않은 참고 소재를 고른다. 실제 화제는 사용자 발화의 맥락이 결정한다."""
-    offset = state.conversation_room_id % len(COMPANION_SCENES)
-    rotated = COMPANION_SCENES[offset:] + COMPANION_SCENES[:offset]
-    return next((scene for scene in rotated if scene not in state.used_scenes), None)
 
 
 def record_companion_turn(
