@@ -4,10 +4,7 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.profile.models import ProfileSignal, TasteField
-from app.domain.profile.taxonomy import (
-    INTEREST_ROOT,
-    TASTE_ROOT,
-)
+from app.domain.profile.taxonomy import INTEREST_ROOT, TASTE_ROOT
 
 # 분석 화면 키워드. 저장 값을 묶고 다시 이름 붙인다. 결과 검증은 domain/profile/keywords.py 가 한다.
 KEYWORD_SYSTEM = """니쥬가 한 사람과 이야기하며 모은 취향 항목과 관심사 항목을 보고,

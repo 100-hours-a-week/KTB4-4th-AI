@@ -6,6 +6,30 @@ from enum import StrEnum
 from typing import Any
 
 
+class InsightKind(StrEnum):
+    PREFERENCE = "preference"
+    VALUE = "value"
+    LIFE_ATTITUDE = "life_attitude"
+
+
+@dataclass(slots=True, frozen=True)
+class GroundedQuote:
+    text: str
+    source_turn: int
+    conversation_id: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "source_turn": self.source_turn,
+            "conversation_id": self.conversation_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any] | None) -> GroundedQuote | None:
+        return cls(**value) if value else None
+
+
 class TasteField(StrEnum):
     INTERESTS = "interests"
     HOBBIES = "hobbies"
@@ -79,6 +103,10 @@ class ExtractedItem:
     # 어느 축의 취향인지, 어느 분야의 관심사인지.
     # 예: ("취향", "사회", "인원"), ("관심사", "아웃도어")
     taxonomy_path: tuple[str, ...] | None = None
+    insight_kind: InsightKind = InsightKind.PREFERENCE
+    context: str | None = None
+    reason: str | None = None
+    origin: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -118,6 +146,10 @@ class ProfileSignal:
     aspect: PreferenceAspect | None = None
     target: str | None = None
     taxonomy_path: tuple[str, ...] | None = None
+    insight_kind: InsightKind = InsightKind.PREFERENCE
+    context: GroundedQuote | None = None
+    reason: GroundedQuote | None = None
+    origin: GroundedQuote | None = None
 
     @property
     def deferral_signal(self) -> bool:
@@ -143,6 +175,10 @@ class ProfileSignal:
             "aspect": self.aspect.value if self.aspect else None,
             "target": self.target,
             "taxonomy_path": list(self.taxonomy_path) if self.taxonomy_path else None,
+            "insight_kind": self.insight_kind.value,
+            "context": self.context.to_dict() if self.context else None,
+            "reason": self.reason.to_dict() if self.reason else None,
+            "origin": self.origin.to_dict() if self.origin else None,
         }
 
     @classmethod
@@ -170,6 +206,10 @@ class ProfileSignal:
             aspect=PreferenceAspect(aspect) if aspect else None,
             target=payload.get("target"),
             taxonomy_path=tuple(taxonomy_path) if taxonomy_path else None,
+            insight_kind=InsightKind(payload.get("insight_kind", InsightKind.PREFERENCE)),
+            context=GroundedQuote.from_dict(payload.get("context")),
+            reason=GroundedQuote.from_dict(payload.get("reason")),
+            origin=GroundedQuote.from_dict(payload.get("origin")),
         )
 
 

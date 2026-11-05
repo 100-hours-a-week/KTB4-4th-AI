@@ -166,6 +166,7 @@ def _grouped_items(signals: Iterable[ProfileSignal]) -> dict[TasteField, list[Pr
                 taxonomy_path=list(signal.taxonomy_path) if signal.taxonomy_path else None,
                 first_seen_at=signal.first_seen_at,
                 updated_at=signal.updated_at,
+                insight_kind=signal.insight_kind,
             )
         )
     return grouped

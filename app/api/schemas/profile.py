@@ -4,6 +4,7 @@ from typing import Literal, Self
 from pydantic import Field, model_validator
 
 from app.api.schemas.common import ApiModel, UserId
+from app.domain.profile.models import InsightKind
 
 TasteField = Literal[
     "interests",
@@ -35,6 +36,7 @@ class ProfileItem(ApiModel):
     taxonomy_path: list[str] | None
     first_seen_at: datetime
     updated_at: datetime
+    insight_kind: InsightKind = InsightKind.PREFERENCE
 
     @model_validator(mode="after")
     def validate_deferral_reason(self) -> Self:

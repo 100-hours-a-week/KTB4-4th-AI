@@ -20,6 +20,8 @@ from app.domain.profile.merger import (
 from app.domain.profile.models import (
     DeferralReason,
     EvidenceType,
+    GroundedQuote,
+    InsightKind,
     IntentType,
     PreferenceAspect,
     ProfileSignal,
@@ -29,6 +31,19 @@ from app.domain.profile.models import TasteField as DomainTasteField
 
 # 싫어하는 것·피해야 하는 것은 상한 없이 남기므로 저장 상한보다 넉넉히 받는다.
 MAX_MEMORY_SIGNAL_INPUT = MAX_MEMORY_SIGNALS * 2
+
+
+class MemoryQuote(ApiModel):
+    text: str = Field(min_length=1, max_length=160)
+    source_turn: int = Field(ge=0)
+    conversation_id: int | None = Field(default=None, gt=0)
+
+    def to_domain(self) -> GroundedQuote:
+        return GroundedQuote(self.text, self.source_turn, self.conversation_id)
+
+    @classmethod
+    def from_domain(cls, quote: GroundedQuote | None) -> "MemoryQuote | None":
+        return cls(**quote.to_dict()) if quote else None
 
 
 class MemorySignal(ApiModel):
@@ -47,6 +62,10 @@ class MemorySignal(ApiModel):
     first_seen_at: datetime
     # 마지막으로 대화에서 확인한 시각
     updated_at: datetime
+    insight_kind: InsightKind = InsightKind.PREFERENCE
+    context: MemoryQuote | None = None
+    reason: MemoryQuote | None = None
+    origin: MemoryQuote | None = None
 
     def to_domain(self) -> ProfileSignal:
         field = DomainTasteField(self.field)
@@ -68,6 +87,10 @@ class MemorySignal(ApiModel):
             aspect=PreferenceAspect(self.aspect) if self.aspect else None,
             target=self.target,
             taxonomy_path=tuple(self.taxonomy_path) if self.taxonomy_path else None,
+            insight_kind=self.insight_kind,
+            context=self.context.to_domain() if self.context else None,
+            reason=self.reason.to_domain() if self.reason else None,
+            origin=self.origin.to_domain() if self.origin else None,
         )
 
     @classmethod
@@ -86,6 +109,10 @@ class MemorySignal(ApiModel):
             taxonomy_path=list(signal.taxonomy_path) if signal.taxonomy_path else None,
             first_seen_at=signal.first_seen_at,
             updated_at=signal.updated_at,
+            insight_kind=signal.insight_kind,
+            context=MemoryQuote.from_domain(signal.context),
+            reason=MemoryQuote.from_domain(signal.reason),
+            origin=MemoryQuote.from_domain(signal.origin),
         )
 
 

@@ -25,6 +25,7 @@ from app.domain.profile.merger import (
 )
 from app.domain.profile.models import (
     DropRef,
+    InsightKind,
     ProfileSignal,
     ProfileState,
     SignalStatus,
@@ -139,6 +140,11 @@ def _refresh(remembered: ProfileSignal, current: ProfileSignal) -> None:
     remembered.target = current.target or remembered.target
     remembered.taxonomy_path = current.taxonomy_path or remembered.taxonomy_path
     remembered.source_turn = current.source_turn
+    if current.insight_kind != InsightKind.PREFERENCE:
+        remembered.insight_kind = current.insight_kind
+    remembered.context = current.context or remembered.context
+    remembered.reason = current.reason or remembered.reason
+    remembered.origin = current.origin or remembered.origin
 
 
 def _combine(

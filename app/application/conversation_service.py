@@ -63,6 +63,7 @@ from app.domain.profile.models import (
     EvidenceType,
     ExtractedItem,
     ExtractionDelta,
+    InsightKind,
     IntentType,
     LinkRole,
     PreferenceAspect,
@@ -128,6 +129,10 @@ class ExtractedItemPayload(_ExtractionModel):
     deferral_reason: DeferralReason | None = None
     aspect: PreferenceAspect | None = None
     target: ShortValue | None = None
+    insight_kind: InsightKind = InsightKind.PREFERENCE
+    context: str | None = Field(default=None, min_length=1, max_length=160)
+    reason: str | None = Field(default=None, min_length=1, max_length=160)
+    origin: str | None = Field(default=None, min_length=1, max_length=160)
 
     @model_validator(mode="after")
     def validate_deferral(self) -> Self:
@@ -179,8 +184,17 @@ def _to_item(payload: ExtractedItemPayload) -> ExtractedItem:
         evidence_type=payload.evidence_type,
         intent_type=payload.intent_type,
         deferral_reason=payload.deferral_reason,
-        aspect=payload.aspect,
+        aspect=(
+            PreferenceAspect.MOTIVE
+            if payload.insight_kind != InsightKind.PREFERENCE
+            and payload.field == TasteField.PREFERENCES
+            else payload.aspect
+        ),
         target=payload.target,
+        insight_kind=payload.insight_kind,
+        context=payload.context,
+        reason=payload.reason,
+        origin=payload.origin,
     )
 
 
@@ -539,6 +553,7 @@ class ConversationService:
             now=resolved_now,
             source_turn=state.turn_count + 1,
             context_utterances=state.user_turns()[-EXTRACTION_CONTEXT_USER_TURNS:],
+            conversation_id=state.session_id,
         )
         state.profile = merge_result.profile
         for key in dropped_memory_keys(state.memory, delta.drop):
