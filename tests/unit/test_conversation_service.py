@@ -99,7 +99,8 @@ def test_prepare_session_uses_room_as_session_id_and_records_safe_opening() -> N
 
     assert prepared.state.session_id == 101
     assert len(prepared.messages) == 3
-    assert greeting == "반가워요! 요즘 어떻게 지내세요?"
+    assert greeting.endswith("반가워요! 요즘 어떻게 지내세요?")
+    assert "숨은 취향" in greeting
     assert prepared.state.history[0].content == greeting
     assert prepared.state.history[0].created_at == now
     assert prepared.state.turn_count == 0

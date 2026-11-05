@@ -58,7 +58,11 @@ def test_colab_connection_probe_chat_extraction_and_reconnect(tmp_path, monkeypa
         output = (
             json.dumps(extraction(payload["messages"][-1]["content"]), ensure_ascii=False)
             if "response_format" in payload
-            else "캠핑하면서 어떤 순간이 좋아요?"
+            else (
+                "쉬는 날엔 주로 뭐 해요?"
+                if not any(m["role"] == "user" for m in payload["messages"])
+                else "캠핑하면서 어떤 순간이 좋아요?"
+            )
         )
         return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
 

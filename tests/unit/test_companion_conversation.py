@@ -492,6 +492,20 @@ def test_opening_uses_companion_prompt() -> None:
 # ---- 응답 가드 ----
 
 
+def test_companion_reply_ends_at_one_question() -> None:
+    no_question = "불 끄고 혼자 보는 영화는 거의 의식이에요. 저는 잔잔한 쪽이 진리라고 봐요."
+    assert sanitize_response(no_question, ConversationGoal.CHAT) == no_question
+
+    play = "평생 영화관 vs 평생 빔프로젝터, 뭐 골라요? 저는 빔프요, 잠옷이 허락되니까."
+    assert sanitize_response(play, ConversationGoal.CHAT) == play.split("?", 1)[0] + "?"
+
+    explanation = (
+        "어떻게 생각해요? 저는 직접 경험해 본 적은 없지만, "
+        "일정을 비워 두면 그날 마음에 드는 곳에서 더 오래 머물 수 있을 것 같아요."
+    )
+    assert sanitize_response(explanation, ConversationGoal.CHAT) == "어떻게 생각해요?"
+
+
 def test_companion_reply_drops_label_line_breaks_and_imitated_next_turn() -> None:
     raw = "니쥬: 와, 드디어 해방이네요.\n\n끝나자마자 뭐 했어요?\n사용자: 그냥 잤어요"
     assert (

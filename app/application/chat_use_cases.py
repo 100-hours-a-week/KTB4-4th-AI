@@ -17,7 +17,7 @@ from app.application.search_intent_service import (
     intent_targets,
     onboarding_intent_targets,
 )
-from app.domain.conversation.guards import fix_summary_intro, stable_reply_prefix
+from app.domain.conversation.guards import fix_summary_intro, reply_question, stable_reply_prefix
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
@@ -33,7 +33,7 @@ from app.domain.profile.keywords import (
     fallback_keywords,
 )
 from app.domain.profile.memory import LongTermMemory, combined_profile, merge_memory
-from app.domain.profile.merger import friend_summary_values, ranked_friend_signals
+from app.domain.profile.merger import friend_summary_values, normalize_text, ranked_friend_signals
 from app.domain.profile.models import ProfileState, TasteField, utc_now
 from app.domain.profile.onboarding import OnboardingProfile
 
@@ -213,6 +213,57 @@ class ChatUseCases:
             )
             raise ResponseModelUnavailableError(getattr(error, "reason", "unexpected")) from error
 
+    async def _ensure_reply_question(
+        self,
+        reply: str,
+        messages,
+        *,
+        goal: ConversationGoal,
+        session_id: int,
+    ) -> str:
+        cleaned = self._conversations.guard_reply(reply, goal)
+        if goal == ConversationGoal.WRAP:
+            return cleaned
+        question = reply_question(cleaned)
+        asked_questions = {
+            normalize_text(reply_question(message["content"]))
+            for message in messages
+            if message["role"] == "assistant"
+        }
+        if question and normalize_text(question) not in asked_questions:
+            return cleaned
+        # 질문은 검증 전까지 스트리밍을 보류하므로 반응은 유지한 채 질문만 보완할 수 있다.
+        reaction = cleaned[: len(cleaned) - len(question)].rstrip() if question else cleaned
+        repair = await self._complete(
+            [
+                *messages,
+                {"role": "assistant", "content": reaction},
+                {
+                    "role": "system",
+                    "content": "방금 반응 뒤에 이어질 질문 하나만 작성한다. "
+                    "원래 대화의 직전 질문과 최신 사용자 답을 함께 읽는다. "
+                    "사용자가 방금 말한 경험·선택·상황에서 자연스럽게 이어진다. "
+                    "한두 마디로 답할 수 있게 묻는다. "
+                    "이미 답했거나 모르겠다고 한 내용과 그 이유를 다시 묻지 않는다. "
+                    "추출 항목, 이전 관심사, 임의 소재로 화제를 바꾸지 않는다. "
+                    "현재 주제를 거절했으면 그 뜻을 존중해 가까운 일상 이야기로 연결한다. "
+                    "인사·설명·맞장구 없이 질문 한 문장만 쓴다.",
+                },
+            ],
+            timeout_seconds=self._response_timeout_seconds,
+            purpose="question_repair",
+            session_id=session_id,
+        )
+        question = reply_question(self._conversations.guard_reply(repair, goal))
+        if not question or normalize_text(question) in asked_questions:
+            raise ResponseModelUnavailableError("question_missing_or_repeated")
+        if reaction and reaction[-1] not in ".!~ㅎㅠ":
+            reaction += "."
+        result = f"{reaction} {question}".strip()
+        if not reply_question(result):
+            raise ResponseModelUnavailableError("question_not_renderable")
+        return result
+
     async def create_session(
         self,
         *,
@@ -236,6 +287,12 @@ class ChatUseCases:
                 prepared.messages,
                 timeout_seconds=self._response_timeout_seconds,
                 purpose="opening",
+                session_id=conversation_room_id,
+            )
+            greeting = await self._ensure_reply_question(
+                greeting,
+                prepared.messages,
+                goal=ConversationGoal.OPENING,
                 session_id=conversation_room_id,
             )
             greeting = self._conversations.record_opening(prepared.state, greeting)
@@ -273,6 +330,12 @@ class ChatUseCases:
                     prepared.messages,
                     timeout_seconds=self._response_timeout_seconds,
                     purpose="reply",
+                    session_id=session_id,
+                )
+                raw_reply = await self._ensure_reply_question(
+                    raw_reply,
+                    prepared.messages,
+                    goal=prepared.decision.goal,
                     session_id=session_id,
                 )
             except BaseException:
@@ -342,9 +405,8 @@ class ChatUseCases:
             self._validate_sendable(state)
 
             prepared = self._conversations.prepare_turn(state, message)
-            # 마무리 턴만 끝 질문을 종료 멘트로 바꿀 수 있다. 생성 전에 정해지므로
-            # 일반 턴은 질문까지 바로 내보낸다.
-            hold_question = prepared.decision.goal == ConversationGoal.WRAP
+            # 질문 누락·반복을 고쳐도 이미 보낸 반응은 바뀌지 않도록 질문 문장을 보류한다.
+            hold_question = True
             started = time.monotonic()
             first_token_ms: float | None = None
             first_delta_ms: float | None = None
@@ -367,6 +429,22 @@ class ChatUseCases:
                         yield ReplyDelta(stable[len(emitted) :])
                         emitted = stable
                 reply_ms = (time.monotonic() - started) * 1000
+                raw_reply = await self._ensure_reply_question(
+                    raw_reply,
+                    prepared.messages,
+                    goal=prepared.decision.goal,
+                    session_id=session_id,
+                )
+                if prepared.decision.goal != ConversationGoal.WRAP and raw_reply.startswith(
+                    emitted
+                ):
+                    remainder = raw_reply[len(emitted) :]
+                    if remainder:
+                        if first_delta_ms is None:
+                            first_delta_ms = (time.monotonic() - started) * 1000
+                        delta_count += 1
+                        yield ReplyDelta(remainder)
+                        emitted = raw_reply
                 completed = await self._conversations.complete_turn(
                     state,
                     utterance=message,

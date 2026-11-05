@@ -348,7 +348,11 @@ def test_recommendation_reads_cached_intents_and_schedules_the_missing_ones() ->
 
 class ChatGateway:
     async def complete(self, messages, *, model):
-        return "캠핑 좋죠. 주로 어디로 가요?"
+        return (
+            "쉬는 날엔 주로 뭐 해요?"
+            if not any(m["role"] == "user" for m in messages)
+            else "캠핑 좋죠. 주로 어디로 가요?"
+        )
 
     async def structured(self, messages, *, model, json_schema):
         return {

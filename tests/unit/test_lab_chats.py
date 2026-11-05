@@ -49,7 +49,15 @@ def model_handler(seen, broken=False):
                 ensure_ascii=False,
             )
         else:
-            output = "어떤 이야기를 나누고 싶어요?"
+            output = (
+                "쉬는 날엔 주로 뭐 해요?"
+                if not any(m["role"] == "user" for m in data["messages"])
+                else (
+                    "어떤 이야기를 나누고 싶어요?"
+                    if sum(m["role"] == "user" for m in data["messages"]) == 1
+                    else "캠핑 다녀오면 뭘 하면서 쉬어요?"
+                )
+            )
         return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
 
     return handle

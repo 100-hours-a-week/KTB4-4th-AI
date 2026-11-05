@@ -5,6 +5,7 @@ import pytest
 
 from app.application.conversation_prompts import build_reply_messages
 from app.domain.conversation.energy import LOW_ENERGY, asks_back, turn_energy, unsure, wants_to_exit
+from app.domain.conversation.guards import sanitize_response, stable_reply_prefix
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
@@ -172,3 +173,15 @@ def test_bounded_history_retains_question_answer_pairs_and_full_earlier_text() -
     earlier = json.loads(note.split("\n", 1)[1])
     assert [m["role"] for m in earlier] == ["assistant", "user"] * 4
     assert earlier[1]["content"] == state.history[5].content
+
+
+def test_normal_bracketed_words_and_explanations_survive_streaming() -> None:
+    raw = "[말투]가 편안한 사람이 좋다는 뜻이군요. 어떤 말투가 편해요?"
+    assert sanitize_response(raw, ConversationGoal.CHAT) == raw
+    emitted = ""
+    for end in range(1, len(raw) + 1):
+        stable = stable_reply_prefix(raw[:end], hold_question=False)
+        if stable.startswith(emitted):
+            emitted = stable
+        assert raw.startswith(emitted)
+    assert emitted == raw

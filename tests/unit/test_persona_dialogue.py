@@ -125,7 +125,7 @@ def test_persona_failure_does_not_fall_back_to_script(tmp_path, bad_reply):
                 return httpx.Response(503, text="private provider detail")
             output = json.dumps(bad_reply)
         else:
-            output = "안녕하세요."
+            output = "쉬는 날엔 주로 뭐 해요?"
         return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
 
     async def exercise():
@@ -185,7 +185,9 @@ def test_cancel_in_flight_persona_call(tmp_path):
             except asyncio.CancelledError:
                 cancelled.append(True)
                 raise
-        return httpx.Response(200, json={"choices": [{"message": {"content": "안녕하세요."}}]})
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "쉬는 날엔 주로 뭐 해요?"}}]}
+        )
 
     async def exercise():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
@@ -295,7 +297,11 @@ def test_persona_and_colab_calls_use_independent_endpoints_and_keys(tmp_path, mo
             output = (
                 json.dumps(extraction(payload["messages"][-1]["content"]))
                 if "response_format" in payload
-                else "캠핑할 때 어떤 순간이 좋아요?"
+                else (
+                    "쉬는 날엔 주로 뭐 해요?"
+                    if not any(m["role"] == "user" for m in payload["messages"])
+                    else "캠핑할 때 어떤 순간이 좋아요?"
+                )
             )
         return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
 

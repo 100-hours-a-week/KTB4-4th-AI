@@ -21,6 +21,7 @@ from app.application.conversation_context import (
     parse_conversation_context,
 )
 from app.application.conversation_prompts import (
+    DISCOVERY_INTRO,
     build_opening_messages,
     build_reply_messages,
 )
@@ -339,7 +340,7 @@ class ConversationService:
         *,
         now: datetime | None = None,
     ) -> str:
-        greeting = self.guard_reply(raw_greeting, ConversationGoal.OPENING)
+        greeting = f"{DISCOVERY_INTRO} {self.guard_reply(raw_greeting, ConversationGoal.OPENING)}"
         resolved_now = now or utc_now()
         state.history.append(
             ConversationTurn(role="assistant", content=greeting, created_at=resolved_now)
