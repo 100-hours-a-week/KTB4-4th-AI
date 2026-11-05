@@ -127,7 +127,7 @@ def test_uncertainty_after_choices_changes_the_question_without_repeating_it() -
     second = decide_goal(state, "글쎄요")
     assert second.move == ConversationMove.SHIFT
     messages = build_reply_messages(state, second.goal, "글쎄요", move=second.move)
-    assert "현재 이야기와 이어지는 더 쉬운 행동이나 장면" in messages[-1]["content"]
+    assert "같은 경험의 다른 세부로 돌려 묻지 않는다" in messages[-1]["content"]
 
 
 @pytest.mark.parametrize(

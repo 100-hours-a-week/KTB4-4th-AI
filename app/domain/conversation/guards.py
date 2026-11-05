@@ -52,7 +52,7 @@ def sanitize_response(text: str, goal: ConversationGoal) -> str:
     if len(cleaned) > 1 and cleaned[0] in _WRAPPING_QUOTES and cleaned[-1] in _WRAPPING_QUOTES:
         cleaned = cleaned[1:-1].strip()
 
-    # 대화 중에는 반응 뒤 질문 하나로 끝낸다. 인용한 질문은 실제 질문으로 세지 않는다.
+    # 질문이 있으면 하나만 남긴다. 인용한 질문은 실제 질문으로 세지 않는다.
     if goal != ConversationGoal.WRAP:
         end = first_question_end(cleaned)
         if end >= 0:

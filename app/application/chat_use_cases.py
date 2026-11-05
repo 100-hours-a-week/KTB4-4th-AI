@@ -225,6 +225,10 @@ class ChatUseCases:
         if goal == ConversationGoal.WRAP:
             return cleaned
         question = reply_question(cleaned)
+        # 첫 질문으로 대화를 열 때만 질문이 필수다. 대화 중 반응만 한 답에 질문을
+        # 강제로 붙이면 같은 소재에서 의미 없는 꼬리 질문이 계속 생긴다.
+        if not question and goal == ConversationGoal.CHAT:
+            return cleaned
         asked_questions = {
             normalize_text(reply_question(message["content"]))
             for message in messages
@@ -240,25 +244,33 @@ class ChatUseCases:
                 {"role": "assistant", "content": reaction},
                 {
                     "role": "system",
-                    "content": "방금 반응 뒤에 이어질 질문 하나만 작성한다. "
+                    "content": "방금 반응 뒤에 이어질 말을 작성한다. "
                     "원래 대화의 직전 질문과 최신 사용자 답을 함께 읽는다. "
-                    "사용자가 방금 말한 경험·선택·상황에서 자연스럽게 이어진다. "
-                    "한두 마디로 답할 수 있게 묻는다. "
+                    "직전 응답의 질문은 누락됐거나 이미 한 질문이다. "
                     "이미 답했거나 모르겠다고 한 내용과 그 이유를 다시 묻지 않는다. "
-                    "추출 항목, 이전 관심사, 임의 소재로 화제를 바꾸지 않는다. "
-                    "현재 주제를 거절했으면 그 뜻을 존중해 가까운 일상 이야기로 연결한다. "
-                    "인사·설명·맞장구 없이 질문 한 문장만 쓴다.",
+                    "표현만 다른 재확인이나 같은 장면의 세부 질문으로 바꾸지 않는다. "
+                    "사용자의 선택·생각을 새로 이해할 질문이 있으면 쉽게 하나만 묻는다. "
+                    "없으면 이야기를 짧게 받거나 다른 생활 영역의 이야기를 열어도 된다. "
+                    "추출 항목을 채우려고 묻거나 연결 고리를 지어내지 않는다. "
+                    + (
+                        "첫 대화를 여는 질문 한 문장만 쓴다."
+                        if goal == ConversationGoal.OPENING
+                        else "질문은 생략해도 된다. 앞의 반응을 반복하지 말고 한 문장만 쓴다."
+                    ),
                 },
             ],
             timeout_seconds=self._response_timeout_seconds,
             purpose="question_repair",
             session_id=session_id,
         )
-        question = reply_question(self._conversations.guard_reply(repair, goal))
-        if not question or normalize_text(question) in asked_questions:
-            raise ResponseModelUnavailableError("question_missing_or_repeated")
+        repaired = self._conversations.guard_reply(repair, goal)
+        question = reply_question(repaired)
         if reaction and reaction[-1] not in ".!~ㅎㅠ":
             reaction += "."
+        if not question and goal == ConversationGoal.CHAT:
+            return f"{reaction} {repaired}".strip()
+        if not question or normalize_text(question) in asked_questions:
+            raise ResponseModelUnavailableError("question_missing_or_repeated")
         result = f"{reaction} {question}".strip()
         if not reply_question(result):
             raise ResponseModelUnavailableError("question_not_renderable")
@@ -405,7 +417,7 @@ class ChatUseCases:
             self._validate_sendable(state)
 
             prepared = self._conversations.prepare_turn(state, message)
-            # 질문 누락·반복을 고쳐도 이미 보낸 반응은 바뀌지 않도록 질문 문장을 보류한다.
+            # 반복 질문을 고쳐도 이미 보낸 반응은 바뀌지 않도록 질문 문장을 보류한다.
             hold_question = True
             started = time.monotonic()
             first_token_ms: float | None = None
