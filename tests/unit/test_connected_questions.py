@@ -65,12 +65,9 @@ def test_opening_explains_hidden_taste_discovery_and_asks_one_question():
     asyncio.run(run())
 
 
-@pytest.mark.parametrize(
-    "reply", ["고소한 맛이 좋군요.", f"고소한 맛이 좋군요. {PREVIOUS_QUESTION}"]
-)
-def test_missing_or_repeated_question_is_repaired_with_the_original_short_answer(reply):
+def test_repeated_question_is_repaired_with_the_original_short_answer():
     async def run():
-        gateway = Gateway(reply, CONNECTED_QUESTION)
+        gateway = Gateway(f"고소한 맛이 좋군요. {PREVIOUS_QUESTION}", CONNECTED_QUESTION)
         use_cases, states, state = setup(gateway)
         await states.save(state)
         completed = await use_cases.send_message(101, "고소한 거요", user_id=1)
@@ -87,10 +84,9 @@ def test_missing_or_repeated_question_is_repaired_with_the_original_short_answer
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("repair", ["알겠어요.", PREVIOUS_QUESTION])
-def test_failed_repair_keeps_the_user_turn_unsaved(repair):
+def test_failed_repair_keeps_the_user_turn_unsaved():
     async def run():
-        gateway = Gateway("고소한 맛이 좋군요.", repair)
+        gateway = Gateway(PREVIOUS_QUESTION, PREVIOUS_QUESTION)
         use_cases, states, state = setup(gateway)
         await states.save(state)
         with pytest.raises(ResponseModelUnavailableError, match="question_missing_or_repeated"):
@@ -98,6 +94,69 @@ def test_failed_repair_keeps_the_user_turn_unsaved(repair):
         saved = await states.load(101)
         assert saved.turn_count == 0
         assert len(saved.history) == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("answer", "reply"),
+    [
+        ("그냥 좋은데요", "좋아하는 데 꼭 이유가 있어야 하는 건 아니니까요."),
+        ("친구랑 같이 먹은 날이 좋았어요", "함께 먹었던 날이 좋은 기억으로 남았군요."),
+        ("라테요", "거기서는 라테를 마시는군요."),
+    ],
+)
+def test_reaction_without_question_stays_active_without_a_forced_follow_up(
+    streaming, answer, reply
+):
+    async def run():
+        gateway = Gateway(reply)
+        gateway.chunks = [reply[:12], reply[12:]]
+        use_cases, states, state = setup(gateway)
+        await states.save(state)
+        if streaming:
+            events = [
+                event
+                async for event in use_cases.stream_message(
+                    101, answer, user_id=1, user_message_id=5
+                )
+            ]
+            completed = events[-1]
+            assert isinstance(completed, CompletedTurn)
+            assert "".join(e.text for e in events if isinstance(e, ReplyDelta)) == reply
+            assert gateway.calls == []
+        else:
+            completed = await use_cases.send_message(101, answer, user_id=1)
+            assert len(gateway.calls) == 1
+        assert completed.reply == reply
+        assert completed.state.status == SessionStatus.ACTIVE
+        assert (await states.load(101)).turn_count == 1
+        assert gateway.extraction_calls == 1
+
+    asyncio.run(run())
+
+
+def test_repair_can_stop_asking_when_the_subject_is_exhausted():
+    async def run():
+        gateway = Gateway(PREVIOUS_QUESTION, "그 맛이 마음에 드는군요.")
+        use_cases, states, state = setup(gateway)
+        await states.save(state)
+        completed = await use_cases.send_message(101, "고소한 거요", user_id=1)
+        assert completed.reply == "그 맛이 마음에 드는군요."
+        assert len(gateway.calls) == 2
+        assert completed.state.status == SessionStatus.ACTIVE
+
+    asyncio.run(run())
+
+
+def test_opening_still_repairs_a_missing_question():
+    async def run():
+        gateway = Gateway("반가워요.", "쉬는 날엔 주로 뭐 해요?")
+        use_cases, _, _ = setup(gateway)
+        started = await use_cases.create_session(user_id=1, conversation_room_id=101)
+        assert started.greeting.count("?") == 1
+        assert len(gateway.calls) == 2
 
     asyncio.run(run())
 
