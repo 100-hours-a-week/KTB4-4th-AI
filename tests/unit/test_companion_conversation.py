@@ -7,7 +7,6 @@ from app.application.conversation_prompts import (
     COMPANION_MOVES,
     CORRECTION_NOTE,
     NEW_TOPIC,
-    QUESTION_QUALITY_NOTE,
     SYSTEM_COMPANION,
     build_opening_messages,
     build_reply_messages,
@@ -109,7 +108,7 @@ def test_unsure_answer_lowers_the_burden_without_guessing_preferences() -> None:
     )[-1]["content"]
 
     assert "방금 모른다고 한 내용이나 이유를 다시 묻지 않는다" in card
-    assert "질문은 최대 하나만 한다" in card
+    assert "질문은 하나만 한다" in card
     assert "혹시 ~ 좋아해요?" not in card
 
 
@@ -224,7 +223,7 @@ def test_unsure_answer_gets_choices_instead_of_the_same_question() -> None:
     )[-1]["content"]
     assert card.startswith("사용자가 잘 모르겠다고 했다.")
     assert NEW_TOPIC not in card
-    assert "같은 경험의 다른 세부를 묻지 않는다" in card
+    assert "현재 이야기의 쉬운 행동이나 장면" in card
 
 
 def test_answer_to_choices_is_followed_like_any_other_answer() -> None:
@@ -306,7 +305,7 @@ def test_correction_stays_on_topic_even_when_follow_ups_are_used_up() -> None:
     card = build_reply_messages(state, decision.goal, "그건 또 아니야", move=decision.move)[-1][
         "content"
     ]
-    assert card == CORRECTION_NOTE + "\n" + QUESTION_QUALITY_NOTE
+    assert card == CORRECTION_NOTE
 
 
 def test_unsure_correction_is_handled_before_choices() -> None:
@@ -317,7 +316,7 @@ def test_unsure_correction_is_handled_before_choices() -> None:
     card = build_reply_messages(
         state, decision.goal, "그건 아닌데 잘 모르겠어요", move=decision.move
     )[-1]["content"]
-    assert card == CORRECTION_NOTE + "\n" + QUESTION_QUALITY_NOTE
+    assert card == CORRECTION_NOTE
 
 
 def test_topic_notes_allow_relevant_memory_and_keep_choices_on_topic() -> None:
