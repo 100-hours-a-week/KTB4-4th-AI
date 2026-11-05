@@ -5,7 +5,7 @@ import pytest
 
 from admin_api.main import create_app
 from admin_api.model_evaluations import model_evaluations, model_family, service_evaluations
-from app.application.conversation_prompts import FRIEND_SUMMARY_SYSTEM
+from app.application.profile_summary_prompts import FRIEND_SUMMARY_SYSTEM
 
 
 def config(model, precision="BF16"):

@@ -10,6 +10,8 @@ from app.domain.profile.models import (
     EvidenceType,
     ExtractedItem,
     ExtractionDelta,
+    GroundedQuote,
+    InsightKind,
     IntentType,
     LinkRole,
     ProfileSignal,
@@ -298,6 +300,7 @@ class ProfileMerger:
         now: datetime,
         source_turn: int,
         context_utterances: Sequence[tuple[int, str]] = (),
+        conversation_id: int | None = None,
     ) -> MergeResult:
         merged = copy.deepcopy(profile)
         accepted: list[ProfileSignal] = []
@@ -328,6 +331,22 @@ class ProfileMerger:
             if not normalized or normalized in _GENERIC_VALUES or item_turn is None:
                 rejected.append(item.value)
                 continue
+            if item.insight_kind != InsightKind.PREFERENCE and (
+                item.field not in {TasteField.PREFERENCES, TasteField.DISLIKES}
+                or item.evidence_type != EvidenceType.EXPLICIT
+            ):
+                rejected.append(item.value)
+                continue
+            linked: dict[str, GroundedQuote] = {}
+            for name in ("context", "reason", "origin"):
+                text = getattr(item, name)
+                turn = (
+                    _grounded_turn(text, utterance, source_turn, context_utterances)
+                    if text and len(text) <= 160
+                    else None
+                )
+                if turn is not None:
+                    linked[name] = GroundedQuote(text.strip(), turn, conversation_id)
             # 이번 턴에 취소한 값이 같은 쪽으로 다시 들어오거나
             # ("캠핑은 취소"에서 캠핑을 또 뽑은 경우), 취소·대체된 값이
             # 이전 발화 근거로 되살아나는 것을 막는다.
@@ -359,6 +378,18 @@ class ProfileMerger:
                 and signal.status != SignalStatus.SUPERSEDED
                 for signal in merged.signals
             ):
+                # 이전 근거의 반복과 이번에 새로 설명한 이유·계기를 구별한다.
+                existing = next(
+                    signal
+                    for signal in merged.signals
+                    if signal.field == item.field
+                    and signal.normalized_value == normalized
+                    and signal.status != SignalStatus.SUPERSEDED
+                )
+                for name, quote in linked.items():
+                    if quote.source_turn == source_turn:
+                        setattr(existing, name, quote)
+                        existing.updated_at = now
                 continue
 
             _supersede_previous_state(merged.signals, item)
@@ -393,6 +424,10 @@ class ProfileMerger:
                 existing.aspect = item.aspect or existing.aspect
                 existing.target = item.target or existing.target
                 existing.taxonomy_path = item.taxonomy_path or existing.taxonomy_path
+                if item.insight_kind != InsightKind.PREFERENCE:
+                    existing.insight_kind = item.insight_kind
+                for name, quote in linked.items():
+                    setattr(existing, name, quote)
                 existing.status = SignalStatus.ACTIVE
                 accepted.append(existing)
                 continue
@@ -414,6 +449,8 @@ class ProfileMerger:
                 first_seen_at=now,
                 updated_at=now,
                 source_turn=item_turn,
+                insight_kind=item.insight_kind,
+                **linked,
             )
             merged.signals.append(signal)
             accepted.append(signal)

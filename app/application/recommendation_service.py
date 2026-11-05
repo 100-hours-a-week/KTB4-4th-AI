@@ -98,6 +98,7 @@ def _preference_signals(profile: Mapping[str, Any]) -> list[RecommendationSignal
         for item in items
         # 신뢰도나 갱신 시각이 없는 항목은 쿼리 재료로 쓰지 않고 가산에만 쓴다.
         if isinstance(item, Mapping)
+        and item.get("insightKind", "preference") == "preference"
         and item.get("value")
         and item.get("confidence") is not None
         and item.get("updatedAt")
@@ -196,6 +197,7 @@ def _values(
             str(item["value"])
             for item in items
             if isinstance(item, Mapping)
+            and item.get("insightKind", "preference") == "preference"
             and item.get("value")
             and (aspects is None or _aspect(item) in aspects)
         )

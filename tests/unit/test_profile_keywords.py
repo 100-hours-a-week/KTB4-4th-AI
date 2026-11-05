@@ -1,7 +1,7 @@
 import json
 from datetime import UTC, datetime
 
-from app.application.conversation_prompts import build_friend_summary_messages
+from app.application.profile_summary_prompts import build_friend_summary_messages
 from app.domain.profile.keywords import composed_keywords, fallback_keywords
 from app.domain.profile.models import (
     EvidenceType,

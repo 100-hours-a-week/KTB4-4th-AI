@@ -5,13 +5,21 @@ import pytest
 
 from app.application.conversation_prompts import (
     COMPANION_MOVES,
+    CORRECTION_NOTE,
+    NEW_TOPIC,
     SYSTEM_COMPANION,
     build_opening_messages,
     build_reply_messages,
 )
 from app.application.conversation_service import ConversationService
 from app.domain.conversation import policy
-from app.domain.conversation.energy import LOW_ENERGY, asks_back, turn_energy, wants_to_exit
+from app.domain.conversation.energy import (
+    LOW_ENERGY,
+    asks_back,
+    corrects,
+    turn_energy,
+    wants_to_exit,
+)
 from app.domain.conversation.guards import sanitize_response
 from app.domain.conversation.models import (
     CompletionReason,
@@ -23,7 +31,6 @@ from app.domain.conversation.models import (
     SessionStatus,
 )
 from app.domain.conversation.policy import (
-    COMPANION_SCENES,
     MAX_TURNS,
     conversation_progress,
     decide_goal,
@@ -60,7 +67,7 @@ def test_short_avoiding_answer_has_low_energy() -> None:
     state.user_length_avg = 25.0
 
     assert turn_energy(state, "딱히요") < LOW_ENERGY
-    assert turn_energy(state, "네") < LOW_ENERGY
+    assert turn_energy(state, "네") >= LOW_ENERGY
 
 
 def test_long_excited_answer_has_high_energy() -> None:
@@ -94,13 +101,15 @@ def test_default_move_is_follow() -> None:
     assert decision.move == ConversationMove.FOLLOW
 
 
-def test_unsure_answer_asks_with_a_suggestion() -> None:
+def test_unsure_answer_lowers_the_burden_without_guessing_preferences() -> None:
     state = companion_state(turn_count=2)
     card = build_reply_messages(
         state, ConversationGoal.CHAT, "좋아하는 거요? 딱히 없는데", move=ConversationMove.FOLLOW
-    )[-2]["content"]
+    )[-1]["content"]
 
-    assert "혹시 ~ 좋아해요?" in card
+    assert "방금 모른다고 한 내용이나 이유를 다시 묻지 않는다" in card
+    assert "질문은 하나만 한다" in card
+    assert "혹시 ~ 좋아해요?" not in card
 
 
 def test_puzzled_reply_is_not_treated_as_asking_back() -> None:
@@ -115,24 +124,30 @@ def test_user_asking_back_is_followed_and_answered() -> None:
     decision = decide_goal(state, "니쥬는 뭐 좋아해요?")
     assert decision.move == ConversationMove.FOLLOW
     card = build_reply_messages(state, decision.goal, "니쥬는 뭐 좋아해요?", move=decision.move)[
-        -2
+        -1
     ]["content"]
     assert "네 생각부터 솔직하게 답한다" in card
 
 
-def test_low_energy_twice_lightens_with_choices_then_return() -> None:
+def test_low_energy_twice_lightens_with_choices() -> None:
     state = with_user_turns(companion_state(turn_count=4), "캠핑 진짜 좋아해요", "그냥요")
     state.user_length_avg = 20.0
     state.low_energy_streak = 1
 
-    choice = decide_goal(state, "음")
-    assert choice.move == ConversationMove.CHOICE
-    assert choice.scene in COMPANION_SCENES
+    assert decide_goal(state, "음").move == ConversationMove.CHOICE
 
-    state.best_topic = "야구"
-    back = decide_goal(state, "음")
-    assert back.move == ConversationMove.RETURN
-    assert back.scene == "야구"
+
+def test_short_answers_in_a_row_do_not_force_choices() -> None:
+    state = with_user_turns(followed(companion_state(turn_count=2), "follow"), "치킨이요")
+
+    decision = decide_goal(state, "없어요")
+    assert decision.move == ConversationMove.FOLLOW
+    assert decision.scene is None
+
+    assert decide_goal(state, "난 매운 거 좋아해").move == ConversationMove.FOLLOW
+
+    state.move_history = ["choice"]
+    assert decide_goal(state, "짠 거요").move == ConversationMove.FOLLOW
 
 
 def test_stays_on_topic_while_energy_is_high() -> None:
@@ -168,17 +183,17 @@ CALM_ANSWER = "네 친구랑 같이 갔어요"
 EXCITED_ANSWER = "그 캠핑장 별이 진짜 장난 아니었어요 ㅋㅋ 또 가고 싶어요"
 
 
-def test_one_follow_up_then_shift_topic() -> None:
-    state = followed(companion_state(turn_count=3), "choice")
+def test_two_follow_ups_then_review_topic() -> None:
+    state = followed(companion_state(turn_count=3), "choice", "follow")
     assert decide_goal(state, CALM_ANSWER).move == ConversationMove.FOLLOW
 
-    state = followed(companion_state(turn_count=3), "choice", "follow")
+    state = followed(companion_state(turn_count=3), "choice", "follow", "follow")
     decision = decide_goal(state, CALM_ANSWER)
     assert decision.move == ConversationMove.SHIFT
-    assert decision.scene in COMPANION_SCENES
+    assert decision.scene is None
 
 
-def test_engaged_user_keeps_topic_up_to_two_follow_ups() -> None:
+def test_excited_punctuation_does_not_disable_topic_review() -> None:
     state = followed(companion_state(turn_count=5), "choice", "follow")
     assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.FOLLOW
 
@@ -186,17 +201,16 @@ def test_engaged_user_keeps_topic_up_to_two_follow_ups() -> None:
     assert decide_goal(state, EXCITED_ANSWER).move == ConversationMove.SHIFT
 
 
-def test_topic_done_offers_choices_when_none_were_offered_recently() -> None:
-    state = followed(companion_state(turn_count=3), "follow")
-
+def test_topic_review_does_not_force_a_choice_or_ignore_new_information() -> None:
+    state = followed(companion_state(turn_count=3), "follow", "follow")
     decision = decide_goal(state, CALM_ANSWER)
-    assert decision.move == ConversationMove.CHOICE
-    assert decision.scene in COMPANION_SCENES
-    card = build_reply_messages(
-        state, decision.goal, CALM_ANSWER, move=decision.move, scene=decision.scene
-    )[-2]["content"]
-    assert "열린 질문 대신 선택지를 준다" in card
-    assert decision.scene in card
+    assert decision.move == ConversationMove.SHIFT
+    card = build_reply_messages(state, decision.goal, CALM_ANSWER, move=decision.move)[-1][
+        "content"
+    ]
+    assert NEW_TOPIC in card
+    assert "최신 사용자 말이 우선" in card
+    assert "완전히 다른 소재" not in card
 
 
 def test_unsure_answer_gets_choices_instead_of_the_same_question() -> None:
@@ -206,9 +220,10 @@ def test_unsure_answer_gets_choices_instead_of_the_same_question() -> None:
     assert decision.move == ConversationMove.CHOICE
     card = build_reply_messages(
         state, decision.goal, "음 잘 모르겠어요", move=decision.move, scene=decision.scene
-    )[-2]["content"]
+    )[-1]["content"]
     assert card.startswith("사용자가 잘 모르겠다고 했다.")
-    assert "앞에서 사용자가 한 이야기" in card
+    assert NEW_TOPIC not in card
+    assert "현재 이야기의 쉬운 행동이나 장면" in card
 
 
 def test_answer_to_choices_is_followed_like_any_other_answer() -> None:
@@ -216,8 +231,8 @@ def test_answer_to_choices_is_followed_like_any_other_answer() -> None:
 
     decision = decide_goal(state, "바다요")
     assert decision.move == ConversationMove.FOLLOW
-    card = build_reply_messages(state, decision.goal, "바다요", move=decision.move)[-2]["content"]
-    assert card == COMPANION_MOVES[ConversationMove.FOLLOW]
+    card = build_reply_messages(state, decision.goal, "바다요", move=decision.move)[-1]["content"]
+    assert "직전 질문과 이번 답을 함께 읽고" in card
 
 
 def test_short_pick_from_choices_is_not_low_energy() -> None:
@@ -248,51 +263,105 @@ def test_topic_change_resets_follow_count_and_add_does_not() -> None:
     assert policy.topic_follow_count(followed(companion_state(), "follow", "add", "follow")) == 2
 
 
-def test_asking_back_after_topic_is_done_answers_then_shifts() -> None:
+def test_asking_back_takes_priority_over_topic_review() -> None:
     state = followed(companion_state(turn_count=6), *["follow"] * 3)
 
     decision = decide_goal(state, "니쥬는 캠핑 가봤어요?")
-    assert decision.move == ConversationMove.SHIFT
+    assert decision.move == ConversationMove.FOLLOW
     card = build_reply_messages(
         state, decision.goal, "니쥬는 캠핑 가봤어요?", move=decision.move, scene=decision.scene
-    )[-2]["content"]
+    )[-1]["content"]
     assert "네 생각부터 솔직하게 답한다" in card
-    assert "이 이야기는 더 묻지 않는다" in card
+    assert NEW_TOPIC not in card
 
 
-def test_shift_card_without_scene_uses_fallback() -> None:
+def test_corrects_detects_user_fixing_nijyu() -> None:
+    for answer in (
+        "그건 또 아니야",
+        "아니 겨울이 아직 안왔는데",
+        "지난번에 호빵 겨울에 먹는다했잖아",
+        "꼭 그런 건 아닌데",
+        "캠핑 아니고 등산이요",
+        "어쩌라는거지?",
+    ):
+        assert corrects(answer), answer
+    for answer in (
+        "아니요",
+        "난 매운 거 좋아해",
+        "바다 아니면 산이요",
+        "중간",
+        "그 캠핑장 진짜 장난 아니야",
+        "맛뿐만 아니라 분위기도 좋아요",
+    ):
+        assert not corrects(answer), answer
+
+
+def test_correction_stays_on_topic_even_when_follow_ups_are_used_up() -> None:
+    state = followed(companion_state(turn_count=5), "choice", "follow", "follow")
+
+    decision = decide_goal(state, "그건 또 아니야")
+    assert decision.move == ConversationMove.FOLLOW
+    assert decision.scene is None
+    card = build_reply_messages(state, decision.goal, "그건 또 아니야", move=decision.move)[-1][
+        "content"
+    ]
+    assert card == CORRECTION_NOTE
+
+
+def test_unsure_correction_is_handled_before_choices() -> None:
+    state = followed(companion_state(turn_count=2), "follow")
+
+    decision = decide_goal(state, "그건 아닌데 잘 모르겠어요")
+    assert decision.move == ConversationMove.FOLLOW
     card = build_reply_messages(
-        companion_state(turn_count=8),
-        ConversationGoal.CHAT,
-        CALM_ANSWER,
-        move=ConversationMove.SHIFT,
-    )[-2]["content"]
-
-    assert "아직 이야기하지 않은 다른 일상" in card
-    assert "방금 이야기" not in card
+        state, decision.goal, "그건 아닌데 잘 모르겠어요", move=decision.move
+    )[-1]["content"]
+    assert card == CORRECTION_NOTE
 
 
-def test_conversation_scene_does_not_depend_on_missing_recommendation_fields(monkeypatch) -> None:
-    scenes = []
-    for missing in (("gear",), ("query_signals", "taste_axes")):
-        monkeypatch.setattr(
-            policy,
-            "recommendation_readiness",
-            lambda state, gaps=missing: ReadinessResult(False, gaps),
+def test_topic_notes_allow_relevant_memory_and_keep_choices_on_topic() -> None:
+    assert NEW_TOPIC in COMPANION_MOVES[ConversationMove.SHIFT]
+    assert NEW_TOPIC not in COMPANION_MOVES[ConversationMove.CHOICE]
+    assert "메모가 회상을 요청할 때" in SYSTEM_COMPANION
+
+
+def _topic_conversation() -> ConversationState:
+    state = followed(companion_state(turn_count=4), "follow", "shift", "follow")
+    state.history = [
+        ConversationTurn(role=role, content=content, created_at=NOW)
+        for role, content in (
+            ("assistant", "요즘 뭐 먹어요?"),
+            ("user", "치킨이요"),
+            ("assistant", "어떤 맛이요?"),
+            ("user", "양념이요"),
+            ("assistant", "노래는 뭐 들어요?"),
+            ("user", "재즈요"),
+            ("assistant", "언제 들어요?"),
         )
-        state = companion_state(turn_count=15)
-        state.low_energy_streak = 1
-        state.user_length_avg = 20
-        scenes.append(decide_goal(state, "음").scene)
+    ]
+    return state
 
-    assert scenes[0] is not None
-    assert scenes[0] == scenes[1]
+
+@pytest.mark.parametrize(
+    "move", [ConversationMove.FOLLOW, ConversationMove.SHIFT, ConversationMove.CHOICE]
+)
+def test_question_answer_context_is_kept_across_topic_moves(move: ConversationMove) -> None:
+    state = _topic_conversation()
+    messages = build_reply_messages(state, ConversationGoal.CHAT, "밤에요", move=move)
+    actual = [(m["role"], m["content"]) for m in messages if m["role"] != "system"]
+    assert actual == [(t.role, t.content) for t in state.history] + [("user", "밤에요")]
+
+
+def test_prompt_has_no_fixed_topic_change_question() -> None:
+    for phrase in ("자주 듣는 노래", "단 거랑 짠 거", "끌어와 엮지"):
+        assert phrase not in SYSTEM_COMPANION
+        assert not any(phrase in note for note in COMPANION_MOVES.values())
 
 
 # ---- 종료 ----
 
 
-def test_ready_wraps_even_while_fun(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ready_profile_does_not_interrupt_new_user_speech(monkeypatch: pytest.MonkeyPatch) -> None:
     ready(monkeypatch)
     state = companion_state(turn_count=5)
     state.energy = 0.8
@@ -300,8 +369,7 @@ def test_ready_wraps_even_while_fun(monkeypatch: pytest.MonkeyPatch) -> None:
     state.user_length_avg = 20.0
 
     decision = decide_goal(state, "요즘 러닝에 빠져서 매일 뛰어요 ㅋㅋ")
-    assert decision.goal == ConversationGoal.WRAP
-    assert decision.completion_reason == CompletionReason.SUFFICIENT
+    assert decision.goal == ConversationGoal.CHAT
 
 
 def test_exit_intent_wraps_immediately() -> None:
@@ -381,23 +449,37 @@ def test_move_card_and_memo_replace_state_json() -> None:
     )
 
     assert messages[0]["content"] == SYSTEM_COMPANION
-    card = messages[-2]["content"]
+    card = messages[-1]["content"]
     assert COMPANION_MOVES[ConversationMove.ADD] in card
     assert not any('"items"' in message["content"] for message in messages)
-    assert messages[-1] == {"role": "user", "content": "요즘 뜨개질 해요"}
+    assert messages[-2] == {"role": "user", "content": "요즘 뜨개질 해요"}
 
 
-def test_choice_card_carries_scene() -> None:
-    state = companion_state(turn_count=5)
-    card = build_reply_messages(
-        state,
-        ConversationGoal.CHAT,
-        "그렇죠",
-        move=ConversationMove.CHOICE,
-        scene="요즘 자주 먹는 것",
-    )[-2]["content"]
+def test_turn_note_does_not_split_question_and_answer() -> None:
+    state = with_user_turns(companion_state(turn_count=2), "산이 좋아요")
+    state.history.append(
+        ConversationTurn(
+            role="assistant", content="단 거랑 짠 거 중에 뭐가 좋아요?", created_at=NOW
+        )
+    )
 
-    assert "요즘 자주 먹는 것" in card
+    messages = build_reply_messages(
+        state, ConversationGoal.CHAT, "중간", move=ConversationMove.FOLLOW
+    )
+
+    assert messages[-3]["role"] == "assistant"
+    assert messages[-3]["content"] == "단 거랑 짠 거 중에 뭐가 좋아요?"
+    assert messages[-2] == {"role": "user", "content": "중간"}
+    assert messages[-1]["role"] == "system"
+
+
+def test_reply_prompt_tells_today_in_korean_time() -> None:
+    # 10월 31일 23시(UTC)는 한국 기준 11월 1일이다.
+    now = datetime(2026, 10, 31, 23, tzinfo=UTC)
+
+    messages = build_reply_messages(companion_state(), ConversationGoal.CHAT, "네", now=now)
+
+    assert any("오늘은 2026년 11월 1일이다." in message["content"] for message in messages)
 
 
 def test_opening_uses_companion_prompt() -> None:
@@ -410,18 +492,18 @@ def test_opening_uses_companion_prompt() -> None:
 # ---- 응답 가드 ----
 
 
-def test_companion_reply_keeps_statement_and_short_tail_after_question() -> None:
+def test_companion_reply_ends_at_one_question() -> None:
     no_question = "불 끄고 혼자 보는 영화는 거의 의식이에요. 저는 잔잔한 쪽이 진리라고 봐요."
     assert sanitize_response(no_question, ConversationGoal.CHAT) == no_question
 
     play = "평생 영화관 vs 평생 빔프로젝터, 뭐 골라요? 저는 빔프요, 잠옷이 허락되니까."
-    assert sanitize_response(play, ConversationGoal.CHAT) == play
+    assert sanitize_response(play, ConversationGoal.CHAT) == play.split("?", 1)[0] + "?"
 
-    rambling = (
-        "제일 좋았던 밤은요? 저는 그런 밤이면 별 보면서 노래 듣고 "
-        "핫초코 마시고 담요 덮고 있고 싶어요."
+    explanation = (
+        "어떻게 생각해요? 저는 직접 경험해 본 적은 없지만, "
+        "일정을 비워 두면 그날 마음에 드는 곳에서 더 오래 머물 수 있을 것 같아요."
     )
-    assert sanitize_response(rambling, ConversationGoal.CHAT) == "제일 좋았던 밤은요?"
+    assert sanitize_response(explanation, ConversationGoal.CHAT) == "어떻게 생각해요?"
 
 
 def test_companion_reply_drops_label_line_breaks_and_imitated_next_turn() -> None:

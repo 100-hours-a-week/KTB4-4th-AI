@@ -80,7 +80,19 @@ def handler(seen, broken_extraction=False):
                 return httpx.Response(503)
             output = json.dumps(extraction(data["messages"][-1]["content"]), ensure_ascii=False)
         else:
-            output = "캠핑하며 쉬는 시간이 좋겠어요. 어떤 장비를 쓰세요?"
+            output = (
+                "쉬는 날엔 주로 뭐 해요?"
+                if not any(m["role"] == "user" for m in data["messages"])
+                else (
+                    "캠핑하며 쉬는 시간이 좋겠어요. 어떤 장비를 쓰세요?"
+                    if sum(m["role"] == "user" for m in data["messages"]) == 1
+                    else (
+                        "캠핑 다녀오면 뭘 하면서 쉬어요?"
+                        if sum(m["role"] == "user" for m in data["messages"]) == 2
+                        else "캠핑 준비할 때 직접 하는 일도 있어요?"
+                    )
+                )
+            )
         return httpx.Response(
             200,
             json={
@@ -309,7 +321,19 @@ def test_environment_judgment_path_uses_candidate_schema_and_systemone(tmp_path)
             assert "candidates" in data["response_format"]["json_schema"]["schema"]["properties"]
             output = json.dumps({"candidates": [{"subject": "캠핑", "kind": "activity"}]})
         else:
-            output = "캠핑에서 어떤 시간을 좋아하세요?"
+            output = (
+                "쉬는 날엔 주로 뭐 해요?"
+                if not any(m["role"] == "user" for m in data["messages"])
+                else (
+                    "캠핑에서 어떤 시간을 좋아하세요?"
+                    if sum(m["role"] == "user" for m in data["messages"]) == 1
+                    else (
+                        "캠핑 다녀오면 뭘 하면서 쉬어요?"
+                        if sum(m["role"] == "user" for m in data["messages"]) == 2
+                        else "캠핑 준비할 때 직접 하는 일도 있어요?"
+                    )
+                )
+            )
         return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
 
     async def exercise():

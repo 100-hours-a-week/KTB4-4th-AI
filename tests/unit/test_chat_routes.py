@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app.application.conversation_prompts import DISCOVERY_INTRO
 from app.application.ports.model_gateway import Message
 from app.core.config import Settings
 from app.domain.conversation.models import SessionStatus
@@ -132,7 +133,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
     assert expiration_at > created_at
     assert created_body == {
         "conversationRoomId": 45678,
-        "greeting": "안녕하세요! 요즘 어떻게 지내세요?",
+        "greeting": f"{DISCOVERY_INTRO} 안녕하세요! 요즘 어떻게 지내세요?",
         "maxTurns": 20,
     }
     assert message.status_code == 200
@@ -211,7 +212,7 @@ def test_analysis_patch_directly_updates_summary_and_keywords() -> None:
     gateway = FakeModelGateway(
         completions=[
             "안녕하세요! 요즘 어떻게 지내세요?",
-            "캠핑을 좋아하시는군요.",
+            "캠핑을 좋아하시는군요. 주로 어디로 가요?",
             "캠핑을 즐기는 분입니다.",
         ],
         structured_results=[
@@ -498,7 +499,7 @@ def test_analysis_keywords_are_ordered_by_score_and_patch_keeps_that_order() -> 
     gateway = FakeModelGateway(
         completions=[
             "안녕하세요! 요즘 어떻게 지내세요?",
-            "좋은 취미가 많으시네요.",
+            "여러 가지를 즐기는군요. 산책은 주로 어디로 가요?",
             "산책과 사진을 즐기는 분입니다.",
         ],
         structured_results=[
@@ -561,7 +562,7 @@ def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
         completions=[
             "안녕하세요! 요즘 어떻게 지내세요?",
             "그렇군요. 다른 이야기도 해볼까요?",
-            "다시 만나서 반가워요!",
+            "다시 만나서 반가워요! 요즘은 주로 뭐 해요?",
         ],
         structured_results=[{"items": [], "axes": [], "drop": []}],
     )
@@ -601,7 +602,10 @@ def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
     assert message_after_expiry.status_code == 404
     assert message_after_expiry.json()["code"] == "SESSION_NOT_FOUND"
     assert restarted.status_code == 201
-    assert restarted.json()["greeting"] == "다시 만나서 반가워요!"
+    assert (
+        restarted.json()["greeting"]
+        == f"{DISCOVERY_INTRO} 다시 만나서 반가워요! 요즘은 주로 뭐 해요?"
+    )
 
 
 def _max_turn_profile_signal(field: TasteField, value: str) -> ProfileSignal:
@@ -928,11 +932,11 @@ def test_summary_and_keywords_use_only_this_conversation_but_recommendations_use
         def __init__(self) -> None:
             super().__init__(
                 completions=[
-                    "안녕하세요!",
-                    "캠핑 좋죠.",
+                    "쉬는 날엔 주로 뭐 해요?",
+                    "캠핑은 주로 어디로 가요?",
                     "캠핑을 즐기는 분입니다.",
-                    "또 왔네요!",
-                    "뜨개질 좋죠.",
+                    "요즘도 캠핑 자주 가요?",
+                    "뜨개질은 요즘 뭘 만들어요?",
                     "뜨개질을 즐기는 분입니다.",
                 ]
             )

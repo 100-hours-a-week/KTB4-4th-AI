@@ -138,7 +138,7 @@ def test_stream_sends_deltas_that_join_into_completed_reply() -> None:
     assert "".join(delta["text"] for delta in deltas) == completed["reply"]
     assert completed["reply"] == "캠핑 좋죠. 주로 어디로 다니세요?"
     # 문장이 끝나기를 기다리지 않고 받은 만큼 바로 보낸다.
-    assert [delta["text"] for delta in deltas] == ["캠핑 좋죠.", " 주로 어디로", " 다니세요?"]
+    assert [delta["text"] for delta in deltas] == ["캠핑 좋죠.", " 주로 어디로 다니세요?"]
     assert completed["turn"] == 1
     assert completed["inputLocked"] is False
     assert 0 <= completed["progress"] <= 100
@@ -353,7 +353,7 @@ def test_stable_prefix_rules() -> None:
     assert stable_reply_prefix("좋아요. 사용", hold_question=False) == "좋아요."
     assert stable_reply_prefix("좋아요. 사용자: 저는", hold_question=False) == "좋아요."
     assert stable_reply_prefix("좋아요. 사용해", hold_question=False) == "좋아요. 사용해"
-    # 마지막 질문 뒤의 말은 길면 잘리므로 보류한다.
+    # 질문 뒤의 설명도 길이로 잘라 내지 않고 바로 전달한다.
     assert stable_reply_prefix("뭐 해요? 저는", hold_question=False) == "뭐 해요?"
     # 이름표가 될 수 있는 앞부분은 보류하고, 이름표는 지운다.
     assert stable_reply_prefix("니쥬", hold_question=False) == ""
