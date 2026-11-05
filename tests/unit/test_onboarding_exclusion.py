@@ -4,11 +4,13 @@ from decimal import Decimal
 import pytest
 
 from app.application.conversation_prompts import (
-    FRIEND_SUMMARY_SYSTEM,
     SYSTEM_COMPANION,
-    build_friend_summary_messages,
     build_opening_messages,
     build_reply_messages,
+)
+from app.application.profile_summary_prompts import (
+    FRIEND_SUMMARY_SYSTEM,
+    build_friend_summary_messages,
 )
 from app.application.recommendation_service import (
     ONBOARDING_INTEREST_WEIGHT,

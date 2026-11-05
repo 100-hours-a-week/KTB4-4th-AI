@@ -3,12 +3,10 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from app.application.conversation_prompts import (
-    build_extraction_messages,
-    build_friend_summary_messages,
-)
 from app.application.conversation_service import ConversationService, parse_extraction
+from app.application.extraction_prompts import build_extraction_messages
 from app.application.ports.model_gateway import Message
+from app.application.profile_summary_prompts import build_friend_summary_messages
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,

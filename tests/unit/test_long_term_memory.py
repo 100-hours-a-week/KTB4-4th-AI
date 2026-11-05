@@ -1,10 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from app.application.conversation_prompts import (
-    RETURNING_OPENING_INSTRUCTION,
-    build_reply_messages,
-)
+from app.application.conversation_prompts import RETURNING_OPENING_INSTRUCTION, build_reply_messages
 from app.application.conversation_service import ConversationService
 from app.application.taste_judgment import correction_targets
 from app.domain.conversation.models import ConversationGoal, ConversationMove, ConversationState

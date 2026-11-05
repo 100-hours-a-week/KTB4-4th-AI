@@ -6,15 +6,12 @@ import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 
-from app.application.conversation_prompts import (
-    KeywordSetPayload,
-    build_friend_summary_messages,
-    build_keyword_messages,
-)
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.llm_trace import bind_llm_session, llm_call
 from app.application.ports.model_gateway import ModelGateway
+from app.application.profile_keyword_prompts import KeywordSetPayload, build_keyword_messages
+from app.application.profile_summary_prompts import build_friend_summary_messages
 from app.application.search_intent_service import (
     SearchIntentService,
     intent_targets,

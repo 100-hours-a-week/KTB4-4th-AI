@@ -16,12 +16,8 @@ from pydantic import (
     model_validator,
 )
 
-from app.application.conversation_prompts import (
-    build_candidate_messages,
-    build_extraction_messages,
-    build_opening_messages,
-    build_reply_messages,
-)
+from app.application.conversation_prompts import build_opening_messages, build_reply_messages
+from app.application.extraction_prompts import build_candidate_messages, build_extraction_messages
 from app.application.llm_trace import llm_call
 from app.application.ports.judgment_gateway import JudgmentGateway
 from app.application.ports.model_gateway import Message, ModelGateway

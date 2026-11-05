@@ -6,12 +6,9 @@ from urllib.parse import urlsplit
 
 from admin_api.credentials import connection_key
 from admin_api.store import ROOT
-from app.application.conversation_prompts import (
-    CANDIDATE_SYSTEM,
-    EXTRACTION_SYSTEM,
-    build_opening_messages,
-)
+from app.application.conversation_prompts import build_opening_messages
 from app.application.conversation_service import ExtractionDeltaPayload
+from app.application.extraction_prompts import CANDIDATE_SYSTEM, EXTRACTION_SYSTEM
 from app.application.taste_judgment import CandidateDeltaPayload
 from app.core.config import Settings
 
