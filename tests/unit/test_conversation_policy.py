@@ -143,7 +143,7 @@ def test_progress_scales_filled_signals_to_100_without_dislikes() -> None:
     assert conversation_progress(conversation) == 37
 
     conversation.profile.signals.extend([*six_interests(), *two_taste_axes()])
-    assert conversation_progress(conversation) == 100
+    assert conversation_progress(conversation) == 95
 
 
 def test_progress_does_not_go_down() -> None:

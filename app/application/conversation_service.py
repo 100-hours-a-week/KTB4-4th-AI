@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Annotated, Self
 
@@ -16,7 +16,14 @@ from pydantic import (
     model_validator,
 )
 
-from app.application.conversation_prompts import build_opening_messages, build_reply_messages
+from app.application.conversation_context import (
+    ConversationContextPayload,
+    parse_conversation_context,
+)
+from app.application.conversation_prompts import (
+    build_opening_messages,
+    build_reply_messages,
+)
 from app.application.extraction_prompts import build_candidate_messages, build_extraction_messages
 from app.application.llm_trace import llm_call
 from app.application.ports.judgment_gateway import JudgmentGateway
@@ -31,6 +38,7 @@ from app.application.taste_judgment import (
     remention_candidates,
     without_frequency_variants,
 )
+from app.domain.conversation.context import ConversationContext
 from app.domain.conversation.guards import closing_reply, sanitize_response
 from app.domain.conversation.models import (
     CompletionReason,
@@ -154,6 +162,7 @@ class ExtractionDeltaPayload(_ExtractionModel):
     items: list[ExtractedItemPayload] = Field(default_factory=list, max_length=MAX_EXTRACTED_ITEMS)
     axes: list[AxisValue] = Field(default_factory=list, max_length=3)
     drop: list[DropRefPayload] = Field(default_factory=list, max_length=3)
+    conversation: ConversationContextPayload | None = None
 
 
 def _repair_item(raw: Mapping[str, object]) -> dict[str, object]:
@@ -387,6 +396,12 @@ class ConversationService:
                                 json_schema=schema,
                             )
                         delta, dropped = parse_extraction(raw)
+                        delta = replace(
+                            delta,
+                            conversation_context=parse_conversation_context(
+                                raw.get("conversation"), utterance, state.turn_count + 1
+                            ),
+                        )
                         if dropped:
                             logger.info("extraction items dropped: %s", dropped)
                         return delta, False
@@ -411,7 +426,7 @@ class ConversationService:
         self,
         state: ConversationState,
         utterance: str,
-    ) -> tuple[list[Candidate], list[str]] | None:
+    ) -> tuple[list[Candidate], list[str], ConversationContext | None] | None:
         messages = build_candidate_messages(state, utterance)
         schema = CandidateDeltaPayload.model_json_schema()
         try:
@@ -427,7 +442,10 @@ class ConversationService:
                         candidates, axes, dropped = parse_candidates(raw)
                         if dropped:
                             logger.info("candidates dropped: %s", dropped)
-                        return candidates, axes
+                        observation = parse_conversation_context(
+                            raw.get("conversation"), utterance, state.turn_count + 1
+                        )
+                        return candidates, axes, observation
                     except Exception as error:
                         logger.warning(
                             "candidate extraction attempt failed: model=%s %s",
@@ -455,7 +473,7 @@ class ConversationService:
         extracted = await self._extract_candidates(state, utterance)
         if extracted is None:
             return ExtractionDelta(), True
-        candidates, axes = extracted
+        candidates, axes, observation = extracted
         # 지난 대화의 기억도 이미 아는 값이다. 다시 나오면 판단에 넣어 확인한 시각을 새로 한다.
         remembered = ProfileState(signals=remembered_signals(state.memory, state.last_active_at))
         candidates = without_frequency_variants(
@@ -474,7 +492,7 @@ class ConversationService:
             correction_targets(state, utterance),
         )
         if not request.questions:
-            return ExtractionDelta(axes=tuple(axes)), False
+            return ExtractionDelta(axes=tuple(axes), conversation_context=observation), False
         body = None
         try:
             async with asyncio.timeout(self._judgment_timeout_seconds):
@@ -522,7 +540,7 @@ class ConversationService:
                 "/".join(judgment.taxonomy_path) if judgment.taxonomy_path else "-",
                 judgment.field.value if judgment.field else "저장 안 함",
             )
-        return delta, False
+        return replace(delta, conversation_context=observation), False
 
     async def complete_turn(
         self,
@@ -556,6 +574,12 @@ class ConversationService:
             conversation_id=state.session_id,
         )
         state.profile = merge_result.profile
+        if not extraction_failed:
+            state.conversation_context = delta.conversation_context
+            if delta.conversation_context:
+                focus = delta.conversation_context.focus
+                if focus not in state.explored_topics:
+                    state.explored_topics = [*state.explored_topics, focus][-8:]
         for key in dropped_memory_keys(state.memory, delta.drop):
             if key not in state.memory_dropped:
                 state.memory_dropped.append(key)
@@ -604,9 +628,12 @@ class ConversationService:
             state.completion_reason = next_decision.completion_reason
             state.pending_wrap = None
         elif next_decision.goal == ConversationGoal.WRAP:
-            # 추출 결과로 종료가 판정됐을 때는 이번 응답이 이미 나간 뒤다.
-            # 응답을 바꾸지 않고, 사용자의 답을 받은 다음 턴을 마무리로 예약한다.
-            state.pending_wrap = next_decision.completion_reason
+            if next_decision.completion_reason == CompletionReason.SUFFICIENT:
+                # 이번 질문의 답을 한 번 더 받은 뒤 마무리한다. 설명 중인 턴은 위에서 보호한다.
+                # 진행률은 확정 종료까지 95% 이하이므로 완료 뒤 질문이 남지 않는다.
+                state.pending_wrap = CompletionReason.SUFFICIENT
+            else:
+                state.pending_wrap = next_decision.completion_reason
 
         state.progress_floor = conversation_progress(state)
 

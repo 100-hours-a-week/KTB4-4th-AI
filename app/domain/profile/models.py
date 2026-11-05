@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.domain.conversation.context import ConversationContext
 
 
 class InsightKind(StrEnum):
@@ -123,6 +126,7 @@ class ExtractionDelta:
     # 사용자가 직전 AI 질문에 해당하는 게 없다고 명확히 답했는지. 목표 판정은 코드가 한다.
     # 판단 모델이 본 이번 답의 깊이(0 짧게 넘김 ~ 2 이유나 느낌을 담음). 판단하지 않았으면 None.
     answer_depth: float | None = None
+    conversation_context: ConversationContext | None = None
 
 
 @dataclass(slots=True)

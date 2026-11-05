@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from app.domain.conversation.context import ConversationContext
 from app.domain.profile.memory import LongTermMemory
 from app.domain.profile.models import ProfileState, TasteField, utc_now
 from app.domain.profile.onboarding import OnboardingProfile
@@ -22,14 +23,14 @@ class ConversationMove(StrEnum):
 
     # 방금 이야기를 이어 묻는다. 기본 move.
     FOLLOW = "follow"
-    # 질문 없이 니쥬의 의견, 감상, 아는 이야기를 보탠다.
+    # 이전 세션의 add 값도 읽는다. 현재 응답은 짧게 반응한 뒤 연결 질문을 덧붙인다.
     ADD = "add"
     # 열린 질문 대신 결이 다른 선택지 두 개를 주고 고르게 한다. 질문-답만 이어지는 흐름을 바꾸고
     # 답하기 어려운 것도 쉽게 답하게 한다. 한 턴으로 끝나는 대화 방식이다.
     CHOICE = "choice"
     # 앞에서 신나게 이야기한 화제로 돌아간다.
     RETURN = "return"
-    # 한 화제에서 꼬리 질문을 충분히 했으니 다른 생활 이야기로 넘어간다.
+    # 다른 생활 이야기로 넓힐지 검토한다. 사용자가 새로 꺼낸 내용은 우선 따라간다.
     SHIFT = "shift"
     # 화제를 넘길 때 흐려지고 있는 지난 대화의 관심사를 요즘도 그런지 한 번 묻는다.
     RECALL = "recall"
@@ -130,6 +131,8 @@ class ConversationState:
     memory_rechecked: bool = False
     # 이번 대화에서 취소한 기억. 세션 프로필에 없던 기억도 닫을 때 지운다.
     memory_dropped: list[tuple[TasteField, str]] = field(default_factory=list)
+    conversation_context: ConversationContext | None = None
+    explored_topics: list[str] = field(default_factory=list)
 
     @property
     def last_move(self) -> ConversationMove | None:
@@ -181,6 +184,10 @@ class ConversationState:
             "memory_recalled": list(self.memory_recalled),
             "memory_rechecked": self.memory_rechecked,
             "memory_dropped": [[field.value, value] for field, value in self.memory_dropped],
+            "conversation_context": (
+                self.conversation_context.to_dict() if self.conversation_context else None
+            ),
+            "explored_topics": list(self.explored_topics),
         }
 
     @classmethod
@@ -251,6 +258,12 @@ class ConversationState:
                 (TasteField(field), str(value))
                 for field, value in payload.get("memory_dropped", [])
             ],
+            conversation_context=(
+                ConversationContext.from_dict(payload["conversation_context"])
+                if payload.get("conversation_context")
+                else None
+            ),
+            explored_topics=list(payload.get("explored_topics", [])),
         )
 
 

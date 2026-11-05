@@ -98,7 +98,7 @@ def test_prepare_session_uses_room_as_session_id_and_records_safe_opening() -> N
     )
 
     assert prepared.state.session_id == 101
-    assert len(prepared.messages) == 2
+    assert len(prepared.messages) == 3
     assert greeting == "반가워요! 요즘 어떻게 지내세요?"
     assert prepared.state.history[0].content == greeting
     assert prepared.state.history[0].created_at == now
@@ -205,7 +205,7 @@ def test_friend_summary_prompt_never_contains_sensitive_profile_values() -> None
     assert "경제 사정" in messages[0]["content"]
 
 
-def test_extraction_that_completes_readiness_closes_at_close_turn() -> None:
+def test_readiness_does_not_close_an_ongoing_question() -> None:
     gateway = FakeModelGateway(
         [
             {
@@ -252,13 +252,12 @@ def test_extraction_that_completes_readiness_closes_at_close_turn() -> None:
     assert completed.readiness.sufficient is True
     assert completed.state.turn_count == 6
     assert completed.next_decision.completion_reason == CompletionReason.SUFFICIENT
-    # 이번 질문은 이미 나갔으므로 입력을 잠그지 않고 다음 턴을 마무리로 예약한다.
+    # 추천 준비 완료와 대화 종료를 구분하고, 다음 답변도 계속 듣는다.
     assert completed.reply == "사진은 주로 언제 찍으세요?"
     assert completed.state.status == SessionStatus.ACTIVE
     assert completed.state.pending_wrap == CompletionReason.SUFFICIENT
     next_decision = decide_goal(completed.state, "풍경을 주로 찍어요")
     assert next_decision.goal == ConversationGoal.WRAP
-    assert next_decision.completion_reason == CompletionReason.SUFFICIENT
 
 
 def _raw_item(**overrides: Any) -> dict[str, Any]:
@@ -354,37 +353,21 @@ def test_opening_topics_do_not_contain_each_other() -> None:
     assert not [(a, b) for a in topics for b in topics if a != b and a in b]
 
 
-def test_opening_combines_a_question_style_and_adds_season_only_for_season_topics() -> None:
+def test_opening_combines_a_question_style_and_tells_today() -> None:
     import random
     from datetime import UTC, datetime
 
-    from app.application.conversation_prompts import (
-        OPENING_QUESTION_STYLES,
-        OPENING_TOPIC_AREAS,
-        SEASON_AREA,
-        build_opening_messages,
-        season_of,
-    )
+    from app.application.conversation_prompts import OPENING_QUESTION_STYLES, build_opening_messages
 
-    # 10월 31일 23시(UTC)는 한국 기준 11월 1일이라 겨울이다.
+    # 10월 31일 23시(UTC)는 한국 기준 11월 1일이다.
     now = datetime(2026, 10, 31, 23, tzinfo=UTC)
-    seasonal = set(OPENING_TOPIC_AREAS[SEASON_AREA])
-    seen_season = seen_other = False
-    for seed in range(200):
-        content = build_opening_messages(rng=random.Random(seed), now=now)[1]["content"]
-        assert sum(style in content for style in OPENING_QUESTION_STYLES) == 1
-        if any(topic in content for topic in seasonal):
-            assert "[계절]\n지금은 겨울이다." in content
-            seen_season = True
-        else:
-            assert "[계절]" not in content
-            seen_other = True
-    assert seen_season and seen_other
+    for seed in range(50):
+        messages = build_opening_messages(rng=random.Random(seed), now=now)
+        assert sum(style in messages[1]["content"] for style in OPENING_QUESTION_STYLES) == 1
+        assert "오늘은 2026년 11월 1일이다." in messages[2]["content"]
 
-    assert season_of(datetime(2026, 2, 28, 16, tzinfo=UTC)) == "봄"
-    assert season_of(datetime(2026, 12, 1, tzinfo=UTC)) == "겨울"
-    assert season_of(datetime(2026, 10, 15, tzinfo=UTC)) == "가을"
-    assert season_of(datetime(2026, 7, 15, tzinfo=UTC)) == "여름"
+    returning = build_opening_messages(now=now, memory_topic="호빵")
+    assert "오늘은 2026년 11월 1일이다." in returning[2]["content"]
 
 
 def test_closing_reply_replaces_trailing_question_with_closing_message() -> None:
@@ -402,7 +385,7 @@ def test_closing_reply_keeps_reaction_that_ends_with_laughter() -> None:
     assert stable_reply_prefix(reply, hold_question=True) == "앗 그 조합은 반칙이죠ㅎㅎ"
 
 
-def test_turn_that_completes_readiness_closes_on_the_next_turn() -> None:
+def test_turn_that_completes_readiness_can_continue_until_user_exit() -> None:
     from app.domain.conversation.guards import CLOSING_MESSAGE
 
     gateway = FakeModelGateway(
@@ -438,6 +421,8 @@ def test_turn_that_completes_readiness_closes_on_the_next_turn() -> None:
 
     prepared = service.prepare_turn(completed.state, "꽃이요")
     assert prepared.decision.goal == ConversationGoal.WRAP
+    prepared = service.prepare_turn(completed.state, "이제 그만할게요")
+    assert prepared.decision.goal == ConversationGoal.WRAP
     closed = asyncio.run(
         service.complete_turn(
             completed.state,
@@ -452,7 +437,7 @@ def test_turn_that_completes_readiness_closes_on_the_next_turn() -> None:
     assert closed.reply == f"꽃 사진 예쁘죠. {CLOSING_MESSAGE}"
     assert closed.state.history[-1].content == closed.reply
     assert closed.state.status == SessionStatus.INPUT_LOCKED
-    assert closed.state.completion_reason == CompletionReason.SUFFICIENT
+    assert closed.state.completion_reason == CompletionReason.USER_EXIT
     assert closed.state.pending_wrap is None
 
 

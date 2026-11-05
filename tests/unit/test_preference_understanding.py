@@ -5,16 +5,21 @@ from datetime import UTC, datetime
 import pytest
 
 from app.api.schemas.memory import ConversationMemory
+from app.application.conversation_context import parse_conversation_context
 from app.application.conversation_prompts import build_reply_messages
 from app.application.conversation_service import ConversationService, parse_extraction
 from app.application.profile_summary_prompts import build_friend_summary_messages
 from app.application.recommendation_service import recommendation_inputs
 from app.application.taste_judgment import Candidate, CandidateKind, judgment_delta
+from app.domain.conversation.context import ConversationContext, ConversationDirection
 from app.domain.conversation.models import (
+    CompletionReason,
     ConversationGoal,
+    ConversationMove,
     ConversationState,
+    SessionStatus,
 )
-from app.domain.conversation.policy import recommendation_readiness
+from app.domain.conversation.policy import decide_goal, recommendation_readiness
 from app.domain.profile.memory import merge_memory
 from app.domain.profile.merger import ProfileMerger
 from app.domain.profile.models import (
@@ -253,6 +258,8 @@ def test_judgment_verifies_the_relation_and_preserves_the_existing_parallel_call
     assert signal.reason is None
     assert signal.origin is not None
     assert extractor.calls == judge.calls == 1
+    assert completed.state.conversation_context.direction == ConversationDirection.DEVELOPING
+    assert completed.state.explored_topics == ["스스로 선택하는 기준"]
 
 
 def test_judge_does_not_promote_a_hypothesis_into_a_value():
@@ -267,6 +274,54 @@ def test_judge_does_not_promote_a_hypothesis_into_a_value():
         ["혼자 카페에 갔어요"],
     )
     assert not delta.items
+
+
+@pytest.mark.parametrize("direction", list(ConversationDirection))
+def test_observation_requires_actual_user_evidence(direction):
+    raw = {"focus": "선택의 기준", "direction": direction.value, "evidence": "제가 납득해야 골라요"}
+    assert parse_conversation_context(raw, UTTERANCE, 2).source_turn == 2
+    assert parse_conversation_context(raw, "그런 말 안 했어요", 2) is None
+
+
+def test_quiet_explanation_is_followed_but_old_observation_does_not_control_new_turns():
+    state = ready_state()
+    state.move_history = ["follow"] * 3
+    state.conversation_context = ConversationContext(
+        "선택의 기준", ConversationDirection.DEVELOPING, "납득이 중요해요", state.turn_count
+    )
+    assert decide_goal(state, "그런 이유가 있어요").move == ConversationMove.FOLLOW
+    state.conversation_context = ConversationContext(
+        "선택의 기준", ConversationDirection.DEVELOPING, "납득이 중요해요", 0
+    )
+    assert decide_goal(state, "그런 이유가 있어요").move == ConversationMove.SHIFT
+
+
+@pytest.mark.parametrize("direction", ["developing", "settled"])
+def test_ready_profile_reserves_closing_unless_story_is_developing(direction):
+    state = ready_state()
+    gateway = Extractor(
+        {
+            "items": [],
+            "conversation": {
+                "focus": "선택의 기준",
+                "direction": direction,
+                "evidence": "제 기준으로 고른 거예요",
+            },
+        }
+    )
+    service = ConversationService(model_gateway=gateway, extraction_model="extractor")
+    completed = asyncio.run(
+        service.complete_turn(
+            state,
+            utterance="제 기준으로 고른 거예요",
+            raw_reply="스스로 납득되는 선택이었군요.",
+            goal=ConversationGoal.CHAT,
+        )
+    )
+    assert completed.state.status == SessionStatus.ACTIVE
+    assert completed.state.pending_wrap == (
+        CompletionReason.SUFFICIENT if direction == "settled" else None
+    )
 
 
 def test_summary_receives_values_but_not_detailed_context_or_source_quotes():
@@ -322,3 +377,19 @@ def test_negative_personal_principle_keeps_its_reason():
     assert signal.field == TasteField.DISLIKES
     assert signal.insight_kind == InsightKind.VALUE
     assert signal.reason.text == "제 선택이 없어지는 것 같아서요"
+
+
+def test_session_round_trip_keeps_conversation_context_without_changing_legacy_sessions():
+    state = ready_state()
+    state.conversation_context = ConversationContext(
+        "선택의 기준", ConversationDirection.DEVELOPING, "납득이 중요해요", 1
+    )
+    state.explored_topics = ["선택의 기준"]
+    assert (
+        ConversationState.from_dict(state.to_dict()).conversation_context
+        == state.conversation_context
+    )
+    old = state.to_dict()
+    old.pop("conversation_context")
+    old.pop("explored_topics")
+    assert ConversationState.from_dict(old).conversation_context is None

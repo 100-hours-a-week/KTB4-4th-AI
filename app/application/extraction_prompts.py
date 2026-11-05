@@ -30,6 +30,20 @@ insightKind는 위 preference/value/life_attitude 중 하나다.
 민감정보는 이 원문 조각에도 넣지 않는다. 단순 감정과 가치 기준, 한 상황과 일반적인 생각을
 구별한다.
 
+[이번 대화의 관찰]
+conversation에는 focus(현재 경험이나 생각의 주제), direction, evidence를 넣을 수 있다.
+evidence는 반드시 이번 사용자 발화의 160자 이하 원문 조각이다. 근거가 없으면 conversation은
+null이다.
+focus는 사용자가 말한 경험을 묶는 이름이다. 같은 카페의 자리·조명·음악을 서로 다른 경험으로
+세지 않는다.
+direction은 developing(이유·기준·계기·예외를 새로 설명하거나 해석을 고치는 중),
+settled(기준과 맥락이 드러나 이번 이야기를 정리할 수 있음),
+broaden(이미 들은 내용을 반복하거나 이 주제를 마쳐 다른 경험을 들을 여지가 있음),
+unknown(불명확) 중 하나다.
+길이·감탄만으로 developing을 고르지 않는다. 단순 호감 하나만으로 settled로 만들지 않는다.
+이 관찰은 대화용 참고이며 확정된 프로필이 아니다. 새 주제를 질문했다는 이유만으로 경험했다고
+기록하지 않는다.
+
 [원칙]
 사용자가 실제로 말한 내용만 근거로 삼는다. 잘못된 항목을 만드는 것이 빠뜨리는 것보다 나쁘다.
 AI 메시지는 사용자의 답을 해석하는 문맥으로만 쓰고,
@@ -210,6 +224,20 @@ context는 그 선호·기준이 적용된 상황, reason은 사용자가 말한
 민감정보는 이 원문 조각에도 넣지 않는다. 단순 감정과 가치 기준, 한 상황과 일반적인 생각을
 구별한다.
 
+[이번 대화의 관찰]
+conversation에는 focus(현재 경험이나 생각의 주제), direction, evidence를 넣을 수 있다.
+evidence는 반드시 이번 사용자 발화의 160자 이하 원문 조각이다. 근거가 없으면 conversation은
+null이다.
+focus는 사용자가 말한 경험을 묶는 이름이다. 같은 카페의 자리·조명·음악을 서로 다른 경험으로
+세지 않는다.
+direction은 developing(이유·기준·계기·예외를 새로 설명하거나 해석을 고치는 중),
+settled(기준과 맥락이 드러나 이번 이야기를 정리할 수 있음),
+broaden(이미 들은 내용을 반복하거나 이 주제를 마쳐 다른 경험을 들을 여지가 있음),
+unknown(불명확) 중 하나다.
+길이·감탄만으로 developing을 고르지 않는다. 단순 호감 하나만으로 settled로 만들지 않는다.
+이 관찰은 대화용 참고이며 확정된 프로필이 아니다. 새 주제를 질문했다는 이유만으로 경험했다고
+기록하지 않는다.
+
 insight_kind는 preference/value/life_attitude 중 하나이며 value와 life_attitude는 kind를
 attribute로 둔다.
 
@@ -362,9 +390,11 @@ def _extraction_input(
 ) -> list[dict[str, str]]:
     # 추출은 이번 턴을 history에 넣기 전에 실행되므로 history의 마지막 assistant 메시지가
     # 사용자가 이번에 답한 직전 발화다.
+    observation = state.conversation_context.to_dict() if state.conversation_context else None
     content = (
         f"[STATE]\n{_state_block(state.profile)}\n"
         f"[최근 대화]\n{_recent_dialogue(state) or '(없음)'}\n"
+        f"[이전 대화 관찰]\n{json.dumps(observation, ensure_ascii=False)}\n"
         f"[이번 사용자 발화]\n{utterance}"
     )
     return [

@@ -6,7 +6,6 @@ from app.application.conversation_service import ConversationService
 from app.application.taste_judgment import correction_targets
 from app.domain.conversation.models import ConversationGoal, ConversationMove, ConversationState
 from app.domain.conversation.policy import (
-    MIN_RECALL_TURN,
     conversation_progress,
     decide_goal,
     recommendation_readiness,
@@ -247,7 +246,7 @@ def _state_ready_to_shift(old: LongTermMemory) -> ConversationState:
         user_id=1,
         conversation_room_id=2,
         memory=old,
-        turn_count=MIN_RECALL_TURN,
+        turn_count=4,
         last_active_at=NOW,
         move_history=["follow", "follow", "follow"],
     )
@@ -255,21 +254,21 @@ def _state_ready_to_shift(old: LongTermMemory) -> ConversationState:
     return state
 
 
-def test_fading_memory_is_rechecked_once_when_the_topic_changes() -> None:
+def test_topic_review_does_not_insert_an_unrelated_past_interest() -> None:
     state = _state_ready_to_shift(
         memory(signal(TasteField.INTERESTS, "보드게임", 0.9, days_ago=60))
     )
 
     decision = decide_goal(state, "")
     assert decision.goal == ConversationGoal.CHAT
-    assert decision.move == ConversationMove.RECALL
-    assert decision.scene == "보드게임"
+    assert decision.move == ConversationMove.SHIFT
+    assert decision.scene is None
 
     record_companion_turn(
         state,
         utterance="네",
-        move=decision.move,
-        scene=decision.scene,
+        move=ConversationMove.RECALL,
+        scene="보드게임",
         answer_depth=None,
         new_interests=[],
     )
@@ -282,7 +281,7 @@ def test_recheck_waits_until_this_conversation_has_its_own_story() -> None:
     state = _state_ready_to_shift(
         memory(signal(TasteField.INTERESTS, "보드게임", 0.9, days_ago=60))
     )
-    state.turn_count = MIN_RECALL_TURN - 1
+    state.turn_count = 3
 
     assert decide_goal(state, "").move != ConversationMove.RECALL
 

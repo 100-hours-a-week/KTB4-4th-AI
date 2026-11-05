@@ -15,6 +15,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
+from app.application.conversation_context import ConversationContextPayload
 from app.domain.conversation.models import ConversationState
 from app.domain.profile.memory import remembered_signals
 from app.domain.profile.merger import normalize_text
@@ -303,6 +304,7 @@ class CandidateDeltaPayload(_CandidateModel):
 
     candidates: list[CandidatePayload] = Field(default_factory=list, max_length=MAX_CANDIDATES)
     axes: list[AxisValue] = Field(default_factory=list, max_length=3)
+    conversation: ConversationContextPayload | None = None
 
 
 def parse_candidates(raw: object) -> tuple[list[Candidate], list[str], list[str]]:
