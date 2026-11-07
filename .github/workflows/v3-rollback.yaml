@@ -251,15 +251,15 @@ jobs:
           branch: automation/v3-${{ inputs.environment }}-ai-rollback
           delete-branch: true
           add-paths: ${{ env.GITOPS_FILE }}
-          commit-message: "revert(v3-${{ inputs.environment }}): rollback ai-fastapi image"
-          title: "revert(v3-${{ inputs.environment }}): rollback ai-fastapi image"
+          commit-message: "revert(v3-${{ inputs.environment }}): AI FastAPI 이미지 롤백"
+          title: "revert(v3-${{ inputs.environment }}): AI FastAPI 이미지 롤백"
           body: |
             ## 변경 내용
-            - V3 AI FastAPI GitOps 배포 변경 Revert
+            - V3 AI FastAPI GitOps 이미지 롤백
             - 대상 환경: `${{ inputs.environment }}`
-            - Rollback Commit: `${{ inputs.revert_commit }}`
-            - 복구 Image Tag: `${{ steps.image.outputs.tag }}`
-            - 복구 Image Digest: `${{ steps.image.outputs.digest }}`
+            - 롤백 대상 Commit: `${{ inputs.revert_commit }}`
+            - 복구 이미지 Tag: `${{ steps.image.outputs.tag }}`
+            - 복구 이미지 Digest: `${{ steps.image.outputs.digest }}`
 
             ## 배포 영향
             - AI FastAPI Deployment
@@ -270,8 +270,8 @@ jobs:
             - Kubernetes Rolling Update
 
             ## 검증
-            - [ ] Rollback 대상 Commit 확인
-            - [ ] 이전 정상 Image Digest 확인
+            - [ ] 롤백 대상 Commit 확인
+            - [ ] 이전 정상 이미지 Digest 확인
             - [ ] GitOps CI 통과
             - [ ] AI FastAPI Pod Ready 확인
             - [ ] `/health` 응답 확인
@@ -287,6 +287,6 @@ jobs:
         env:
           PR_URL: ${{ steps.create-pr.outputs.pull-request-url }}
         run: |
-          echo "AI V3 Rollback PR 생성 완료"
+          echo "AI V3 롤백 PR 생성 완료"
           echo "$PR_URL"
           echo "PR 검토 및 병합 후 Argo CD가 이전 이미지로 복구합니다."
