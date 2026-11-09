@@ -4,12 +4,14 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.llm_trace import bind_llm_session, llm_call
 from app.application.ports.model_gateway import ModelGateway
+from app.application.ports.session_lock import SessionLease, SessionLock
 from app.application.profile_keyword_prompts import KeywordSetPayload, build_keyword_messages
 from app.application.profile_summary_prompts import build_friend_summary_messages
 from app.application.search_intent_service import (
@@ -139,6 +141,8 @@ class ChatUseCases:
         states: ConversationStateStore,
         model_gateway: ModelGateway,
         response_model: str,
+        session_lock: SessionLock,
+        lock_wait_seconds: float = 20.0,
         response_timeout_seconds: float = 60.0,
         summary_timeout_seconds: float = 10.0,
         search_intents: SearchIntentService | None = None,
@@ -147,6 +151,9 @@ class ChatUseCases:
         """search_intents 가 있으면 새로 들어온 관심사의 검색 의도를 백그라운드로 만들어 둔다.
 
         keyword_model 이 있으면 분석 키워드를 그 모델로 묶고, 없으면 저장 값에서 만든다.
+
+        메시지 전송은 같은 세션이 처리 중이면 바로 거절하고, 나머지는 lock_wait_seconds 까지
+        기다린다. Backend 호출 타임아웃보다 짧게 둬서 끊기기 전에 처리 중 오류로 답한다.
         """
         self._conversations = conversations
         self._keyword_model = keyword_model
@@ -156,15 +163,33 @@ class ChatUseCases:
         self._response_model = response_model
         self._response_timeout_seconds = response_timeout_seconds
         self._summary_timeout_seconds = summary_timeout_seconds
-        self._locks: dict[int, asyncio.Lock] = {}
+        self._session_lock = session_lock
+        self._lock_wait_seconds = lock_wait_seconds
 
     def _prepare_intents(self, completed: CompletedTurn) -> None:
         """이번 턴에 저장된 관심사의 검색 의도를 만든다. 세션 종료 때 추천이 캐시를 읽는다."""
         if self._search_intents is not None:
             self._search_intents.schedule(intent_targets(completed.merge_result.accepted))
 
-    def _lock(self, session_id: int) -> asyncio.Lock:
-        return self._locks.setdefault(session_id, asyncio.Lock())
+    @asynccontextmanager
+    async def _hold(self, session_id: int, *, wait: bool = True) -> AsyncIterator[SessionLease]:
+        lease = await self._session_lock.acquire(
+            session_id,
+            wait_seconds=self._lock_wait_seconds if wait else 0.0,
+        )
+        if lease is None:
+            raise TurnInProgressError(session_id)
+        try:
+            yield lease
+        finally:
+            # 끊긴 스트림의 취소 중에도 락을 풀어야 재전송이 바로 들어온다.
+            await asyncio.shield(lease.release())
+
+    @staticmethod
+    async def _ensure_held(lease: SessionLease, session_id: int) -> None:
+        """저장 직전에 확인한다. 락을 잃었으면 다른 요청이 같은 턴을 만들 수 있다."""
+        if not await lease.renew():
+            raise TurnInProgressError(session_id)
 
     async def _complete(
         self,
@@ -273,8 +298,7 @@ class ChatUseCases:
         memory: LongTermMemory | None = None,
     ) -> StartedSession:
         bind_llm_session(conversation_room_id, user_id=user_id)
-        lock = self._lock(conversation_room_id)
-        async with lock:
+        async with self._hold(conversation_room_id) as lease:
             if await self._states.load(conversation_room_id) is not None:
                 raise SessionExistsError(conversation_room_id)
             prepared = self._conversations.prepare_session(
@@ -296,6 +320,7 @@ class ChatUseCases:
                 session_id=conversation_room_id,
             )
             greeting = self._conversations.record_opening(prepared.state, greeting)
+            await self._ensure_held(lease, conversation_room_id)
             await self._states.save(prepared.state)
             if self._search_intents is not None and onboarding is not None:
                 self._search_intents.schedule(onboarding_intent_targets(onboarding.interests))
@@ -309,10 +334,7 @@ class ChatUseCases:
         user_id: int,
     ) -> CompletedTurn:
         bind_llm_session(session_id, user_id=user_id)
-        lock = self._lock(session_id)
-        if lock.locked():
-            raise TurnInProgressError(session_id)
-        async with lock:
+        async with self._hold(session_id, wait=False) as lease:
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -351,6 +373,7 @@ class ChatUseCases:
                 move=prepared.decision.move,
                 scene=prepared.decision.scene,
             )
+            await self._ensure_held(lease, session_id)
             await self._states.save(completed.state)
             self._prepare_intents(completed)
             return completed
@@ -367,7 +390,7 @@ class ChatUseCases:
         여기서 막히는 요청은 HTTP 오류로 응답한다. 확정된 턴은 입력이 잠긴 뒤에도 다시 받을 수
         있어야 하므로 상태 검사보다 먼저 본다.
         """
-        if self._lock(session_id).locked():
+        if await self._session_lock.is_locked(session_id):
             raise TurnInProgressError(session_id)
         state = await self._states.load(session_id)
         if state is None or state.user_id != user_id:
@@ -391,10 +414,7 @@ class ChatUseCases:
         저장하지 않으므로, 같은 메시지를 다시 보내 처음부터 생성할 수 있다.
         """
         bind_llm_session(session_id, user_id=user_id)
-        lock = self._lock(session_id)
-        if lock.locked():
-            raise TurnInProgressError(session_id)
-        async with lock:
+        async with self._hold(session_id, wait=False) as lease:
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -456,6 +476,7 @@ class ChatUseCases:
                     scene=prepared.decision.scene,
                 )
                 completed.state.last_user_message_id = user_message_id
+                await self._ensure_held(lease, session_id)
                 await self._states.save(completed.state)
                 self._prepare_intents(completed)
 
@@ -586,7 +607,7 @@ class ChatUseCases:
         )
 
     async def get_close_analysis(self, session_id: int, *, user_id: int) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -594,7 +615,7 @@ class ChatUseCases:
             return self._stored_analysis(state)
 
     async def analyze_session(self, session_id: int) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id) as lease:
             state = await self._states.load(session_id)
             if state is None:
                 raise SessionNotFoundError(session_id)
@@ -627,6 +648,7 @@ class ChatUseCases:
             }
             state.analysis_patch_used = False
             state.status = SessionStatus.REVIEW
+            await self._ensure_held(lease, session_id)
             await self._states.save(state)
             return self._stored_analysis(state)
 
@@ -705,7 +727,7 @@ class ChatUseCases:
         taste_keywords: list[str],
         interest_keywords: list[str],
     ) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -733,7 +755,7 @@ class ChatUseCases:
             return self._stored_analysis(state)
 
     async def close_session(self, session_id: int, *, user_id: int) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)

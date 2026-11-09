@@ -20,7 +20,7 @@ from app.domain.conversation.policy import recommendation_readiness
 from app.domain.recommendation import build_search_queries
 from app.infrastructure.embedding import OpenAICompatibleEmbedder
 from app.infrastructure.model_gateway import OpenAICompatibleModelGateway, SystemOneJudgmentGateway
-from app.infrastructure.persistence import InMemorySessionStore
+from app.infrastructure.persistence import InMemorySessionLock, InMemorySessionStore
 from benchmarks.persona_dialogue import PersonaReply, persona_messages
 from benchmarks.query_review import review_queries
 from benchmarks.runner import percentile, summarize
@@ -309,6 +309,7 @@ def build_chat(config, settings, client, calls, session_backend=None):
         states=states,
         model_gateway=gateway,
         response_model="response",
+        session_lock=InMemorySessionLock(),
         response_timeout_seconds=config["response"]["timeout_seconds"],
         summary_timeout_seconds=config["summary_timeout_seconds"],
         keyword_model="extraction",

@@ -8,7 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import v1_chat
-from app.application.chat_use_cases import ChatUseCases, ReplyDelta
+from app.application.chat_use_cases import (
+    ChatUseCases,
+    ConfirmedTurn,
+    ReplyDelta,
+    TurnInProgressError,
+)
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.ports.model_gateway import Message
@@ -20,7 +25,7 @@ from app.domain.conversation.guards import (
     stable_reply_prefix,
 )
 from app.domain.conversation.models import ConversationGoal, ConversationState, SessionStatus
-from app.infrastructure.persistence import InMemorySessionStore
+from app.infrastructure.persistence import InMemorySessionLock, InMemorySessionStore
 from app.main import create_app
 
 HEADERS = {"Authorization": "Bearer test-token"}
@@ -243,6 +248,7 @@ def _use_cases(gateway: StreamGateway) -> tuple[ChatUseCases, ConversationStateS
         states=states,
         model_gateway=gateway,
         response_model="responder",
+        session_lock=InMemorySessionLock(),
     )
     return use_cases, states
 
@@ -288,7 +294,130 @@ def test_closed_stream_cancels_generation_and_saves_nothing() -> None:
         state = await states.load(9001)
         assert state.turn_count == 0
         assert state.last_user_message_id is None
-        assert not use_cases._lock(9001).locked()
+        assert not await use_cases._session_lock.is_locked(9001)
+
+    asyncio.run(scenario())
+
+
+def _servers(
+    gateway: StreamGateway, lock: object, count: int = 2
+) -> tuple[list[ChatUseCases], ConversationStateStore]:
+    """같은 세션 저장소와 락을 보는 AI 서버 여러 대. 운영에서는 둘 다 Redis다."""
+    states = ConversationStateStore(InMemorySessionStore())
+    servers = [
+        ChatUseCases(
+            conversations=ConversationService(model_gateway=gateway, extraction_model="extractor"),
+            states=states,
+            model_gateway=gateway,
+            response_model="responder",
+            session_lock=lock,  # type: ignore[arg-type]
+        )
+        for _ in range(count)
+    ]
+    return servers, states
+
+
+def test_resent_message_on_other_server_does_not_generate_twice() -> None:
+    async def scenario() -> None:
+        gateway = StreamGateway()
+        gateway.extraction_gate = asyncio.Event()
+        (first, second), states = _servers(gateway, InMemorySessionLock())
+        await first.create_session(user_id=1, conversation_room_id=9001)
+
+        events = first.stream_message(9001, "주말마다 캠핑 가요", user_id=1, user_message_id=1)
+        assert isinstance(await anext(events), ReplyDelta)
+
+        # 첫 서버가 만드는 중에 재전송이 다른 서버로 가도 거절한다.
+        with pytest.raises(TurnInProgressError):
+            await second.find_confirmed_turn(9001, user_id=1, user_message_id=1)
+        with pytest.raises(TurnInProgressError):
+            await anext(
+                second.stream_message(9001, "주말마다 캠핑 가요", user_id=1, user_message_id=1)
+            )
+
+        gateway.extraction_gate.set()
+        rest = [item async for item in events]
+        assert isinstance(rest[-1], CompletedTurn)
+
+        # 첫 서버가 저장한 뒤의 재전송은 새로 만들지 않고 저장된 답을 돌려준다.
+        confirmed = await second.find_confirmed_turn(9001, user_id=1, user_message_id=1)
+        assert isinstance(confirmed, ConfirmedTurn)
+        assert confirmed.state.history[-1].content == rest[-1].reply
+        assert gateway.stream_calls == 1
+        assert (await states.load(9001)).turn_count == 1
+
+    asyncio.run(scenario())
+
+
+class LosingLock:
+    """락을 잡은 뒤 다른 요청에 넘어간 상황. 저장 직전 확인에서 잃은 것을 알게 된다."""
+
+    def __init__(self) -> None:
+        self.inner = InMemorySessionLock()
+        self.lose = False
+
+    async def acquire(self, session_id: int, *, wait_seconds: float):
+        lease = await self.inner.acquire(session_id, wait_seconds=wait_seconds)
+        if lease is None:
+            return None
+        renew = lease.renew
+
+        async def renew_unless_lost() -> bool:
+            return not self.lose and await renew()
+
+        lease.renew = renew_unless_lost  # type: ignore[method-assign]
+        return lease
+
+    async def is_locked(self, session_id: int) -> bool:
+        return await self.inner.is_locked(session_id)
+
+
+def test_turn_is_not_saved_when_lock_was_lost() -> None:
+    async def scenario() -> None:
+        gateway = StreamGateway()
+        lock = LosingLock()
+        (server,), states = _servers(gateway, lock, count=1)
+        await server.create_session(user_id=1, conversation_room_id=9001)
+
+        lock.lose = True
+        events = server.stream_message(9001, "주말마다 캠핑 가요", user_id=1, user_message_id=1)
+        with pytest.raises(TurnInProgressError):
+            async for _ in events:
+                pass
+
+        state = await states.load(9001)
+        assert state.turn_count == 0
+        assert state.last_user_message_id is None
+        assert not await lock.is_locked(9001)
+
+    asyncio.run(scenario())
+
+
+def test_lost_lock_is_sent_as_retryable_stream_error() -> None:
+    async def scenario() -> None:
+        gateway = StreamGateway()
+        lock = LosingLock()
+        (server,), _ = _servers(gateway, lock, count=1)
+        await server.create_session(user_id=1, conversation_room_id=9001)
+
+        lock.lose = True
+        text = "".join(
+            [
+                chunk
+                async for chunk in v1_chat._sse_stream(
+                    server.stream_message(9001, "주말마다 캠핑 가요", user_id=1, user_message_id=1)
+                )
+            ]
+        )
+        events, _ = parse_sse(text)
+        assert events[-1] == (
+            "error",
+            {
+                "code": "TURN_IN_PROGRESS",
+                "message": "이전 메시지를 아직 처리하고 있습니다.",
+                "retryable": True,
+            },
+        )
 
     asyncio.run(scenario())
 
