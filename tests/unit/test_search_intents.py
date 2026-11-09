@@ -27,7 +27,7 @@ from app.domain.recommendation import (
     build_search_queries,
     intent_key,
 )
-from app.infrastructure.persistence import InMemorySessionStore
+from app.infrastructure.persistence import InMemorySessionLock, InMemorySessionStore
 from app.infrastructure.persistence.memory_search_intent_store import InMemorySearchIntentStore
 from app.infrastructure.persistence.redis_search_intent_store import RedisSearchIntentStore
 
@@ -381,6 +381,7 @@ def test_chat_schedules_intents_for_onboarding_and_new_interests() -> None:
             states=ConversationStateStore(InMemorySessionStore()),
             model_gateway=gateway,
             response_model="r",
+            session_lock=InMemorySessionLock(),
             search_intents=intents,  # type: ignore[arg-type]
         )
         await use_cases.create_session(

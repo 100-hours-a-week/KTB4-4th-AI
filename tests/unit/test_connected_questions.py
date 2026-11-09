@@ -15,7 +15,7 @@ from app.application.taste_judgment import (
 from app.domain.conversation.models import ConversationState, ConversationTurn, SessionStatus
 from app.domain.profile.merger import ProfileMerger
 from app.domain.profile.models import EvidenceType, InsightKind, ProfileState, TasteField, utc_now
-from app.infrastructure.persistence import InMemorySessionStore
+from app.infrastructure.persistence import InMemorySessionLock, InMemorySessionStore
 
 PREVIOUS_QUESTION = "커피는 어떤 맛이 좋아요?"
 CONNECTED_QUESTION = "그런 커피는 집에서 마셔요, 카페에서 마셔요?"
@@ -48,6 +48,7 @@ def setup(gateway):
         states=states,
         model_gateway=gateway,
         response_model="response",
+        session_lock=InMemorySessionLock(),
     )
     state = ConversationState(user_id=1, conversation_room_id=101)
     state.history = [ConversationTurn("assistant", PREVIOUS_QUESTION, utc_now())]

@@ -7,7 +7,7 @@ from app.application.chat_use_cases import ChatUseCases, ResponseModelUnavailabl
 from app.application.conversation_service import ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.infrastructure.model_gateway import ModelGatewayError
-from app.infrastructure.persistence import InMemorySessionStore
+from app.infrastructure.persistence import InMemorySessionLock, InMemorySessionStore
 
 
 class FailingGateway:
@@ -28,6 +28,7 @@ def use_cases(gateway: FailingGateway, *, timeout: float = 5.0) -> ChatUseCases:
         states=ConversationStateStore(InMemorySessionStore()),
         model_gateway=gateway,
         response_model="google/gemini",
+        session_lock=InMemorySessionLock(),
         response_timeout_seconds=timeout,
     )
 
