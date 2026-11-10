@@ -8,9 +8,11 @@ Backend가 그대로 저장했다가 다음 대화방을 만들 때 다시 보�
 
 from __future__ import annotations
 
+import random
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from app.domain.profile.merger import (
@@ -265,13 +267,13 @@ def known_memory(
     return known[:limit]
 
 
-def _recallable(
+def _recallable_signal(
     memory: LongTermMemory | None,
     now: datetime,
     *,
     known: bool,
     exclude: Iterable[str],
-) -> str | None:
+) -> ProfileSignal | None:
     skipped = {normalize_text(value) for value in exclude}
     candidates = [
         signal
@@ -282,12 +284,93 @@ def _recallable(
     ]
     if not candidates:
         return None
-    return max(candidates, key=taste_rank_score).value
+    return max(candidates, key=taste_rank_score)
+
+
+def _recallable(
+    memory: LongTermMemory | None,
+    now: datetime,
+    *,
+    known: bool,
+    exclude: Iterable[str],
+) -> str | None:
+    signal = _recallable_signal(memory, now, known=known, exclude=exclude)
+    return signal.value if signal else None
 
 
 def opening_topic(memory: LongTermMemory | None, now: datetime) -> str | None:
     """첫인사에서 꺼낼 지난 이야기. 확실한 관심사 중 최근 대화에서 꺼내지 않은 것이다."""
     return _recallable(memory, now, known=True, exclude=memory.recalled if memory else ())
+
+
+class OpeningAngle(StrEnum):
+    """다시 온 사용자에게 지난 이야기를 꺼내는 방식."""
+
+    STATUS = "status"  # 그 활동의 근황
+    SCENE = "scene"  # 지난번에 말한 장면에서 이어진 일
+    REASON = "reason"  # 같은 이유로 좋았던 다른 것
+    ORIGIN = "origin"  # 처음 시작한 때와 지금
+    FRESH = "fresh"  # 지난 이야기는 짚기만 하고 새 소재로 묻기
+
+
+@dataclass(slots=True, frozen=True)
+class OpeningHook:
+    """첫인사에 쓸 지난 이야기와 꺼내는 방식. quote는 그 방식의 근거가 되는 사용자 발화다."""
+
+    topic: str
+    angle: OpeningAngle
+    quote: str | None = None
+    days_since: int | None = None
+
+
+# 마지막 대화가 이 안이면 '요즘도'처럼 오래된 일로 묻지 않는다.
+RECENT_RETURN_DAYS = 2
+_QUOTE_ANGLES = (
+    (OpeningAngle.SCENE, "context"),
+    (OpeningAngle.REASON, "reason"),
+    (OpeningAngle.ORIGIN, "origin"),
+)
+
+
+def days_since_last(memory: LongTermMemory | None, now: datetime) -> int | None:
+    if memory is None or memory.updated_at is None:
+        return None
+    return max((now - memory.updated_at).days, 0)
+
+
+def opening_angles(signal: ProfileSignal, days_since: int | None) -> list[OpeningAngle]:
+    """기억에 실제로 있는 내용으로 꺼낼 수 있는 방식만 고른다.
+
+    방금 대화했으면 근황을 묻지 않고, 오래됐으면 세부를 기억하는 척하지 않는다.
+    """
+    angles = [OpeningAngle.FRESH]
+    if days_since is None or days_since > RECENT_RETURN_DAYS:
+        angles.append(OpeningAngle.STATUS)
+    if days_since is None or days_since < LONG_ABSENCE_DAYS:
+        angles.extend(angle for angle, key in _QUOTE_ANGLES if getattr(signal, key))
+    return angles
+
+
+def opening_hook(
+    memory: LongTermMemory | None,
+    now: datetime,
+    *,
+    rng: random.Random | None = None,
+) -> OpeningHook | None:
+    """첫인사에서 꺼낼 지난 이야기와 방식. 꺼낼 기억이 없으면 None 이다."""
+    signal = _recallable_signal(memory, now, known=True, exclude=memory.recalled if memory else ())
+    if signal is None:
+        return None
+    days = days_since_last(memory, now)
+    angle = (rng or random).choice(opening_angles(signal, days))
+    quote_key = dict(_QUOTE_ANGLES).get(angle)
+    quote = getattr(signal, quote_key) if quote_key else None
+    return OpeningHook(
+        topic=signal.value,
+        angle=angle,
+        quote=quote.text if quote else None,
+        days_since=days,
+    )
 
 
 def recheck_topic(
@@ -298,9 +381,3 @@ def recheck_topic(
 ) -> str | None:
     """대화 중 한 번 다시 확인할 기억. 흐려지고 있지만 아직 잊지 않은 관심사다."""
     return _recallable(memory, now, known=False, exclude=exclude)
-
-
-def long_absence(memory: LongTermMemory | None, now: datetime) -> bool:
-    if memory is None or memory.updated_at is None:
-        return False
-    return (now - memory.updated_at).days >= LONG_ABSENCE_DAYS

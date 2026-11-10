@@ -61,8 +61,7 @@ from app.domain.conversation.policy import (
 from app.domain.profile.memory import (
     LongTermMemory,
     dropped_memory_keys,
-    long_absence,
-    opening_topic,
+    opening_hook,
     remembered_signals,
 )
 from app.domain.profile.merger import MergeResult, ProfileMerger, normalize_text
@@ -322,15 +321,10 @@ class ConversationService:
             memory=memory,
         )
         name = onboarding.address_name if onboarding else None
-        topic = opening_topic(memory, resolved_now)
-        if topic is not None:
-            state.memory_recalled.append(topic)
-        messages = build_opening_messages(
-            name=name,
-            now=resolved_now,
-            memory_topic=topic,
-            long_absence=long_absence(memory, resolved_now),
-        )
+        hook = opening_hook(memory, resolved_now)
+        if hook is not None:
+            state.memory_recalled.append(hook.topic)
+        messages = build_opening_messages(name=name, now=resolved_now, hook=hook)
         return PreparedSession(state=state, messages=tuple(messages))
 
     def record_opening(

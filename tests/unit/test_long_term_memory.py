@@ -1,7 +1,13 @@
+import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from app.application.conversation_prompts import RETURNING_OPENING_INSTRUCTION, build_reply_messages
+from app.application.conversation_prompts import (
+    RETURNING_ANGLES,
+    RETURNING_OPENING_INSTRUCTION,
+    build_opening_messages,
+    build_reply_messages,
+)
 from app.application.conversation_service import ConversationService
 from app.application.taste_judgment import correction_targets
 from app.domain.conversation.models import ConversationGoal, ConversationMove, ConversationState
@@ -15,10 +21,14 @@ from app.domain.profile.memory import (
     FORGET_CONFIDENCE,
     HALF_LIFE_DAYS,
     LongTermMemory,
+    OpeningAngle,
+    OpeningHook,
     combined_profile,
     dropped_memory_keys,
     effective_confidence,
     merge_memory,
+    opening_angles,
+    opening_hook,
     opening_topic,
     recheck_topic,
 )
@@ -26,6 +36,7 @@ from app.domain.profile.merger import link_role_for, visibility_for
 from app.domain.profile.models import (
     DropRef,
     EvidenceType,
+    GroundedQuote,
     ProfileSignal,
     ProfileState,
     SignalStatus,
@@ -61,12 +72,14 @@ def signal(
     )
 
 
-def memory(*signals: ProfileSignal, recalled: list[str] | None = None) -> LongTermMemory:
+def memory(
+    *signals: ProfileSignal, recalled: list[str] | None = None, days_since: int = 7
+) -> LongTermMemory:
     return LongTermMemory(
         user_id=1,
         signals=list(signals),
         session_count=1,
-        updated_at=NOW - timedelta(days=7),
+        updated_at=NOW - timedelta(days=days_since),
         recalled=recalled or [],
     )
 
@@ -217,8 +230,60 @@ def test_returning_user_opening_mentions_one_remembered_topic() -> None:
 
     instruction = prepared.messages[1]["content"]
     assert instruction.startswith(RETURNING_OPENING_INSTRUCTION.split("{absence}")[0])
+    assert "[꺼내는 방식]" in instruction
     assert "'캠핑'" in instruction
     assert prepared.state.memory_recalled == ["캠핑"]
+
+
+def quoted(item: ProfileSignal, **quotes: str) -> ProfileSignal:
+    return replace(item, **{key: GroundedQuote(text, 1) for key, text in quotes.items()})
+
+
+def test_opening_angles_follow_what_memory_actually_has() -> None:
+    plain = signal(TasteField.HOBBIES, "캠핑")
+    rich = quoted(plain, context="바다 앞 캠핑장에서 불멍했어요", reason="조용해서 좋아요")
+
+    # 인용이 없으면 장면·이유·계기로 꺼내지 않는다.
+    assert opening_angles(plain, 7) == [OpeningAngle.FRESH, OpeningAngle.STATUS]
+    assert set(opening_angles(rich, 7)) == {
+        OpeningAngle.FRESH,
+        OpeningAngle.STATUS,
+        OpeningAngle.SCENE,
+        OpeningAngle.REASON,
+    }
+    # 방금 대화했으면 근황을 묻지 않고, 오래됐으면 세부를 기억하는 척하지 않는다.
+    assert OpeningAngle.STATUS not in opening_angles(rich, 1)
+    assert opening_angles(rich, 45) == [OpeningAngle.FRESH, OpeningAngle.STATUS]
+
+
+def test_opening_hook_carries_the_quote_behind_the_chosen_angle() -> None:
+    camping = quoted(signal(TasteField.HOBBIES, "캠핑"), reason="조용해서 좋아요")
+    old = memory(camping)
+
+    hooks = {opening_hook(old, NOW, rng=random.Random(seed)) for seed in range(30)}
+
+    assert {hook.angle for hook in hooks if hook} == {
+        OpeningAngle.FRESH,
+        OpeningAngle.STATUS,
+        OpeningAngle.REASON,
+    }
+    for hook in hooks:
+        assert hook is not None and hook.topic == "캠핑" and hook.days_since == 7
+        assert hook.quote == ("조용해서 좋아요" if hook.angle == OpeningAngle.REASON else None)
+
+
+def test_returning_opening_instruction_uses_angle_quote_and_gap() -> None:
+    reason = OpeningHook("캠핑", OpeningAngle.REASON, quote="조용해서 좋아요", days_since=1)
+    fresh = OpeningHook("캠핑", OpeningAngle.FRESH, days_since=40)
+
+    reason_text = build_opening_messages(hook=reason, now=NOW)[1]["content"]
+    fresh_text = build_opening_messages(hook=fresh, now=NOW, rng=random.Random(0))[1]["content"]
+
+    assert '"조용해서 좋아요"' in reason_text
+    assert RETURNING_ANGLES[OpeningAngle.REASON] in reason_text
+    assert "얼마 전이다" in reason_text
+    assert "[새 소재]" in fresh_text and "꽤 오랜만에 왔다" in fresh_text
+    assert "그때 한 말" not in fresh_text
 
 
 def test_first_time_user_gets_the_usual_opening() -> None:
@@ -300,7 +365,9 @@ def test_reply_prompt_lists_known_memory_not_heard_in_this_conversation() -> Non
     )
 
     messages = build_reply_messages(state, ConversationGoal.CHAT, "요즘 바빠요")
-    memo = next(m["content"] for m in messages if m["content"].startswith("지난 대화에서"))
+    memo = next(
+        message["content"] for message in messages if message["content"].startswith("지난 대화에서")
+    )
 
     assert "커피(관심)" in memo
     assert "캠핑" not in memo
