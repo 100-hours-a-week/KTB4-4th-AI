@@ -296,6 +296,18 @@ def test_quiet_explanation_is_followed_but_old_observation_does_not_control_new_
     assert decide_goal(state, "그런 이유가 있어요").move == ConversationMove.SHIFT
 
 
+def test_settled_topic_can_broaden_before_follow_up_limit():
+    state = ready_state()
+    state.move_history = ["follow"]
+    state.conversation_context = ConversationContext(
+        "야구장 응원",
+        ConversationDirection.SETTLED,
+        "같은 팀 팬끼리 응원할 때 좋아요",
+        state.turn_count,
+    )
+    assert decide_goal(state, "그날그날 달라요").move == ConversationMove.SHIFT
+
+
 @pytest.mark.parametrize("direction", ["developing", "settled"])
 def test_ready_profile_reserves_closing_unless_story_is_developing(direction):
     state = ready_state()
