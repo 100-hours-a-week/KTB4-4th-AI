@@ -24,7 +24,7 @@ MAX_HISTORY_MESSAGES = 18
 OPENING_TOPIC_AREAS: dict[str, tuple[str, ...]] = {
     "소소한 일상": (
         "요즘 기분 좋았던 일",
-        "요즘 나를 웃게한 것",
+        "요즘 웃었던 일",
         "요즘 자주 하는 것",
     ),
     "쉬는 날": (
