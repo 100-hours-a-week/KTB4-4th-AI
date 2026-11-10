@@ -375,9 +375,11 @@ def test_reply_prompt_lists_known_memory_not_heard_in_this_conversation() -> Non
     )
 
     messages = build_reply_messages(state, ConversationGoal.CHAT, "요즘 바빠요")
-    memo = next(
-        message["content"] for message in messages if message["content"].startswith("지난 대화에서")
-    )
+    # 참고 자료는 시스템 메시지 하나에 섹션으로 묶인다.
+    sections = [
+        part for m in messages if m["role"] == "system" for part in m["content"].split("\n\n")
+    ]
+    memo = next(section for section in sections if section.startswith("지난 대화에서"))
 
     assert "커피(관심)" in memo
     assert "캠핑" not in memo

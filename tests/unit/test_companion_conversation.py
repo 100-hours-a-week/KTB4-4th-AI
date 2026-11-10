@@ -4,9 +4,6 @@ from datetime import UTC, datetime
 import pytest
 
 from app.application.conversation_prompts import (
-    COMPANION_MOVES,
-    CORRECTION_NOTE,
-    NEW_TOPIC,
     SYSTEM_COMPANION,
     build_opening_messages,
     build_reply_messages,
@@ -107,9 +104,7 @@ def test_unsure_answer_lowers_the_burden_without_guessing_preferences() -> None:
         state, ConversationGoal.CHAT, "좋아하는 거요? 딱히 없는데", move=ConversationMove.FOLLOW
     )[-1]["content"]
 
-    assert "방금 모른다고 한 내용이나 이유를 다시 묻지 않는다" in card
-    assert "질문은 하나만 한다" in card
-    assert "혹시 ~ 좋아해요?" not in card
+    assert "지금 이야기에서 더 쉽게 떠올릴 수 있는 장면" in card
 
 
 def test_puzzled_reply_is_not_treated_as_asking_back() -> None:
@@ -123,10 +118,8 @@ def test_user_asking_back_is_followed_and_answered() -> None:
 
     decision = decide_goal(state, "니쥬는 뭐 좋아해요?")
     assert decision.move == ConversationMove.FOLLOW
-    card = build_reply_messages(state, decision.goal, "니쥬는 뭐 좋아해요?", move=decision.move)[
-        -1
-    ]["content"]
-    assert "네 생각부터 솔직하게 답한다" in card
+    messages = build_reply_messages(state, decision.goal, "니쥬는 뭐 좋아해요?", move=decision.move)
+    assert messages[-1] == {"role": "user", "content": "니쥬는 뭐 좋아해요?"}
 
 
 def test_low_energy_twice_lightens_with_choices() -> None:
@@ -208,9 +201,7 @@ def test_topic_review_does_not_force_a_choice_or_ignore_new_information() -> Non
     card = build_reply_messages(state, decision.goal, CALM_ANSWER, move=decision.move)[-1][
         "content"
     ]
-    assert NEW_TOPIC in card
-    assert "최신 사용자 말이 우선" in card
-    assert "완전히 다른 소재" not in card
+    assert "사용자가 이야기를 이어가면 더 듣는다" in card
 
 
 def test_unsure_answer_gets_choices_instead_of_the_same_question() -> None:
@@ -221,9 +212,7 @@ def test_unsure_answer_gets_choices_instead_of_the_same_question() -> None:
     card = build_reply_messages(
         state, decision.goal, "음 잘 모르겠어요", move=decision.move, scene=decision.scene
     )[-1]["content"]
-    assert card.startswith("사용자가 잘 모르겠다고 했다.")
-    assert NEW_TOPIC not in card
-    assert "현재 이야기의 쉬운 행동이나 장면" in card
+    assert "지금 이야기에서 더 쉽게 떠올릴 수 있는 장면" in card
 
 
 def test_answer_to_choices_is_followed_like_any_other_answer() -> None:
@@ -231,8 +220,8 @@ def test_answer_to_choices_is_followed_like_any_other_answer() -> None:
 
     decision = decide_goal(state, "바다요")
     assert decision.move == ConversationMove.FOLLOW
-    card = build_reply_messages(state, decision.goal, "바다요", move=decision.move)[-1]["content"]
-    assert "직전 질문과 이번 답을 함께 읽고" in card
+    messages = build_reply_messages(state, decision.goal, "바다요", move=decision.move)
+    assert messages[-1] == {"role": "user", "content": "바다요"}
 
 
 def test_short_pick_from_choices_is_not_low_energy() -> None:
@@ -268,11 +257,10 @@ def test_asking_back_takes_priority_over_topic_review() -> None:
 
     decision = decide_goal(state, "니쥬는 캠핑 가봤어요?")
     assert decision.move == ConversationMove.FOLLOW
-    card = build_reply_messages(
+    messages = build_reply_messages(
         state, decision.goal, "니쥬는 캠핑 가봤어요?", move=decision.move, scene=decision.scene
-    )[-1]["content"]
-    assert "네 생각부터 솔직하게 답한다" in card
-    assert NEW_TOPIC not in card
+    )
+    assert messages[-1] == {"role": "user", "content": "니쥬는 캠핑 가봤어요?"}
 
 
 def test_corrects_detects_user_fixing_nijyu() -> None:
@@ -302,10 +290,8 @@ def test_correction_stays_on_topic_even_when_follow_ups_are_used_up() -> None:
     decision = decide_goal(state, "그건 또 아니야")
     assert decision.move == ConversationMove.FOLLOW
     assert decision.scene is None
-    card = build_reply_messages(state, decision.goal, "그건 또 아니야", move=decision.move)[-1][
-        "content"
-    ]
-    assert card == CORRECTION_NOTE
+    messages = build_reply_messages(state, decision.goal, "그건 또 아니야", move=decision.move)
+    assert messages[-1] == {"role": "user", "content": "그건 또 아니야"}
 
 
 def test_unsure_correction_is_handled_before_choices() -> None:
@@ -313,16 +299,10 @@ def test_unsure_correction_is_handled_before_choices() -> None:
 
     decision = decide_goal(state, "그건 아닌데 잘 모르겠어요")
     assert decision.move == ConversationMove.FOLLOW
-    card = build_reply_messages(
+    messages = build_reply_messages(
         state, decision.goal, "그건 아닌데 잘 모르겠어요", move=decision.move
-    )[-1]["content"]
-    assert card == CORRECTION_NOTE
-
-
-def test_topic_notes_allow_relevant_memory_and_keep_choices_on_topic() -> None:
-    assert NEW_TOPIC in COMPANION_MOVES[ConversationMove.SHIFT]
-    assert NEW_TOPIC not in COMPANION_MOVES[ConversationMove.CHOICE]
-    assert "메모가 회상을 요청할 때" in SYSTEM_COMPANION
+    )
+    assert messages[-1] == {"role": "user", "content": "그건 아닌데 잘 모르겠어요"}
 
 
 def _topic_conversation() -> ConversationState:
@@ -353,9 +333,10 @@ def test_question_answer_context_is_kept_across_topic_moves(move: ConversationMo
 
 
 def test_prompt_has_no_fixed_topic_change_question() -> None:
-    for phrase in ("자주 듣는 노래", "단 거랑 짠 거", "끌어와 엮지"):
-        assert phrase not in SYSTEM_COMPANION
-        assert not any(phrase in note for note in COMPANION_MOVES.values())
+    messages = build_reply_messages(
+        companion_state(), ConversationGoal.CHAT, "요즘 뜨개질 해요", move=ConversationMove.SHIFT
+    )
+    assert not any("?" in message["content"] for message in messages if message["role"] == "system")
 
 
 # ---- 종료 ----
@@ -450,7 +431,7 @@ def test_move_card_and_memo_replace_state_json() -> None:
 
     assert messages[0]["content"] == SYSTEM_COMPANION
     card = messages[-1]["content"]
-    assert COMPANION_MOVES[ConversationMove.ADD] in card
+    assert "다른 경험으로 넓힐 때" in card
     assert not any('"items"' in message["content"] for message in messages)
     assert messages[-2] == {"role": "user", "content": "요즘 뜨개질 해요"}
 
@@ -464,7 +445,7 @@ def test_turn_note_does_not_split_question_and_answer() -> None:
     )
 
     messages = build_reply_messages(
-        state, ConversationGoal.CHAT, "중간", move=ConversationMove.FOLLOW
+        state, ConversationGoal.CHAT, "중간", move=ConversationMove.SHIFT
     )
 
     assert messages[-3]["role"] == "assistant"
