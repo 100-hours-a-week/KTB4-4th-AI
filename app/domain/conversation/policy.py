@@ -185,7 +185,10 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     # 직전 발화에서 기준·이유를 설명하는 중이라는 관찰은 참고하되, 최신 말이 우선이다.
     if developing and not avoids_answer(utterance):
         return chat(ConversationMove.FOLLOW)
-    if context and context.direction == ConversationDirection.BROADEN:
+    if context and context.direction in {
+        ConversationDirection.SETTLED,
+        ConversationDirection.BROADEN,
+    }:
         return chat(ConversationMove.SHIFT)
     if topic_follow_count(state) >= TOPIC_FOLLOW_LIMIT:
         return chat(ConversationMove.SHIFT)

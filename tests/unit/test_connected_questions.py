@@ -3,7 +3,6 @@ import asyncio
 import pytest
 
 from app.application.chat_use_cases import ChatUseCases, ReplyDelta, ResponseModelUnavailableError
-from app.application.conversation_prompts import DISCOVERY_INTRO
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.taste_judgment import (
@@ -55,12 +54,14 @@ def setup(gateway):
     return use_cases, states, state
 
 
-def test_opening_explains_hidden_taste_discovery_and_asks_one_question():
+def test_opening_greets_the_user_and_asks_one_question():
     async def run():
         gateway = Gateway("쉬는 날엔 주로 뭐 해요?")
         use_cases, _, _ = setup(gateway)
         started = await use_cases.create_session(user_id=1, conversation_room_id=101)
-        assert started.greeting == f"{DISCOVERY_INTRO} 쉬는 날엔 주로 뭐 해요?"
+        assert started.greeting == (
+            "안녕하세요, 니쥬에요~ 편하게 얘기해주세요! 쉬는 날엔 주로 뭐 해요?"
+        )
         assert started.greeting.count("?") == 1
 
     asyncio.run(run())

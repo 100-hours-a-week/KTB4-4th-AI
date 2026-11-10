@@ -84,7 +84,7 @@ def test_uncertainty_does_not_override_a_correction() -> None:
     decision = decide_goal(state, utterance)
     assert decision.move == ConversationMove.FOLLOW
     messages = build_reply_messages(state, decision.goal, utterance, move=decision.move)
-    assert "정정한 내용은 유효하다" in messages[-1]["content"]
+    assert messages[-1] == {"role": "user", "content": utterance}
 
 
 def test_repeated_specific_short_answers_are_not_treated_as_disengagement() -> None:
@@ -127,7 +127,7 @@ def test_uncertainty_after_choices_changes_the_question_without_repeating_it() -
     second = decide_goal(state, "글쎄요")
     assert second.move == ConversationMove.SHIFT
     messages = build_reply_messages(state, second.goal, "글쎄요", move=second.move)
-    assert "현재 이야기와 이어지는 더 쉬운 행동이나 장면" in messages[-1]["content"]
+    assert "다른 경험으로 넓힐 때" in messages[-1]["content"]
 
 
 @pytest.mark.parametrize(
@@ -135,7 +135,10 @@ def test_uncertainty_after_choices_changes_the_question_without_repeating_it() -
 )
 def test_declining_a_topic_changes_to_a_connected_question(utterance: str) -> None:
     state = ConversationState(user_id=1, conversation_room_id=1)
-    assert decide_goal(state, utterance).move == ConversationMove.SHIFT
+    decision = decide_goal(state, utterance)
+    assert decision.move == ConversationMove.SHIFT
+    messages = build_reply_messages(state, decision.goal, utterance, move=decision.move)
+    assert "더 말하고 싶지 않다고 했다" in messages[-1]["content"]
 
 
 @pytest.mark.parametrize("utterance", ["니쥬는 뭐 좋아해요?", "캠핑이 아니라 등산이요"])
@@ -169,8 +172,9 @@ def test_bounded_history_retains_question_answer_pairs_and_full_earlier_text() -
     assert [(m["role"], m["content"]) for m in dialogue[:-1]] == [
         (t.role, t.content) for t in state.history[-19:]
     ]
-    note = next(m["content"] for m in messages if m["content"].startswith("[이전 대화 참고 자료]"))
-    earlier = json.loads(note.split("\n", 1)[1])
+    system = [m["content"] for m in messages if m["role"] == "system"]
+    assert len(system) == 3  # 공통 지침, 참고 자료, 이번 턴 메모
+    earlier = json.loads(system[1].split("[이전 대화 참고 자료]\n", 1)[1])
     assert [m["role"] for m in earlier] == ["assistant", "user"] * 4
     assert earlier[1]["content"] == state.history[5].content
 
