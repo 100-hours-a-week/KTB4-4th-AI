@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from app.application.conversation_prompts import DISCOVERY_INTRO
+from app.application.conversation_prompts import RETURNING_INTROS
 from app.application.ports.model_gateway import Message
 from app.core.config import Settings
 from app.domain.conversation.models import SessionStatus
@@ -30,7 +30,7 @@ class FakeModelGateway:
         structured_results: list[Mapping[str, Any]] | None = None,
     ) -> None:
         self.completions = completions or [
-            "안녕하세요! 요즘 어떻게 지내세요?",
+            "요즘 어떻게 지내세요?",
             "캠핑 좋죠. 주로 어디로 다니세요?",
             "캠핑을 즐기고 직접 장비를 고르는 분입니다.",
         ]
@@ -133,7 +133,7 @@ def test_chat_http_lifecycle_matches_v1_contract() -> None:
     assert expiration_at > created_at
     assert created_body == {
         "conversationRoomId": 45678,
-        "greeting": f"{DISCOVERY_INTRO} 안녕하세요! 요즘 어떻게 지내세요?",
+        "greeting": "안녕하세요, 니쥬에요~ 편하게 얘기해주세요! 요즘 어떻게 지내세요?",
         "maxTurns": 20,
     }
     assert message.status_code == 200
@@ -562,7 +562,7 @@ def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
         completions=[
             "안녕하세요! 요즘 어떻게 지내세요?",
             "그렇군요. 다른 이야기도 해볼까요?",
-            "다시 만나서 반가워요! 요즘은 주로 뭐 해요?",
+            "요즘은 주로 뭐 해요?",
         ],
         structured_results=[{"items": [], "axes": [], "drop": []}],
     )
@@ -602,9 +602,8 @@ def test_sparse_profile_analysis_expires_session_so_it_can_restart() -> None:
     assert message_after_expiry.status_code == 404
     assert message_after_expiry.json()["code"] == "SESSION_NOT_FOUND"
     assert restarted.status_code == 201
-    assert (
-        restarted.json()["greeting"]
-        == f"{DISCOVERY_INTRO} 다시 만나서 반가워요! 요즘은 주로 뭐 해요?"
+    assert restarted.json()["greeting"] == (
+        "안녕하세요, 니쥬에요~ 편하게 얘기해주세요! 요즘은 주로 뭐 해요?"
     )
 
 
@@ -768,10 +767,11 @@ def test_first_greeting_and_replies_call_the_user_by_name_from_user_profile() ->
         )
 
     assert created.status_code == 201
+    assert created.json()["greeting"].startswith("서동휘가 궁금한 니쥬에요~ 편하게 얘기해주세요!")
     opening, reply = gateway.completed_messages[:2]
-    # 대화방을 만드는 첫인사부터 성을 뗀 이름으로 부르게 한다. 원문은 대화에 넣지 않는다.
+    # 서버가 username으로 소개를 붙이고, 시스템 지침은 대화에서 쓸 이름을 알려 준다.
     for messages in (opening, reply):
-        contents = "\n".join(message["content"] for message in messages)
+        contents = "\n".join(m["content"] for m in messages if m["role"] == "system")
         assert '"동휘님"이라고 부른다' in contents
         assert "서동휘" not in contents
 
@@ -880,6 +880,11 @@ def test_memory_from_one_conversation_carries_into_the_next() -> None:
             json={"userId": 10293, "conversationRoomId": room, "memory": memory},
         )
         assert created.status_code == 201
+        if memory:
+            # 다시 온 사용자에게는 첫 방문 소개 대신 재방문 인사를 붙인다.
+            intro, question = created.json()["greeting"].split(" 또 왔네요! ")
+            assert intro in RETURNING_INTROS["recent"]
+            assert question == "요즘도 캠핑 자주 가요?"
         client.post(
             f"/v1/chat/sessions/{room}/messages",
             headers=headers,

@@ -4,9 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 from app.application.conversation_prompts import (
     RETURNING_ANGLES,
+    RETURNING_INTROS,
     RETURNING_OPENING_INSTRUCTION,
     build_opening_messages,
     build_reply_messages,
+    returning_intro,
 )
 from app.application.conversation_service import ConversationService
 from app.application.taste_judgment import correction_targets
@@ -284,6 +286,14 @@ def test_returning_opening_instruction_uses_angle_quote_and_gap() -> None:
     assert "얼마 전이다" in reason_text
     assert "[새 소재]" in fresh_text and "꽤 오랜만에 왔다" in fresh_text
     assert "그때 한 말" not in fresh_text
+
+
+def test_returning_intro_matches_how_long_it_has_been() -> None:
+    assert returning_intro(1) in RETURNING_INTROS["recent"]
+    assert returning_intro(7) in RETURNING_INTROS["normal"]
+    assert returning_intro(None) in RETURNING_INTROS["normal"]
+    assert returning_intro(60) in RETURNING_INTROS["long"]
+    assert not [intro for intros in RETURNING_INTROS.values() for intro in intros if "?" in intro]
 
 
 def test_first_time_user_gets_the_usual_opening() -> None:

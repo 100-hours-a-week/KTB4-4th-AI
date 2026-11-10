@@ -21,9 +21,10 @@ from app.application.conversation_context import (
     parse_conversation_context,
 )
 from app.application.conversation_prompts import (
-    DISCOVERY_INTRO,
     build_opening_messages,
     build_reply_messages,
+    first_opening_intro,
+    returning_intro,
 )
 from app.application.extraction_prompts import build_candidate_messages, build_extraction_messages
 from app.application.llm_trace import llm_call
@@ -60,6 +61,7 @@ from app.domain.conversation.policy import (
 )
 from app.domain.profile.memory import (
     LongTermMemory,
+    days_since_last,
     dropped_memory_keys,
     opening_hook,
     remembered_signals,
@@ -334,7 +336,12 @@ class ConversationService:
         *,
         now: datetime | None = None,
     ) -> str:
-        greeting = f"{DISCOVERY_INTRO} {self.guard_reply(raw_greeting, ConversationGoal.OPENING)}"
+        username = state.onboarding.display_name if state.onboarding else None
+        if state.memory is not None:
+            intro = returning_intro(days_since_last(state.memory, state.created_at))
+        else:
+            intro = first_opening_intro(username)
+        greeting = f"{intro} {self.guard_reply(raw_greeting, ConversationGoal.OPENING)}"
         resolved_now = now or utc_now()
         state.history.append(
             ConversationTurn(role="assistant", content=greeting, created_at=resolved_now)

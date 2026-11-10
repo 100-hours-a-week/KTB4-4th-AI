@@ -148,17 +148,18 @@ TODAY_NOTE = (
     "소재나 사용자 말에 없으면 날짜, 계절, 날씨를 네가 먼저 꺼내지 않는다."
 )
 
-# 첫 질문을 묻는 방식. 소재만 고르면 모델이 대부분 "요즘 ~ 뭐 해요?"로 묻는다.
-# 소재와 따로 골라 조합한다. 소재와 어울리지 않으면 모델이 편하게 묻도록 지시에 적어 둔다.
-# 예시 문장을 넣으면 사람마다 같은 질문이 나와서 방식만 쓴다.
-OPENING_QUESTION_STYLES: tuple[str, ...] = (
-    "기억나는 일 하나를 편하게 꺼낼 수 있게 묻는다.",
-    "평소 자주 하게 되는 일에서 시작한다.",
-    "예상과 달랐던 경험이 있는지 가볍게 묻는다.",
-    "하다 보니 시간을 쓰게 됐던 일에서 시작한다.",
-)
+_FIRST_OPENING_SUFFIX = "니쥬에요~ 편하게 얘기해주세요!"
 
-DISCOVERY_INTRO = "가볍게 얘기하면서 니쥬랑 숨은 취향을 찾아봐요."
+
+def first_opening_intro(username: str | None) -> str:
+    if not username:
+        return f"안녕하세요, {_FIRST_OPENING_SUFFIX}"
+    last = username[-1]
+    particle = "님이"
+    if "가" <= last <= "힣":
+        particle = "이" if (ord(last) - ord("가")) % 28 else "가"
+    return f"{username}{particle} 궁금한 {_FIRST_OPENING_SUFFIX}"
+
 
 SAFETY_RULES = """[안전]
 건강, 정치, 종교, 성적 지향, 주소, 연락처, 계좌, 경제 사정 같은 민감정보를 캐묻지 않고,
@@ -170,21 +171,19 @@ SAFETY_RULES = """[안전]
 
 # 첫인사 지시. 소재는 세션마다 OPENING_TOPIC_AREAS에서 하나를 고른다.
 # 요일과 시간을 주면 매번 "월요일 저녁이라 피곤하죠"처럼 시작하고 기분까지 지어내서 넣지 않는다.
-# 취향 발견 안내는 서버가 붙이고, 첫 질문만 모델이 소재에 맞게 만든다.
+# 소개는 서버가 붙이고, 첫 질문은 모델이 소재에 맞게 만든다.
 OPENING_INSTRUCTION = (
-    "첫 대화다. 소개와 취향 발견 안내는 서버가 앞에 붙인다. 너는 인사와 자기소개 없이 "
-    "아래 소재에서 실제 경험이나 평소 하는 일을 꺼낼 질문 한 문장만 작성한다.\n"
-    "[소재]\n{topic}\n[묻는 방식]\n{style} 소재와 어울리지 않으면 편하게 바꿔 묻는다.\n"
-    "첫 질문은 바로 답할 수 있게 가볍게 한다. 취미·관심사를 조사하거나 고르는 기준을 "
-    "설명하게 하지 않는다. 물건이면 써 본 일에서 시작하고, 계획이면 경험했다고 가정하지 않는다. "
-    "소재 문구를 그대로 읽지 않고 쉬운 일상말로 짧게 묻는다. 질문과 물음표는 하나만 쓴다."
+    "첫 대화다. 인사와 이름은 서버가 붙인다. 아래 소재에서 바로 답할 수 있게 한 가지만 묻는다. "
+    "최근에 있었던 일, 평소 하는 일, 해 보고 싶은 일 중 소재에 맞는 것으로 시작한다. "
+    "똑같은 시작말을 붙이지 말고, 소재에서 실제로 물을 것을 일상말로 바로 묻는다. "
+    "해 보지 않은 일을 해 봤다고 가정하지 않는다. 질문 한 문장만 쓴다.\n[소재]\n{topic}"
 )
 
 # 다시 온 사용자의 첫 질문. 지난 이야기 하나와 꺼내는 방식을 서버가 기억에서 골라 준다.
 # 방식은 기억에 실제로 있는 내용(장면·이유·계기 발화)이 있을 때만 고르므로 지어낼 여지가 적다.
 # 매번 "요즘도 ~ 해요?"로 굳지 않도록 방식을 세션마다 바꾼다.
 RETURNING_OPENING_INSTRUCTION = (
-    "다시 찾아온 사용자다. {absence}소개와 취향 발견 안내는 서버가 붙인다. "
+    "다시 찾아온 사용자다. {absence}인사와 반가움 표현은 서버가 붙인다. "
     "너는 인사와 자기소개 없이 아래 방식대로 첫 질문을 작성한다.\n"
     "[지난 이야기]\n지난번에 사용자가 '{topic}' 이야기를 했다.{quote}\n"
     "[꺼내는 방식]\n{angle}\n"
@@ -216,6 +215,25 @@ RETURNING_ANGLES: dict[OpeningAngle, str] = {
 }
 LONG_ABSENCE_NOTE = "꽤 오랜만에 왔다. "
 RECENT_RETURN_NOTE = "지난 대화가 바로 얼마 전이다. '요즘도'처럼 오래된 일로 말하지 않는다. "
+
+# 다시 온 사용자에게 서버가 붙이는 인사. 처음 온 사람에게 하는 취향 발견 안내 대신 쓴다.
+# 첫 질문을 찾는 가드가 헷갈리지 않도록 물음표를 쓰지 않는다.
+RETURNING_INTROS: dict[str, tuple[str, ...]] = {
+    "recent": ("또 만나서 반가워요!", "또 와 줬네요, 반가워요!"),
+    "normal": ("다시 만나서 반가워요!", "다시 와 줘서 반가워요!", "또 이야기하러 와 줬네요!"),
+    "long": ("오랜만이에요! 다시 와 줘서 반가워요.", "정말 오랜만이에요, 반가워요!"),
+}
+
+
+def returning_intro(days_since: int | None, rng: random.Random | None = None) -> str:
+    if days_since is not None and days_since <= RECENT_RETURN_DAYS:
+        group = "recent"
+    elif days_since is not None and days_since >= LONG_ABSENCE_DAYS:
+        group = "long"
+    else:
+        group = "normal"
+    return (rng or random).choice(RETURNING_INTROS[group])
+
 
 # 니쥬 대화의 시스템 프롬프트.
 # 니쥬가 어떤 대화 상대인지 풀어 쓰고, 제약은 듣기·응답 모양·질문·화제·말투로 묶어 한 번씩만 쓴다.
@@ -726,12 +744,7 @@ def build_opening_messages(
         return messages
     messages = [
         {"role": "system", "content": SYSTEM_COMPANION},
-        {
-            "role": "system",
-            "content": OPENING_INSTRUCTION.format(
-                topic=topic, style=chooser.choice(OPENING_QUESTION_STYLES)
-            ),
-        },
+        {"role": "system", "content": OPENING_INSTRUCTION.format(topic=topic)},
         {"role": "system", "content": _today_note(now)},
     ]
     if name:
