@@ -14,6 +14,7 @@ import re
 import time
 from collections.abc import Mapping, Sequence
 
+from app.application.llm_trace import llm_call
 from app.application.ports.model_gateway import ModelGateway
 from app.application.recommendation_reason_prompts import (
     MAX_REASON_LENGTH,
@@ -117,11 +118,12 @@ class RecommendationReasonService:
         started = time.monotonic()
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                raw = await self._model_gateway.structured(
-                    messages,
-                    model=self._model,
-                    json_schema=ReasonSetPayload.model_json_schema(),
-                )
+                with llm_call("recommendation_reason"):
+                    raw = await self._model_gateway.structured(
+                        messages,
+                        model=self._model,
+                        json_schema=ReasonSetPayload.model_json_schema(),
+                    )
         except Exception as error:
             describe = getattr(error, "describe", None)
             logger.warning(

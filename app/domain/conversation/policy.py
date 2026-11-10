@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from app.domain.conversation.context import ConversationDirection
 from app.domain.conversation.energy import (
-    ENGAGED_ENERGY,
     LOW_ENERGY,
     asks_back,
+    avoids_answer,
+    corrects,
+    declines_topic,
     record_energy,
     turn_energy,
     unsure,
@@ -46,29 +49,9 @@ _TOTAL_PROGRESS_WEIGHT = (
 COMPANION_LIGHTEN_STREAK = 2
 COMPANION_WRAP_STREAK = 4
 MOVE_HISTORY_LIMIT = 8
-# 한 화제에서 이어 묻는 꼬리 질문 수. 화제를 꺼낸 질문(첫인사, 화제 전환, 놀이, 되돌아가기)은
-# 세지 않는다. 기본은 한 번이고, 사용자 반응이 좋으면 세 번까지 이어 간다.
-# 한 화제만 파면 같은 이야기의 세부만 쌓이고 다른 관심사가 안 나온다.
-TOPIC_FOLLOW_LIMIT = 1
-TOPIC_FOLLOW_LIMIT_ENGAGED = 3
-# 화제를 넘길 때 최근 이만큼의 move 안에 선택지 move가 없으면 열린 질문 대신 선택지를 준다.
-# 질문-답만 이어지는 흐름을 중간중간 바꾼다.
-CHOICE_GAP = 6
-
-# 에너지가 낮을 때나 다른 화제로 넘어갈 때 가볍게 던지는 소재. 한마디로 답할 수 있는 것만 두고,
-# 부족한 추천 항목으로 화제를 고르지 않는다.
-COMPANION_SCENES: tuple[str, ...] = (
-    "요즘 자주 웃게 되는 것",
-    "요즘 자주 먹는 것",
-    "요즘 자주 듣는 노래",
-    "쉬는 날에 주로 하는 것",
-    "요즘 빠져 있는 것",
-    "최근에 처음 해 본 것",
-    "요즘 자주 가는 곳",
-    "집에 있을 때 주로 하는 것",
-    "요즘 폰으로 제일 많이 보는 것",
-    "해 보고 싶은데 아직 못 해 본 것",
-)
+# 이 횟수부터 다른 이야기로 넓힐지 검토한다. 실제 화제 경계는 move 횟수로 알 수 없으므로
+# 강제 상한으로 쓰지 않는다. 새 이야기인지와 전환의 자연스러움은 응답 모델이 문맥으로 판단한다.
+TOPIC_FOLLOW_LIMIT = 2
 
 
 def _query_signals(state: ConversationState):
@@ -137,11 +120,7 @@ def conversation_progress(state: ConversationState) -> int:
     )
     if _gear_known(state):
         progress += GEAR_PROGRESS_WEIGHT
-    return max(round(progress * 100 / _TOTAL_PROGRESS_WEIGHT), state.progress_floor)
-
-
-def _recent_user_messages(state: ConversationState) -> list[str]:
-    return [turn.content.strip() for turn in state.history if turn.role == "user"][-3:]
+    return min(max(round(progress * 100 / _TOTAL_PROGRESS_WEIGHT), state.progress_floor), 95)
 
 
 def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
@@ -156,15 +135,22 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
             ConversationGoal.WRAP,
             state.completion_reason or CompletionReason.USER_EXIT,
         )
-    # 앞 턴에서 예약한 마무리는 이번 발화의 에너지로 다시 판단하지 않는다.
-    if state.pending_wrap is not None:
-        return GoalDecision(ConversationGoal.WRAP, state.pending_wrap)
     # 이번 발화가 마지막 턴이면 답변을 만들기 전에 마무리로 정한다.
     turns_after = state.turn_count + 1 if utterance else state.turn_count
     if turns_after >= MAX_TURNS:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.MAX_CYCLES)
     if utterance and wants_to_exit(utterance):
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
+
+    def chat(move: ConversationMove, scene: str | None = None) -> GoalDecision:
+        return GoalDecision(ConversationGoal.CHAT, move=move, scene=scene)
+
+    # 정정과 직접 질문부터 처리한다. 세부를 기억하지 못한다는 말이 섞여도 정정은 유효하다.
+    # 최대 턴·명시적 종료는 위에서 처리하되, 준비 완료에 따른 종료는 한 턴 미룰 수 있다.
+    if utterance and (corrects(utterance) or asks_back(utterance)):
+        return chat(ConversationMove.FOLLOW)
+    if state.pending_wrap is not None:
+        return GoalDecision(ConversationGoal.WRAP, state.pending_wrap)
 
     current: float | None = None
     if utterance:
@@ -175,40 +161,39 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     if low_streak >= COMPANION_WRAP_STREAK:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
 
-    # 진행률이 100%가 되면 끝낸다. 화면의 진행률과 실제 종료가 어긋나지 않게 한다.
-    if recommendation_readiness(state).sufficient:
+    # 추천 준비 완료와 대화 종료는 별개다. 현재 발화를 듣기 전에 항목 개수로 닫지 않는다.
+    context = state.conversation_context
+    if context and context.source_turn != state.turn_count:
+        context = None
+    developing = bool(context and context.direction == ConversationDirection.DEVELOPING)
+    if not utterance and not developing and recommendation_readiness(state).sufficient:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.SUFFICIENT)
 
-    def chat(move: ConversationMove, scene: str | None = None) -> GoalDecision:
-        return GoalDecision(ConversationGoal.CHAT, move=move, scene=scene)
-
-    topic_done = _topic_done(state, current)
-    # 사용자가 되물었으면 먼저 답하고 그 이야기를 따라간다.
-    # 이 화제의 꼬리 질문을 다 썼으면 답한 뒤 다른 이야기로 넘어간다.
-    if utterance and asks_back(utterance):
-        if topic_done:
-            return chat(ConversationMove.SHIFT, _pick_scene(state))
-        return chat(ConversationMove.FOLLOW)
     last_move = state.last_move
-    # 답하기 어려워하면 다시 묻지 않고 선택지를 준다. 소재는 앞에서 한 이야기에서 니쥬가 찾는다.
-    if utterance and unsure(utterance) and last_move != ConversationMove.CHOICE:
+    # 거절·반복 회피에는 같은 내용을 캐묻지 않고 앞말과 이어지는 쉬운 질문으로 바꾼다.
+    if utterance and (
+        declines_topic(utterance)
+        or (avoids_answer(utterance) and last_move == ConversationMove.CHOICE)
+    ):
+        return chat(ConversationMove.SHIFT)
+    if utterance and unsure(utterance):
         return chat(ConversationMove.CHOICE)
     if low_streak >= COMPANION_LIGHTEN_STREAK:
-        topic = _return_topic(state, utterance)
-        if topic is not None and last_move != ConversationMove.RETURN:
-            return chat(ConversationMove.RETURN, topic)
         if last_move != ConversationMove.CHOICE:
-            return chat(ConversationMove.CHOICE, _pick_scene(state))
-        return chat(ConversationMove.ADD)
-    if topic_done:
-        if ConversationMove.CHOICE.value not in state.move_history[-CHOICE_GAP:]:
-            return chat(ConversationMove.CHOICE, _pick_scene(state))
-        return chat(ConversationMove.SHIFT, _pick_scene(state))
+            return chat(ConversationMove.CHOICE)
+        return chat(ConversationMove.SHIFT)
+    # 직전 발화에서 기준·이유를 설명하는 중이라는 관찰은 참고하되, 최신 말이 우선이다.
+    if developing and not avoids_answer(utterance):
+        return chat(ConversationMove.FOLLOW)
+    if context and context.direction == ConversationDirection.BROADEN:
+        return chat(ConversationMove.SHIFT)
+    if topic_follow_count(state) >= TOPIC_FOLLOW_LIMIT:
+        return chat(ConversationMove.SHIFT)
     return chat(ConversationMove.FOLLOW)
 
 
 def topic_follow_count(state: ConversationState) -> int:
-    """지금 화제에서 이어 물은 꼬리 질문 수. 질문 없이 보탠 턴(ADD)은 세지도 끊지도 않는다."""
+    """최근 전환 검토 이후 FOLLOW 수. 실제 화제 수가 아니며 ADD는 세지도 끊지도 않는다."""
     count = 0
     for move in reversed(state.move_history):
         if move == ConversationMove.FOLLOW:
@@ -216,38 +201,6 @@ def topic_follow_count(state: ConversationState) -> int:
         elif move != ConversationMove.ADD:
             break
     return count
-
-
-def _topic_done(state: ConversationState, current: float | None) -> bool:
-    """이 화제의 꼬리 질문을 다 썼는지. 반응이 좋은 동안만 기본 한도를 넘겨 이어 간다."""
-    count = topic_follow_count(state)
-    if count >= TOPIC_FOLLOW_LIMIT_ENGAGED:
-        return True
-    if count < TOPIC_FOLLOW_LIMIT:
-        return False
-    return current is None or current < ENGAGED_ENERGY
-
-
-def _return_topic(state: ConversationState, utterance: str) -> str | None:
-    """앞에서 가장 신나게 이야기한 관심사.
-
-    최근에 다시 나왔거나 이미 돌아간 적 있으면 쓰지 않는다.
-    """
-    topic = state.best_topic
-    if topic is None or topic in state.returned_topics:
-        return None
-    recent = [utterance, *_recent_user_messages(state)[-2:]]
-    normalized = normalize_text(topic)
-    if any(normalized and normalized in normalize_text(message) for message in recent):
-        return None
-    return topic
-
-
-def _pick_scene(state: ConversationState) -> str | None:
-    """사용하지 않은 참고 소재를 고른다. 실제 화제는 사용자 발화의 맥락이 결정한다."""
-    offset = state.conversation_room_id % len(COMPANION_SCENES)
-    rotated = COMPANION_SCENES[offset:] + COMPANION_SCENES[:offset]
-    return next((scene for scene in rotated if scene not in state.used_scenes), None)
 
 
 def record_companion_turn(
@@ -274,6 +227,9 @@ def record_companion_turn(
         state.returned_topics.append(scene)
     if move in {ConversationMove.CHOICE, ConversationMove.SHIFT} and scene:
         state.used_scenes.append(scene)
+    if move == ConversationMove.RECALL and scene:
+        state.memory_recalled.append(scene)
+        state.memory_rechecked = True
 
 
 def known_query_values(state: ConversationState) -> set[str]:

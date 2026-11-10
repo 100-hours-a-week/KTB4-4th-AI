@@ -4,22 +4,22 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from app.application.conversation_prompts import (
-    KeywordSetPayload,
-    build_friend_summary_messages,
-    build_keyword_messages,
-)
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
+from app.application.llm_trace import bind_llm_session, llm_call
 from app.application.ports.model_gateway import ModelGateway
+from app.application.ports.session_lock import SessionLease, SessionLock
+from app.application.profile_keyword_prompts import KeywordSetPayload, build_keyword_messages
+from app.application.profile_summary_prompts import build_friend_summary_messages
 from app.application.search_intent_service import (
     SearchIntentService,
     intent_targets,
     onboarding_intent_targets,
 )
-from app.domain.conversation.guards import fix_summary_intro, stable_reply_prefix
+from app.domain.conversation.guards import fix_summary_intro, reply_question, stable_reply_prefix
 from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
@@ -34,8 +34,9 @@ from app.domain.profile.keywords import (
     composed_keywords,
     fallback_keywords,
 )
-from app.domain.profile.merger import friend_summary_values, ranked_friend_signals
-from app.domain.profile.models import ProfileState, TasteField
+from app.domain.profile.memory import LongTermMemory, combined_profile, merge_memory
+from app.domain.profile.merger import friend_summary_values, normalize_text, ranked_friend_signals
+from app.domain.profile.models import ProfileState, TasteField, utc_now
 from app.domain.profile.onboarding import OnboardingProfile
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,8 @@ class ProfileAnalysis:
     interest_keywords: tuple[str, ...]
     keyword_scores: Mapping[str, float]
     readiness: ReadinessResult
+    # 대화를 닫을 때만 채운다. Backend가 저장했다가 다음 대화방을 만들 때 다시 보낸다.
+    memory: LongTermMemory | None = None
 
 
 class ChatUseCases:
@@ -138,6 +141,8 @@ class ChatUseCases:
         states: ConversationStateStore,
         model_gateway: ModelGateway,
         response_model: str,
+        session_lock: SessionLock,
+        lock_wait_seconds: float = 20.0,
         response_timeout_seconds: float = 60.0,
         summary_timeout_seconds: float = 10.0,
         search_intents: SearchIntentService | None = None,
@@ -146,6 +151,9 @@ class ChatUseCases:
         """search_intents 가 있으면 새로 들어온 관심사의 검색 의도를 백그라운드로 만들어 둔다.
 
         keyword_model 이 있으면 분석 키워드를 그 모델로 묶고, 없으면 저장 값에서 만든다.
+
+        메시지 전송은 같은 세션이 처리 중이면 바로 거절하고, 나머지는 lock_wait_seconds 까지
+        기다린다. Backend 호출 타임아웃보다 짧게 둬서 끊기기 전에 처리 중 오류로 답한다.
         """
         self._conversations = conversations
         self._keyword_model = keyword_model
@@ -155,15 +163,33 @@ class ChatUseCases:
         self._response_model = response_model
         self._response_timeout_seconds = response_timeout_seconds
         self._summary_timeout_seconds = summary_timeout_seconds
-        self._locks: dict[int, asyncio.Lock] = {}
+        self._session_lock = session_lock
+        self._lock_wait_seconds = lock_wait_seconds
 
     def _prepare_intents(self, completed: CompletedTurn) -> None:
         """이번 턴에 저장된 관심사의 검색 의도를 만든다. 세션 종료 때 추천이 캐시를 읽는다."""
         if self._search_intents is not None:
             self._search_intents.schedule(intent_targets(completed.merge_result.accepted))
 
-    def _lock(self, session_id: int) -> asyncio.Lock:
-        return self._locks.setdefault(session_id, asyncio.Lock())
+    @asynccontextmanager
+    async def _hold(self, session_id: int, *, wait: bool = True) -> AsyncIterator[SessionLease]:
+        lease = await self._session_lock.acquire(
+            session_id,
+            wait_seconds=self._lock_wait_seconds if wait else 0.0,
+        )
+        if lease is None:
+            raise TurnInProgressError(session_id)
+        try:
+            yield lease
+        finally:
+            # 끊긴 스트림의 취소 중에도 락을 풀어야 재전송이 바로 들어온다.
+            await asyncio.shield(lease.release())
+
+    @staticmethod
+    async def _ensure_held(lease: SessionLease, session_id: int) -> None:
+        """저장 직전에 확인한다. 락을 잃었으면 다른 요청이 같은 턴을 만들 수 있다."""
+        if not await lease.renew():
+            raise TurnInProgressError(session_id)
 
     async def _complete(
         self,
@@ -182,10 +208,11 @@ class ChatUseCases:
         started = time.monotonic()
         try:
             async with asyncio.timeout(timeout_seconds):
-                return await self._model_gateway.complete(
-                    messages,
-                    model=self._response_model,
-                )
+                with llm_call(purpose):
+                    return await self._model_gateway.complete(
+                        messages,
+                        model=self._response_model,
+                    )
         except TimeoutError as error:
             logger.warning(
                 "response model failed: purpose=%s session=%s model=%s elapsed_ms=%d "
@@ -211,21 +238,74 @@ class ChatUseCases:
             )
             raise ResponseModelUnavailableError(getattr(error, "reason", "unexpected")) from error
 
+    async def _ensure_reply_question(
+        self,
+        reply: str,
+        messages,
+        *,
+        goal: ConversationGoal,
+        session_id: int,
+    ) -> str:
+        cleaned = self._conversations.guard_reply(reply, goal)
+        if goal == ConversationGoal.WRAP:
+            return cleaned
+        question = reply_question(cleaned)
+        asked_questions = {
+            normalize_text(reply_question(message["content"]))
+            for message in messages
+            if message["role"] == "assistant"
+        }
+        if question and normalize_text(question) not in asked_questions:
+            return cleaned
+        # 질문은 검증 전까지 스트리밍을 보류하므로 반응은 유지한 채 질문만 보완할 수 있다.
+        reaction = cleaned[: len(cleaned) - len(question)].rstrip() if question else cleaned
+        repair = await self._complete(
+            [
+                *messages,
+                {"role": "assistant", "content": reaction},
+                {
+                    "role": "system",
+                    "content": "방금 반응 뒤에 이어질 질문 하나만 작성한다. "
+                    "원래 대화의 직전 질문과 최신 사용자 답을 함께 읽는다. "
+                    "사용자가 방금 말한 경험·선택·상황에서 자연스럽게 이어진다. "
+                    "한두 마디로 답할 수 있게 묻는다. "
+                    "이미 답했거나 모르겠다고 한 내용과 그 이유를 다시 묻지 않는다. "
+                    "추출 항목, 이전 관심사, 임의 소재로 화제를 바꾸지 않는다. "
+                    "현재 주제를 거절했으면 그 뜻을 존중해 가까운 일상 이야기로 연결한다. "
+                    "인사·설명·맞장구 없이 질문 한 문장만 쓴다.",
+                },
+            ],
+            timeout_seconds=self._response_timeout_seconds,
+            purpose="question_repair",
+            session_id=session_id,
+        )
+        question = reply_question(self._conversations.guard_reply(repair, goal))
+        if not question or normalize_text(question) in asked_questions:
+            raise ResponseModelUnavailableError("question_missing_or_repeated")
+        if reaction and reaction[-1] not in ".!~ㅎㅠ":
+            reaction += "."
+        result = f"{reaction} {question}".strip()
+        if not reply_question(result):
+            raise ResponseModelUnavailableError("question_not_renderable")
+        return result
+
     async def create_session(
         self,
         *,
         user_id: int,
         conversation_room_id: int,
         onboarding: OnboardingProfile | None = None,
+        memory: LongTermMemory | None = None,
     ) -> StartedSession:
-        lock = self._lock(conversation_room_id)
-        async with lock:
+        bind_llm_session(conversation_room_id, user_id=user_id)
+        async with self._hold(conversation_room_id) as lease:
             if await self._states.load(conversation_room_id) is not None:
                 raise SessionExistsError(conversation_room_id)
             prepared = self._conversations.prepare_session(
                 user_id=user_id,
                 conversation_room_id=conversation_room_id,
                 onboarding=onboarding,
+                memory=memory,
             )
             greeting = await self._complete(
                 prepared.messages,
@@ -233,7 +313,14 @@ class ChatUseCases:
                 purpose="opening",
                 session_id=conversation_room_id,
             )
+            greeting = await self._ensure_reply_question(
+                greeting,
+                prepared.messages,
+                goal=ConversationGoal.OPENING,
+                session_id=conversation_room_id,
+            )
             greeting = self._conversations.record_opening(prepared.state, greeting)
+            await self._ensure_held(lease, conversation_room_id)
             await self._states.save(prepared.state)
             if self._search_intents is not None and onboarding is not None:
                 self._search_intents.schedule(onboarding_intent_targets(onboarding.interests))
@@ -246,10 +333,8 @@ class ChatUseCases:
         *,
         user_id: int,
     ) -> CompletedTurn:
-        lock = self._lock(session_id)
-        if lock.locked():
-            raise TurnInProgressError(session_id)
-        async with lock:
+        bind_llm_session(session_id, user_id=user_id)
+        async with self._hold(session_id, wait=False) as lease:
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -269,6 +354,12 @@ class ChatUseCases:
                     purpose="reply",
                     session_id=session_id,
                 )
+                raw_reply = await self._ensure_reply_question(
+                    raw_reply,
+                    prepared.messages,
+                    goal=prepared.decision.goal,
+                    session_id=session_id,
+                )
             except BaseException:
                 extraction.cancel()
                 raise
@@ -282,6 +373,7 @@ class ChatUseCases:
                 move=prepared.decision.move,
                 scene=prepared.decision.scene,
             )
+            await self._ensure_held(lease, session_id)
             await self._states.save(completed.state)
             self._prepare_intents(completed)
             return completed
@@ -298,7 +390,7 @@ class ChatUseCases:
         여기서 막히는 요청은 HTTP 오류로 응답한다. 확정된 턴은 입력이 잠긴 뒤에도 다시 받을 수
         있어야 하므로 상태 검사보다 먼저 본다.
         """
-        if self._lock(session_id).locked():
+        if await self._session_lock.is_locked(session_id):
             raise TurnInProgressError(session_id)
         state = await self._states.load(session_id)
         if state is None or state.user_id != user_id:
@@ -321,10 +413,8 @@ class ChatUseCases:
         턴은 끝까지 생성하고 정리한 뒤에만 저장한다. 도중에 실패하거나 호출한 쪽이 끊으면(취소)
         저장하지 않으므로, 같은 메시지를 다시 보내 처음부터 생성할 수 있다.
         """
-        lock = self._lock(session_id)
-        if lock.locked():
-            raise TurnInProgressError(session_id)
-        async with lock:
+        bind_llm_session(session_id, user_id=user_id)
+        async with self._hold(session_id, wait=False) as lease:
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -335,9 +425,8 @@ class ChatUseCases:
             self._validate_sendable(state)
 
             prepared = self._conversations.prepare_turn(state, message)
-            # 마무리 턴만 끝 질문을 종료 멘트로 바꿀 수 있다. 생성 전에 정해지므로
-            # 일반 턴은 질문까지 바로 내보낸다.
-            hold_question = prepared.decision.goal == ConversationGoal.WRAP
+            # 질문 누락·반복을 고쳐도 이미 보낸 반응은 바뀌지 않도록 질문 문장을 보류한다.
+            hold_question = True
             started = time.monotonic()
             first_token_ms: float | None = None
             first_delta_ms: float | None = None
@@ -360,6 +449,22 @@ class ChatUseCases:
                         yield ReplyDelta(stable[len(emitted) :])
                         emitted = stable
                 reply_ms = (time.monotonic() - started) * 1000
+                raw_reply = await self._ensure_reply_question(
+                    raw_reply,
+                    prepared.messages,
+                    goal=prepared.decision.goal,
+                    session_id=session_id,
+                )
+                if prepared.decision.goal != ConversationGoal.WRAP and raw_reply.startswith(
+                    emitted
+                ):
+                    remainder = raw_reply[len(emitted) :]
+                    if remainder:
+                        if first_delta_ms is None:
+                            first_delta_ms = (time.monotonic() - started) * 1000
+                        delta_count += 1
+                        yield ReplyDelta(remainder)
+                        emitted = raw_reply
                 completed = await self._conversations.complete_turn(
                     state,
                     utterance=message,
@@ -371,6 +476,7 @@ class ChatUseCases:
                     scene=prepared.decision.scene,
                 )
                 completed.state.last_user_message_id = user_message_id
+                await self._ensure_held(lease, session_id)
                 await self._states.save(completed.state)
                 self._prepare_intents(completed)
 
@@ -416,11 +522,12 @@ class ChatUseCases:
         started = time.monotonic()
         try:
             async with asyncio.timeout(self._response_timeout_seconds):
-                async for token in self._model_gateway.stream(
-                    messages,
-                    model=self._response_model,
-                ):
-                    yield token
+                with llm_call("reply"):
+                    async for token in self._model_gateway.stream(
+                        messages,
+                        model=self._response_model,
+                    ):
+                        yield token
         except TimeoutError as error:
             logger.warning(
                 "response model failed: purpose=reply_stream session=%s model=%s elapsed_ms=%d "
@@ -451,15 +558,34 @@ class ChatUseCases:
         if state.status in {SessionStatus.INPUT_LOCKED, SessionStatus.REVIEW}:
             raise SessionInputLockedError(state.session_id)
 
-    def _stored_analysis(self, state: ConversationState) -> ProfileAnalysis:
+    @staticmethod
+    def _analysis_profile(state: ConversationState) -> ProfileState:
+        """추천에 쓰는 프로필. 지난 대화의 기억 위에 이번 대화 결과를 얹는다.
+
+        요약과 키워드는 그날 대화만 보여 주므로 state.profile 을 쓴다.
+        """
+        return combined_profile(
+            state.memory,
+            state.profile,
+            now=state.last_active_at,
+            dropped=state.memory_dropped,
+        )
+
+    def _stored_analysis(
+        self,
+        state: ConversationState,
+        *,
+        memory: LongTermMemory | None = None,
+    ) -> ProfileAnalysis:
         return ProfileAnalysis(
             state=state,
-            profile=state.profile,
+            profile=self._analysis_profile(state),
             summary=state.analysis_summary,
             taste_keywords=tuple(state.analysis_taste_keywords),
             interest_keywords=tuple(state.analysis_interest_keywords),
             keyword_scores=dict(state.analysis_keyword_scores),
             readiness=recommendation_readiness(state),
+            memory=memory,
         )
 
     @staticmethod
@@ -481,7 +607,7 @@ class ChatUseCases:
         )
 
     async def get_close_analysis(self, session_id: int, *, user_id: int) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -489,7 +615,7 @@ class ChatUseCases:
             return self._stored_analysis(state)
 
     async def analyze_session(self, session_id: int) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id) as lease:
             state = await self._states.load(session_id)
             if state is None:
                 raise SessionNotFoundError(session_id)
@@ -506,10 +632,11 @@ class ChatUseCases:
                 await self._states.save(state)
                 return self._stored_analysis(state)
 
+            bind_llm_session(session_id, user_id=state.user_id)
             # 요약과 키워드는 서로의 결과를 쓰지 않으므로 함께 만든다.
             summary, (taste_keywords, interest_keywords) = await asyncio.gather(
-                self._friend_summary(state, session_id),
-                self._keywords(state, session_id),
+                self._friend_summary(state, state.profile, session_id),
+                self._keywords(state.profile, session_id),
             )
 
             state.analysis_turn_count = state.turn_count
@@ -521,18 +648,21 @@ class ChatUseCases:
             }
             state.analysis_patch_used = False
             state.status = SessionStatus.REVIEW
+            await self._ensure_held(lease, session_id)
             await self._states.save(state)
             return self._stored_analysis(state)
 
-    async def _friend_summary(self, state: ConversationState, session_id: int) -> str | None:
-        if not any(friend_summary_values(state.profile).values()):
+    async def _friend_summary(
+        self, state: ConversationState, profile: ProfileState, session_id: int
+    ) -> str | None:
+        if not any(friend_summary_values(profile).values()):
             return None
         name = state.onboarding.display_name if state.onboarding else None
         address = state.onboarding.address_name if state.onboarding else None
         try:
             return fix_summary_intro(
                 await self._complete(
-                    build_friend_summary_messages(state.profile, name=name),
+                    build_friend_summary_messages(profile, name=name),
                     timeout_seconds=self._summary_timeout_seconds,
                     purpose="summary",
                     session_id=session_id,
@@ -544,29 +674,30 @@ class ChatUseCases:
             return None
 
     async def _keywords(
-        self, state: ConversationState, session_id: int
+        self, profile: ProfileState, session_id: int
     ) -> tuple[list[Keyword], list[Keyword]]:
         """취향·관심사 키워드. 모델이 저장 값을 묶어 이름 붙이고, 못 쓰면 저장 값에서 만든다.
 
         취향과 관심사는 따로 검증하고 따로 대체한다. 한쪽만 틀려도 다른 쪽 결과는 살린다.
         """
         # 요약처럼 활성 한도 밖으로 밀린 항목도 넘긴다. 같은 결의 항목을 묶는 재료가 된다.
-        tastes = ranked_friend_signals(state.profile, _TASTE_KEYWORD_FIELDS, include_inactive=True)[
+        tastes = ranked_friend_signals(profile, _TASTE_KEYWORD_FIELDS, include_inactive=True)[
             :KEYWORD_INPUT_LIMIT
         ]
-        interests = ranked_friend_signals(
-            state.profile, _INTEREST_KEYWORD_FIELDS, include_inactive=True
-        )[:KEYWORD_INPUT_LIMIT]
+        interests = ranked_friend_signals(profile, _INTEREST_KEYWORD_FIELDS, include_inactive=True)[
+            :KEYWORD_INPUT_LIMIT
+        ]
         raw: Mapping[str, object] = {}
         if self._keyword_model is not None and (tastes or interests):
             started = time.monotonic()
             try:
                 async with asyncio.timeout(self._summary_timeout_seconds):
-                    raw = await self._model_gateway.structured(
-                        build_keyword_messages(tastes, interests),
-                        model=self._keyword_model,
-                        json_schema=KeywordSetPayload.model_json_schema(),
-                    )
+                    with llm_call("keywords"):
+                        raw = await self._model_gateway.structured(
+                            build_keyword_messages(tastes, interests),
+                            model=self._keyword_model,
+                            json_schema=KeywordSetPayload.model_json_schema(),
+                        )
             except Exception as error:
                 describe = getattr(error, "describe", None)
                 logger.warning(
@@ -596,7 +727,7 @@ class ChatUseCases:
         taste_keywords: list[str],
         interest_keywords: list[str],
     ) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -624,7 +755,7 @@ class ChatUseCases:
             return self._stored_analysis(state)
 
     async def close_session(self, session_id: int, *, user_id: int) -> ProfileAnalysis:
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             state = await self._states.load(session_id)
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
@@ -637,4 +768,12 @@ class ChatUseCases:
             )
             state.finalized = True
             await self._states.save(state)
-            return self._stored_analysis(state)
+            memory = merge_memory(
+                state.memory,
+                state.profile,
+                user_id=state.user_id,
+                now=utc_now(),
+                dropped=state.memory_dropped,
+                recalled=state.memory_recalled,
+            )
+            return self._stored_analysis(state, memory=memory)

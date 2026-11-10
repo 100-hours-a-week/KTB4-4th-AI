@@ -15,7 +15,9 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
+from app.application.conversation_context import ConversationContextPayload
 from app.domain.conversation.models import ConversationState
+from app.domain.profile.memory import remembered_signals
 from app.domain.profile.merger import normalize_text
 from app.domain.profile.models import (
     DeferralReason,
@@ -23,6 +25,7 @@ from app.domain.profile.models import (
     EvidenceType,
     ExtractedItem,
     ExtractionDelta,
+    InsightKind,
     PreferenceAspect,
     ProfileSignal,
     ProfileState,
@@ -46,6 +49,7 @@ MIN_TASTE_STANCE_CONFIDENCE = 0.5
 MIN_DEFERRAL_CONFIDENCE = 0.6
 HABITUAL_THRESHOLD = 0.5
 EXPLICIT_THRESHOLD = 0.5
+RELATION_THRESHOLD = 0.8
 # 취향·관심사로 볼 만한지(material)와 분류(축, 분야) 판단을 받아들이는 confidence.
 MIN_MATERIAL_CONFIDENCE = 0.6
 MIN_TAXONOMY_CONFIDENCE = 0.5
@@ -99,7 +103,10 @@ class Stance(StrEnum):
 _STANCE_CRITERIA = {
     Stance.LIKE: (
         "The user personally likes, enjoys, is into, or regularly chooses to do it now, "
-        "including things they often eat, watch, listen to, or visit in daily life"
+        "including things they often eat, watch, listen to, or visit in daily life. "
+        "Repetition alone is not liking when the user explicitly attributes it only to "
+        "obligation, proximity, lack of time, or lack of alternatives. Starting because of "
+        "a trend or a friend's suggestion does not diminish enjoyment the user expresses"
     ),
     Stance.DISLIKE: (
         "The user personally dislikes it, finds it unpleasant or bothersome, or wants to avoid it"
@@ -141,7 +148,9 @@ _MATERIAL_CRITERIA = {
         "A quality, style, sensory feature, setting, or way of doing things that the user "
         "prefers or avoids, such as a color, a flavor, doing things alone, or quiet places. "
         "Also includes what the user explicitly values or seeks in an experience, such as "
-        "recharging, immersion, growth, connection, self-expression, or freedom"
+        "recharging, immersion, growth, connection, self-expression, or freedom, and their "
+        "directly stated personal values or approach to life. A concrete activity or "
+        "anecdote is not required for an explicitly stated personal principle"
     ),
     Material.LIFE_CONTEXT: "The user's ongoing living situation or routine that affects what "
     "they need",
@@ -206,7 +215,10 @@ _QUERY_FIELDS = frozenset(
 _TASTE_STANCE_CRITERIA = {
     Stance.LIKE: (
         "The user prefers, enjoys, deliberately chooses, or usually does things this way, "
-        "or explicitly values or seeks this outcome in an experience"
+        "or explicitly values or seeks this outcome in an experience, or directly endorses "
+        "this principle or attitude toward life. Keep the activity "
+        "and circumstances the user describes; do not generalize to all situations. "
+        "Obligation or lack of alternatives alone is not a preference"
     ),
     Stance.DISLIKE: "The user dislikes or avoids this quality, style, or way of doing things",
     Stance.USED_TO_LIKE: "The user preferred it in the past but no longer does",
@@ -235,6 +247,10 @@ class Candidate:
     kind: CandidateKind
     aspect: PreferenceAspect | None = None
     target: str | None = None
+    insight_kind: InsightKind = InsightKind.PREFERENCE
+    context: str | None = None
+    reason: str | None = None
+    origin: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -277,6 +293,10 @@ class CandidatePayload(_CandidateModel):
     kind: CandidateKind
     aspect: PreferenceAspect | None = None
     target: ShortValue | None = None
+    insight_kind: InsightKind = InsightKind.PREFERENCE
+    context: str | None = Field(default=None, min_length=1, max_length=160)
+    reason: str | None = Field(default=None, min_length=1, max_length=160)
+    origin: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 class CandidateDeltaPayload(_CandidateModel):
@@ -284,6 +304,7 @@ class CandidateDeltaPayload(_CandidateModel):
 
     candidates: list[CandidatePayload] = Field(default_factory=list, max_length=MAX_CANDIDATES)
     axes: list[AxisValue] = Field(default_factory=list, max_length=3)
+    conversation: ConversationContextPayload | None = None
 
 
 def parse_candidates(raw: object) -> tuple[list[Candidate], list[str], list[str]]:
@@ -321,6 +342,10 @@ def parse_candidates(raw: object) -> tuple[list[Candidate], list[str], list[str]
                 kind=payload.kind,
                 aspect=payload.aspect if is_attribute else None,
                 target=payload.target if is_attribute else None,
+                insight_kind=payload.insight_kind if is_attribute else InsightKind.PREFERENCE,
+                context=payload.context,
+                reason=payload.reason,
+                origin=payload.origin,
             )
         )
 
@@ -341,7 +366,7 @@ def remention_candidates(
     text = normalize_text(utterance)
     seen = {normalize_text(candidate.subject) for candidate in known}
     found: list[Candidate] = []
-    for signal in profile.active_signals():
+    for signal in profile.stored_signals():
         value = signal.normalized_value
         if len(value) < MIN_REMENTION_LENGTH or value in seen or value not in text:
             continue
@@ -352,6 +377,7 @@ def remention_candidates(
                 kind=_KIND_BY_FIELD.get(signal.field, CandidateKind.THING),
                 aspect=signal.aspect,
                 target=signal.target,
+                insight_kind=signal.insight_kind,
             )
         )
     return found
@@ -376,6 +402,13 @@ def correction_targets(state: ConversationState, utterance: str) -> list[Profile
         return bool(signal.target) and normalize_text(signal.target or "") in text
 
     mentioned = [signal for signal in stored if mentioned_in_text(signal)]
+    # 지난 대화의 기억은 이번 발화에 나왔을 때만 고칠 대상이 된다. "요즘은 캠핑 안 가요"
+    heard = {(signal.field, signal.normalized_value) for signal in stored}
+    mentioned.extend(
+        signal
+        for signal in remembered_signals(state.memory, state.last_active_at)
+        if (signal.field, signal.normalized_value) not in heard and mentioned_in_text(signal)
+    )
     recent_turn = state.turn_count - RECENT_CORRECTION_TURNS + 1
     recent = sorted(
         (signal for signal in stored if signal.source_turn >= recent_turn),
@@ -462,8 +495,12 @@ def build_judgment_request(
                     "`user_message` refers back to them. `previous_ai_message` only helps to "
                     "understand short answers; its wording is not the user's attitude. "
                     "If `previous_ai_message` set two options against each other and the user "
-                    "picked one, the picked option counts as liked and the other one is not "
-                    "disliked."
+                    "picked one, distinguish a preference comparison from merely picking "
+                    "which experience to discuss or reporting what happened. Only an actual "
+                    "expressed preference counts as liked within that comparison; the other "
+                    "option is not thereby disliked. An AI-supplied hypothesis or a forced "
+                    "hypothetical choice alone is not evidence of a general preference. "
+                    "Different preferences in different contexts can coexist."
                 ),
             },
             "criteria": {
@@ -522,6 +559,50 @@ def build_judgment_request(
                 ),
             },
         }
+        if previous_ai and len(utterance.strip()) <= 20:
+            questions[f"confirmation_{index}"] = {
+                "type": "noul",
+                "instructions": {
+                    "candidate": subject,
+                    "question": (
+                        "Is this candidate established by a clear short confirmation or "
+                        "preference choice in reply to the previous AI question? Interpret "
+                        "yes/no with the exact question. Confirming an activity or companion "
+                        "is not liking it; selecting which story to tell is not a preference. "
+                        "An independently stated preference is not merely a confirmation."
+                    ),
+                },
+            }
+        if candidate.insight_kind != InsightKind.PREFERENCE:
+            questions[f"meaning_{index}"] = {
+                "type": "noul",
+                "instructions": {
+                    "candidate": subject,
+                    "kind": candidate.insight_kind.value,
+                    "question": (
+                        "Does the user explicitly state this as their own value or attitude "
+                        "toward life, without the AI inferring a personality or worldview? "
+                        "A concrete anecdote is not required. Do not adopt a character's "
+                        "or someone else's belief as the user's."
+                    ),
+                },
+            }
+        for relation in ("context", "reason", "origin"):
+            quote = getattr(candidate, relation)
+            if quote:
+                questions[f"{relation}_{index}"] = {
+                    "type": "noul",
+                    "instructions": {
+                        "candidate": subject,
+                        "quote": quote,
+                        "question": (
+                            f"Does the user's own speech explicitly connect this quote as the "
+                            f"{relation} of candidate? Context is its situation, reason is why "
+                            "it matters or is liked/disliked, origin is how the preference "
+                            "or belief formed or changed. Mere co-occurrence is not a link."
+                        ),
+                    },
+                }
         if candidate.kind == CandidateKind.ACTIVITY:
             questions[f"habitual_{index}"] = {
                 "type": "noul",
@@ -647,6 +728,13 @@ def judgment_delta(
             item_confidence = _number(probabilities.get(stance.value), default=confidence)
         explicit = _noul(answers, f"explicit_{index}") >= EXPLICIT_THRESHOLD
         evidence_type = EvidenceType.EXPLICIT if explicit else EvidenceType.INFERRED
+        confirmed = _noul(answers, f"confirmation_{index}") >= RELATION_THRESHOLD
+        if confirmed:
+            evidence_type = EvidenceType.CONFIRMED
+        if candidate.insight_kind != InsightKind.PREFERENCE and (
+            not explicit or confirmed or _noul(answers, f"meaning_{index}") < RELATION_THRESHOLD
+        ):
+            continue
         if stance == Stance.WANT and candidate.kind == CandidateKind.ACTIVITY:
             evidence_type = EvidenceType.INFERRED
             item_confidence = min(item_confidence, WISH_CONFIDENCE_CAP)
@@ -662,9 +750,23 @@ def judgment_delta(
                 evidence=_evidence(answers.get(f"evidence_{index}"), sentences),
                 evidence_type=evidence_type,
                 deferral_reason=deferral,
-                aspect=(axis_aspect or candidate.aspect) if is_preference else None,
+                aspect=(
+                    (
+                        PreferenceAspect.MOTIVE
+                        if candidate.insight_kind != InsightKind.PREFERENCE
+                        else axis_aspect or candidate.aspect
+                    )
+                    if is_preference
+                    else None
+                ),
                 target=candidate.target if is_preference else None,
                 taxonomy_path=path,
+                insight_kind=candidate.insight_kind,
+                **{
+                    relation: getattr(candidate, relation)
+                    for relation in ("context", "reason", "origin")
+                    if _noul(answers, f"{relation}_{index}") >= RELATION_THRESHOLD
+                },
             )
         )
 

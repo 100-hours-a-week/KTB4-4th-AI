@@ -19,6 +19,7 @@ from app.application.ports.embedder import Embedder
 from app.application.ports.judgment_gateway import JudgmentGateway
 from app.application.ports.model_gateway import ModelGateway
 from app.application.ports.recommendation_service import RecommendationService
+from app.application.ports.session_lock import SessionLock
 from app.application.ports.session_store import SessionStore
 from app.application.recommendation_engine import RecommendationEngine
 from app.application.recommendation_reason_service import RecommendationReasonService
@@ -36,7 +37,12 @@ from app.infrastructure.model_gateway import (
     RunPodPodLocator,
     SystemOneJudgmentGateway,
 )
-from app.infrastructure.persistence import InMemorySessionStore, RedisSessionStore
+from app.infrastructure.persistence import (
+    InMemorySessionLock,
+    InMemorySessionStore,
+    RedisSessionLock,
+    RedisSessionStore,
+)
 
 
 def _secret_value(secret: SecretStr | None) -> str | None:
@@ -89,6 +95,7 @@ def _build_model_gateway(
                 model_base_urls={fallback_model: str(base_url)},
                 model_max_tokens={fallback_model: max_tokens},
                 api_key=fallback_api_key,
+                trace_environment=settings.app_env,
             ),
             model=fallback_model,
         )
@@ -102,6 +109,7 @@ def _build_model_gateway(
             settings.document_model_name: settings.document_model_max_tokens,
         },
         api_key=api_key,
+        trace_environment=settings.app_env,
         # 폴백이 없으면 기다리는 것 말고 할 수 있는 게 없으니 제한을 걸지 않는다.
         timeout=(
             httpx.Timeout(
@@ -144,6 +152,7 @@ def create_app(
     model_gateway: ModelGateway | None = None,
     judgment_gateway: JudgmentGateway | None = None,
     session_store: SessionStore | None = None,
+    session_lock: SessionLock | None = None,
     recommendation_service: RecommendationService | None = None,
     embedder: Embedder | None = None,
     catalog_repository: CatalogRepository | None = None,
@@ -196,6 +205,7 @@ def create_app(
                 client=http_client,
                 base_url=str(resolved_settings.judgment_model_base_url),
                 api_key=openrouter_api_key,
+                trace_environment=resolved_settings.app_env,
             )
 
         resolved_session_store = session_store
@@ -208,6 +218,18 @@ def create_app(
                     decode_responses=True,
                 )
                 resolved_session_store = RedisSessionStore(redis_client)
+
+        # 락도 세션 상태처럼 Redis에 둬야 AI 서버 여러 대가 같은 세션을 동시에 처리하지 않는다.
+        resolved_session_lock = session_lock
+        if resolved_session_lock is None:
+            resolved_session_lock = (
+                RedisSessionLock(
+                    redis_client,
+                    ttl_seconds=resolved_settings.chat_session_lock_ttl_seconds,
+                )
+                if redis_client is not None
+                else InMemorySessionLock()
+            )
 
         # 모델 게이트웨이를 주입받은 테스트에서는 주입받은 검색 의도 서비스만 쓴다.
         resolved_intents = search_intent_service
@@ -253,6 +275,8 @@ def create_app(
             states=state_store,
             model_gateway=resolved_gateway,
             response_model=resolved_settings.response_model_name,
+            session_lock=resolved_session_lock,
+            lock_wait_seconds=resolved_settings.chat_session_lock_wait_seconds,
             response_timeout_seconds=resolved_settings.response_model_timeout_seconds,
             summary_timeout_seconds=resolved_settings.summary_model_timeout_seconds,
             search_intents=resolved_intents,

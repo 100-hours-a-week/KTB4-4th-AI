@@ -5,7 +5,7 @@ import json
 import re
 from collections import defaultdict
 
-from app.application.conversation_prompts import FRIEND_SUMMARY_SYSTEM
+from app.application.profile_summary_prompts import FRIEND_SUMMARY_SYSTEM
 from benchmarks.runner import percentile
 
 # Prefix order matters: gpt-oss must win over a plain gpt prefix.

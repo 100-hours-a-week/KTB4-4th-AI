@@ -18,6 +18,9 @@ from app.domain.profile.onboarding import (
 )
 from app.domain.profile.taxonomy import INTEREST_CATEGORIES_BY_KEY
 from app.domain.recommendation import (
+    FeedbackAction,
+    FeedbackSummary,
+    ProductFeedback,
     ProductKey,
     RankedRecommendation,
     RecommendationGuide,
@@ -95,6 +98,7 @@ def _preference_signals(profile: Mapping[str, Any]) -> list[RecommendationSignal
         for item in items
         # 신뢰도나 갱신 시각이 없는 항목은 쿼리 재료로 쓰지 않고 가산에만 쓴다.
         if isinstance(item, Mapping)
+        and item.get("insightKind", "preference") == "preference"
         and item.get("value")
         and item.get("confidence") is not None
         and item.get("updatedAt")
@@ -193,6 +197,7 @@ def _values(
             str(item["value"])
             for item in items
             if isinstance(item, Mapping)
+            and item.get("insightKind", "preference") == "preference"
             and item.get("value")
             and (aspects is None or _aspect(item) in aspects)
         )
@@ -250,6 +255,25 @@ def _recipient_name(payload: Mapping[str, Any]) -> str | None:
     return str(name) if name else None
 
 
+def recommendation_feedback(payload: Mapping[str, Any]) -> FeedbackSummary | None:
+    """payload 의 feedback.items. 없으면 피드백 없이 추천한다."""
+    feedback = payload.get("feedback")
+    if feedback is None:
+        return None
+    if not isinstance(feedback, Mapping):
+        raise ValueError("feedback must be an object")
+    items = feedback.get("items", [])
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        raise ValueError("feedback items must be an array")
+    return FeedbackSummary.of(
+        ProductFeedback(
+            key=ProductKey(platform=str(item["platform"]), external_id=str(item["externalId"])),
+            action=FeedbackAction(str(item["action"])),
+        )
+        for item in items
+    )
+
+
 def _items(
     recommendations: Sequence[RankedRecommendation],
     reasons: Mapping[ProductKey, str],
@@ -294,6 +318,7 @@ class V1RecommendationService:
             guide=guide,
             recipient_name=recipient_name,
             intents=intents,
+            feedback=recommendation_feedback(payload),
         )
         self_reasons: Mapping[ProductKey, str] = {}
         gift_reasons: Mapping[ProductKey, str] = {}

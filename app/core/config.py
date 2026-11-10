@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     redis_url: RedisDsn | None = None
     chat_session_idle_ttl_seconds: int = Field(default=1800, ge=60)
     chat_session_max_lifetime_seconds: int = Field(default=7200, ge=60)
+    # 같은 대화 세션의 요청을 AI 서버 여러 대에서 하나만 받는 Redis 락의 만료 시간.
+    # 처리 중에는 1/3 주기로 늘리고, 잡은 서버가 죽으면 이 시간이 지나 풀린다.
+    chat_session_lock_ttl_seconds: float = Field(default=30.0, gt=0)
+    # 분석·종료처럼 기다리는 요청이 락을 기다리는 최대 시간.
+    # Backend 호출 타임아웃(30초)보다 짧게 둬서 끊기기 전에 처리 중 오류로 답한다.
+    chat_session_lock_wait_seconds: float = Field(default=20.0, ge=0)
     # 관심사별 검색 의도를 추출 모델로 만들어 Redis에 캐시한다. 끄면 추천은 템플릿 쿼리만 쓴다.
     search_intent_enabled: bool = True
     ai_database_url: str | None = None

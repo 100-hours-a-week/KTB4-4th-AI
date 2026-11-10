@@ -84,7 +84,11 @@ def test_hf_chat_uses_pinned_provider_token_and_real_extraction(tmp_path, monkey
         output = (
             json.dumps(extraction(data["messages"][-1]["content"]), ensure_ascii=False)
             if "response_format" in data
-            else "캠핑할 때 어떤 순간이 좋아요?"
+            else (
+                "쉬는 날엔 주로 뭐 해요?"
+                if not any(m["role"] == "user" for m in data["messages"])
+                else "캠핑할 때 어떤 순간이 좋아요?"
+            )
         )
         return httpx.Response(200, json={"choices": [{"message": {"content": output}}]})
 

@@ -27,7 +27,7 @@ from app.domain.recommendation import (
     build_search_queries,
     intent_key,
 )
-from app.infrastructure.persistence import InMemorySessionStore
+from app.infrastructure.persistence import InMemorySessionLock, InMemorySessionStore
 from app.infrastructure.persistence.memory_search_intent_store import InMemorySearchIntentStore
 from app.infrastructure.persistence.redis_search_intent_store import RedisSearchIntentStore
 
@@ -320,7 +320,9 @@ def test_recommendation_reads_cached_intents_and_schedules_the_missing_ones() ->
     seen = {}
 
     class Engine:
-        async def recommend(self, signals, *, guide=None, recipient_name=None, intents=None):
+        async def recommend(
+            self, signals, *, guide=None, recipient_name=None, intents=None, feedback=None
+        ):
             seen.update(intents)
             return RecommendationBatch(self=(), gift=())
 
@@ -346,7 +348,11 @@ def test_recommendation_reads_cached_intents_and_schedules_the_missing_ones() ->
 
 class ChatGateway:
     async def complete(self, messages, *, model):
-        return "캠핑 좋죠. 주로 어디로 가요?"
+        return (
+            "쉬는 날엔 주로 뭐 해요?"
+            if not any(m["role"] == "user" for m in messages)
+            else "캠핑 좋죠. 주로 어디로 가요?"
+        )
 
     async def structured(self, messages, *, model, json_schema):
         return {
@@ -375,6 +381,7 @@ def test_chat_schedules_intents_for_onboarding_and_new_interests() -> None:
             states=ConversationStateStore(InMemorySessionStore()),
             model_gateway=gateway,
             response_model="r",
+            session_lock=InMemorySessionLock(),
             search_intents=intents,  # type: ignore[arg-type]
         )
         await use_cases.create_session(

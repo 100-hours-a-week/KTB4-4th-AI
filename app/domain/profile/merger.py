@@ -10,6 +10,8 @@ from app.domain.profile.models import (
     EvidenceType,
     ExtractedItem,
     ExtractionDelta,
+    GroundedQuote,
+    InsightKind,
     IntentType,
     LinkRole,
     ProfileSignal,
@@ -76,7 +78,7 @@ _CONFIDENCE_CEILING = {
     EvidenceType.INFERRED: 0.65,
 }
 
-_EVIDENCE_PRIORITY = {
+EVIDENCE_PRIORITY = {
     EvidenceType.EXPLICIT: 3,
     EvidenceType.CONFIRMED: 2,
     EvidenceType.INFERRED: 1,
@@ -155,26 +157,38 @@ def _signal_sort_key(signal: ProfileSignal) -> tuple[float, ...]:
     return (
         taste_rank_score(signal),
         signal.confidence,
-        float(_EVIDENCE_PRIORITY[signal.evidence_type]),
+        float(EVIDENCE_PRIORITY[signal.evidence_type]),
         float(signal.mention_count),
         specificity,
         signal.updated_at.timestamp(),
     )
 
 
+# 새 상태가 들어오면 대체되는 이전 상태. 갖고 싶던 것을 사면 갖고 싶음에서 빠진다.
+PREVIOUS_STATES: dict[TasteField, frozenset[TasteField]] = {
+    TasteField.UNAFFORDABLE: frozenset({TasteField.WANTS}),
+    TasteField.WANTS: frozenset({TasteField.UNAFFORDABLE}),
+    TasteField.OWNED: frozenset({TasteField.WANTS, TasteField.UNAFFORDABLE}),
+}
+
+
 def _supersede_previous_state(signals: list[ProfileSignal], item: ExtractedItem) -> None:
-    transitions: dict[TasteField, set[TasteField]] = {
-        TasteField.UNAFFORDABLE: {TasteField.WANTS},
-        TasteField.WANTS: {TasteField.UNAFFORDABLE},
-        TasteField.OWNED: {TasteField.WANTS, TasteField.UNAFFORDABLE},
-    }
-    previous_fields = transitions.get(item.field, set())
+    previous_fields = PREVIOUS_STATES.get(item.field, frozenset())
     if not previous_fields:
         return
     normalized = normalize_text(item.value)
     for signal in signals:
         if signal.field in previous_fields and signal.normalized_value == normalized:
             signal.status = SignalStatus.SUPERSEDED
+
+
+def opposite_fields(field: TasteField) -> set[TasteField]:
+    """같은 대상이 함께 남으면 안 되는 반대쪽 칸."""
+    if field in POSITIVE_FIELDS:
+        return NEGATIVE_FIELDS
+    if field in NEGATIVE_FIELDS:
+        return POSITIVE_FIELDS
+    return set()
 
 
 def _polarity(field: TasteField) -> str:
@@ -242,7 +256,7 @@ def rank_by_group_strength(
     return ordered
 
 
-def _apply_working_set(signals: list[ProfileSignal]) -> None:
+def apply_working_set(signals: list[ProfileSignal]) -> None:
     eligible = [signal for signal in signals if signal.status != SignalStatus.SUPERSEDED]
     for signal in eligible:
         signal.status = SignalStatus.INACTIVE
@@ -286,6 +300,7 @@ class ProfileMerger:
         now: datetime,
         source_turn: int,
         context_utterances: Sequence[tuple[int, str]] = (),
+        conversation_id: int | None = None,
     ) -> MergeResult:
         merged = copy.deepcopy(profile)
         accepted: list[ProfileSignal] = []
@@ -316,6 +331,22 @@ class ProfileMerger:
             if not normalized or normalized in _GENERIC_VALUES or item_turn is None:
                 rejected.append(item.value)
                 continue
+            if item.insight_kind != InsightKind.PREFERENCE and (
+                item.field not in {TasteField.PREFERENCES, TasteField.DISLIKES}
+                or item.evidence_type != EvidenceType.EXPLICIT
+            ):
+                rejected.append(item.value)
+                continue
+            linked: dict[str, GroundedQuote] = {}
+            for name in ("context", "reason", "origin"):
+                text = getattr(item, name)
+                turn = (
+                    _grounded_turn(text, utterance, source_turn, context_utterances)
+                    if text and len(text) <= 160
+                    else None
+                )
+                if turn is not None:
+                    linked[name] = GroundedQuote(text.strip(), turn, conversation_id)
             # 이번 턴에 취소한 값이 같은 쪽으로 다시 들어오거나
             # ("캠핑은 취소"에서 캠핑을 또 뽑은 경우), 취소·대체된 값이
             # 이전 발화 근거로 되살아나는 것을 막는다.
@@ -347,6 +378,18 @@ class ProfileMerger:
                 and signal.status != SignalStatus.SUPERSEDED
                 for signal in merged.signals
             ):
+                # 이전 근거의 반복과 이번에 새로 설명한 이유·계기를 구별한다.
+                existing = next(
+                    signal
+                    for signal in merged.signals
+                    if signal.field == item.field
+                    and signal.normalized_value == normalized
+                    and signal.status != SignalStatus.SUPERSEDED
+                )
+                for name, quote in linked.items():
+                    if quote.source_turn == source_turn:
+                        setattr(existing, name, quote)
+                        existing.updated_at = now
                 continue
 
             _supersede_previous_state(merged.signals, item)
@@ -370,8 +413,8 @@ class ProfileMerger:
                 existing.mention_count += 1
                 existing.evidence = item.evidence
                 if (
-                    _EVIDENCE_PRIORITY[item.evidence_type]
-                    >= _EVIDENCE_PRIORITY[existing.evidence_type]
+                    EVIDENCE_PRIORITY[item.evidence_type]
+                    >= EVIDENCE_PRIORITY[existing.evidence_type]
                 ):
                     existing.evidence_type = item.evidence_type
                 existing.intent_type = item.intent_type or existing.intent_type
@@ -381,6 +424,10 @@ class ProfileMerger:
                 existing.aspect = item.aspect or existing.aspect
                 existing.target = item.target or existing.target
                 existing.taxonomy_path = item.taxonomy_path or existing.taxonomy_path
+                if item.insight_kind != InsightKind.PREFERENCE:
+                    existing.insight_kind = item.insight_kind
+                for name, quote in linked.items():
+                    setattr(existing, name, quote)
                 existing.status = SignalStatus.ACTIVE
                 accepted.append(existing)
                 continue
@@ -402,6 +449,8 @@ class ProfileMerger:
                 first_seen_at=now,
                 updated_at=now,
                 source_turn=item_turn,
+                insight_kind=item.insight_kind,
+                **linked,
             )
             merged.signals.append(signal)
             accepted.append(signal)
@@ -418,7 +467,7 @@ class ProfileMerger:
             if len(merged.axes) < MAX_AXES:
                 merged.axes.append(cleaned)
 
-        _apply_working_set(merged.signals)
+        apply_working_set(merged.signals)
         return MergeResult(
             profile=merged,
             accepted=tuple(accepted),
