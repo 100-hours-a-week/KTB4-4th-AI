@@ -24,6 +24,7 @@ from app.domain.conversation.models import (
     CompletionReason,
     ConversationGoal,
     ConversationState,
+    GoalDecision,
     ReadinessResult,
     SessionStatus,
 )
@@ -46,6 +47,23 @@ ANALYSIS_KEYWORD_LIMIT = KEYWORD_LIMIT
 KEYWORD_INPUT_LIMIT = 12
 _TASTE_KEYWORD_FIELDS = (TasteField.PREFERENCES,)
 _INTEREST_KEYWORD_FIELDS = (TasteField.INTERESTS, TasteField.HOBBIES)
+
+
+# 질문 보완에서 니쥬가 대화를 마쳤다고 판단했을 때 모델이 질문 대신 쓰는 표시.
+_END_MARK = "종료"
+
+
+def _is_end_mark(text: str) -> bool:
+    return text.strip().strip("'\"`.!~ ") == _END_MARK
+
+
+def _turn_goal(
+    decision: GoalDecision, ended: bool
+) -> tuple[ConversationGoal, CompletionReason | None]:
+    """니쥬가 응답에서 대화를 마쳤으면 이번 턴을 사용자 종료로 마무리한다."""
+    if ended:
+        return ConversationGoal.WRAP, CompletionReason.USER_EXIT
+    return decision.goal, decision.completion_reason
 
 
 def _rounded(value: float | None) -> int | None:
@@ -245,10 +263,16 @@ class ChatUseCases:
         *,
         goal: ConversationGoal,
         session_id: int,
-    ) -> str:
+    ) -> tuple[str, bool]:
+        """질문이 빠졌거나 반복된 응답에 질문을 보완한다. 두 번째 값은 니쥬가 대화를 마쳤는지다.
+
+        니쥬가 방금 응답에서 대화를 마치겠다고 했으면 질문을 붙이지 않고 마무리 턴으로 바꾼다.
+        사용자 말의 표현이 아니라 니쥬 응답을 보고 판단하므로, 사용자가 공부나 관계를
+        그만두고 싶다는 이야기는 니쥬가 질문을 이어 가는 한 종료로 보지 않는다.
+        """
         cleaned = self._conversations.guard_reply(reply, goal)
         if goal == ConversationGoal.WRAP:
-            return cleaned
+            return cleaned, False
         question = reply_question(cleaned)
         asked_questions = {
             normalize_text(reply_question(message["content"]))
@@ -256,7 +280,7 @@ class ChatUseCases:
             if message["role"] == "assistant"
         }
         if question and normalize_text(question) not in asked_questions:
-            return cleaned
+            return cleaned, False
         # 질문은 검증 전까지 스트리밍을 보류하므로 반응은 유지한 채 질문만 보완할 수 있다.
         reaction = cleaned[: len(cleaned) - len(question)].rstrip() if question else cleaned
         repair = await self._complete(
@@ -271,13 +295,25 @@ class ChatUseCases:
                     "한두 마디로 답할 수 있게 묻는다. "
                     "이미 답했거나 모르겠다고 한 내용과 그 이유를 다시 묻지 않는다. "
                     "추출 항목을 채우려고 화제를 바꾸지 않는다. "
-                    "인사·설명·맞장구 없이 질문 한 문장만 쓴다.",
+                    "인사·설명·맞장구 없이 질문 한 문장만 쓴다. "
+                    + (
+                        ""
+                        if goal == ConversationGoal.OPENING
+                        else "단, 방금 반응에서 니쥬가 대화를 여기서 마치겠다거나 더 묻지 않겠다고 "
+                        "사용자에게 말했으면 질문 대신 "
+                        f"'{_END_MARK}'만 쓴다. 사용자가 공부, 일, 관계 같은 다른 일을 그만두고 "
+                        "싶다고 한 이야기는 대화를 마치는 것이 아니다."
+                    ),
                 },
             ],
             timeout_seconds=self._response_timeout_seconds,
             purpose="question_repair",
             session_id=session_id,
         )
+        if goal != ConversationGoal.OPENING and _is_end_mark(repair):
+            if not reaction:
+                raise ResponseModelUnavailableError("question_missing_or_repeated")
+            return reaction, True
         question = reply_question(self._conversations.guard_reply(repair, goal))
         if not question or normalize_text(question) in asked_questions:
             raise ResponseModelUnavailableError("question_missing_or_repeated")
@@ -286,7 +322,7 @@ class ChatUseCases:
         result = f"{reaction} {question}".strip()
         if not reply_question(result):
             raise ResponseModelUnavailableError("question_not_renderable")
-        return result
+        return result, False
 
     async def create_session(
         self,
@@ -312,7 +348,7 @@ class ChatUseCases:
                 purpose="opening",
                 session_id=conversation_room_id,
             )
-            greeting = await self._ensure_reply_question(
+            greeting, _ = await self._ensure_reply_question(
                 greeting,
                 prepared.messages,
                 goal=ConversationGoal.OPENING,
@@ -353,7 +389,7 @@ class ChatUseCases:
                     purpose="reply",
                     session_id=session_id,
                 )
-                raw_reply = await self._ensure_reply_question(
+                raw_reply, ended = await self._ensure_reply_question(
                     raw_reply,
                     prepared.messages,
                     goal=prepared.decision.goal,
@@ -362,12 +398,13 @@ class ChatUseCases:
             except BaseException:
                 extraction.cancel()
                 raise
+            goal, completion_reason = _turn_goal(prepared.decision, ended)
             completed = await self._conversations.complete_turn(
                 state,
                 utterance=message,
                 raw_reply=raw_reply,
-                goal=prepared.decision.goal,
-                completion_reason=prepared.decision.completion_reason,
+                goal=goal,
+                completion_reason=completion_reason,
                 extraction=await extraction,
                 move=prepared.decision.move,
                 scene=prepared.decision.scene,
@@ -432,6 +469,7 @@ class ChatUseCases:
             reply_ms: float | None = None
             delta_count = 0
             outcome = "cancelled"
+            goal = prepared.decision.goal
             extraction = asyncio.create_task(self._conversations.extract(state, message))
             emitted = ""
             try:
@@ -448,15 +486,14 @@ class ChatUseCases:
                         yield ReplyDelta(stable[len(emitted) :])
                         emitted = stable
                 reply_ms = (time.monotonic() - started) * 1000
-                raw_reply = await self._ensure_reply_question(
+                raw_reply, ended = await self._ensure_reply_question(
                     raw_reply,
                     prepared.messages,
                     goal=prepared.decision.goal,
                     session_id=session_id,
                 )
-                if prepared.decision.goal != ConversationGoal.WRAP and raw_reply.startswith(
-                    emitted
-                ):
+                goal, completion_reason = _turn_goal(prepared.decision, ended)
+                if goal != ConversationGoal.WRAP and raw_reply.startswith(emitted):
                     remainder = raw_reply[len(emitted) :]
                     if remainder:
                         if first_delta_ms is None:
@@ -468,8 +505,8 @@ class ChatUseCases:
                     state,
                     utterance=message,
                     raw_reply=raw_reply,
-                    goal=prepared.decision.goal,
-                    completion_reason=prepared.decision.completion_reason,
+                    goal=goal,
+                    completion_reason=completion_reason,
                     extraction=await extraction,
                     move=prepared.decision.move,
                     scene=prepared.decision.scene,
@@ -507,7 +544,7 @@ class ChatUseCases:
                     session_id,
                     user_message_id,
                     self._response_model,
-                    prepared.decision.goal.value,
+                    goal.value,
                     outcome,
                     _rounded(first_token_ms),
                     _rounded(first_delta_ms),
