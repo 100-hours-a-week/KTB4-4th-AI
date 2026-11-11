@@ -98,9 +98,8 @@ def test_prepare_session_uses_room_as_session_id_and_records_safe_opening() -> N
     )
 
     assert prepared.state.session_id == 101
-    assert len(prepared.messages) == 3
     assert greeting.endswith("반가워요! 요즘 어떻게 지내세요?")
-    assert "숨은 취향" in greeting
+    assert greeting.startswith("안녕하세요, 니쥬에요~ 편하게 얘기해주세요!")
     assert prepared.state.history[0].content == greeting
     assert prepared.state.history[0].created_at == now
     assert prepared.state.turn_count == 0
@@ -354,21 +353,20 @@ def test_opening_topics_do_not_contain_each_other() -> None:
     assert not [(a, b) for a in topics for b in topics if a != b and a in b]
 
 
-def test_opening_combines_a_question_style_and_tells_today() -> None:
-    import random
+def test_opening_prompt_tells_today_in_korean_time() -> None:
     from datetime import UTC, datetime
 
-    from app.application.conversation_prompts import OPENING_QUESTION_STYLES, build_opening_messages
+    from app.application.conversation_prompts import build_opening_messages
+    from app.domain.profile.memory import OpeningAngle, OpeningHook
 
     # 10월 31일 23시(UTC)는 한국 기준 11월 1일이다.
     now = datetime(2026, 10, 31, 23, tzinfo=UTC)
-    for seed in range(50):
-        messages = build_opening_messages(rng=random.Random(seed), now=now)
-        assert sum(style in messages[1]["content"] for style in OPENING_QUESTION_STYLES) == 1
-        assert "오늘은 2026년 11월 1일이다." in messages[2]["content"]
-
-    returning = build_opening_messages(now=now, memory_topic="호빵")
-    assert "오늘은 2026년 11월 1일이다." in returning[2]["content"]
+    messages = build_opening_messages(now=now)
+    returning = build_opening_messages(
+        now=now, hook=OpeningHook(topic="호빵", angle=OpeningAngle.STATUS)
+    )
+    for opening in (messages, returning):
+        assert any("오늘은 2026년 11월 1일이다." in message["content"] for message in opening)
 
 
 def test_closing_reply_replaces_trailing_question_with_closing_message() -> None:
