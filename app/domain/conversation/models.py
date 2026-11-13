@@ -119,6 +119,10 @@ class ConversationState:
     # 턴을 기록한 뒤 종료로 판정되면 다음 턴을 마무리 턴으로 예약한다.
     # 그 턴의 질문은 이미 사용자에게 흘려보냈으므로 바꾸지 않고, 답을 받은 뒤 마무리한다.
     pending_wrap: CompletionReason | None = None
+    # 승인된 부하 테스트 계정의 대화. 최대 턴·종료 발화·자동 마무리로 입력을 잠그지 않는다.
+    turn_limits_waived: bool = False
+    # 부하 테스트 계정 중 모델·외부 API 대신 고정 응답을 쓰는 대화.
+    mock_model_calls: bool = False
     # 마지막으로 확정한 턴의 BE 사용자 메시지 ID. 같은 메시지 재요청이면 다시 생성하지 않는다.
     last_user_message_id: int | None = None
     # 대화방을 만들 때 BE가 보낸 온보딩 값. 이전 버전에서 만든 세션에는 없다.
@@ -178,6 +182,8 @@ class ConversationState:
             "used_scenes": list(self.used_scenes),
             "progress_floor": self.progress_floor,
             "pending_wrap": self.pending_wrap.value if self.pending_wrap else None,
+            "turn_limits_waived": self.turn_limits_waived,
+            "mock_model_calls": self.mock_model_calls,
             "last_user_message_id": self.last_user_message_id,
             "onboarding": self.onboarding.to_dict() if self.onboarding else None,
             "memory": self.memory.to_dict() if self.memory else None,
@@ -245,6 +251,8 @@ class ConversationState:
             used_scenes=list(payload.get("used_scenes", [])),
             progress_floor=int(payload.get("progress_floor", 0)),
             pending_wrap=CompletionReason(pending_wrap) if pending_wrap else None,
+            turn_limits_waived=bool(payload.get("turn_limits_waived", False)),
+            mock_model_calls=bool(payload.get("mock_model_calls", False)),
             last_user_message_id=(
                 int(payload["last_user_message_id"])
                 if payload.get("last_user_message_id") is not None
