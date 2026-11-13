@@ -135,11 +135,14 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
             ConversationGoal.WRAP,
             state.completion_reason or CompletionReason.USER_EXIT,
         )
+    # 부하 테스트 계정은 같은 문장을 계속 보내도 대화가 이어지도록 마무리 조건을 모두 건너뛴다.
+    # move 선택은 그대로 해서 응답 생성 경로는 일반 사용자와 같다.
+    waived = state.turn_limits_waived
     # 이번 발화가 마지막 턴이면 답변을 만들기 전에 마무리로 정한다.
     turns_after = state.turn_count + 1 if utterance else state.turn_count
-    if turns_after >= MAX_TURNS:
+    if not waived and turns_after >= MAX_TURNS:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.MAX_CYCLES)
-    if utterance and wants_to_exit(utterance):
+    if not waived and utterance and wants_to_exit(utterance):
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
 
     def chat(move: ConversationMove, scene: str | None = None) -> GoalDecision:
@@ -149,7 +152,7 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     # 최대 턴·명시적 종료는 위에서 처리하되, 준비 완료에 따른 종료는 한 턴 미룰 수 있다.
     if utterance and (corrects(utterance) or asks_back(utterance)):
         return chat(ConversationMove.FOLLOW)
-    if state.pending_wrap is not None:
+    if not waived and state.pending_wrap is not None:
         return GoalDecision(ConversationGoal.WRAP, state.pending_wrap)
 
     current: float | None = None
@@ -158,7 +161,7 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
         low_streak = state.low_energy_streak + 1 if current < LOW_ENERGY else 0
     else:
         low_streak = state.low_energy_streak
-    if low_streak >= COMPANION_WRAP_STREAK:
+    if not waived and low_streak >= COMPANION_WRAP_STREAK:
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.USER_EXIT)
 
     # 추천 준비 완료와 대화 종료는 별개다. 현재 발화를 듣기 전에 항목 개수로 닫지 않는다.
@@ -166,7 +169,12 @@ def decide_goal(state: ConversationState, utterance: str) -> GoalDecision:
     if context and context.source_turn != state.turn_count:
         context = None
     developing = bool(context and context.direction == ConversationDirection.DEVELOPING)
-    if not utterance and not developing and recommendation_readiness(state).sufficient:
+    if (
+        not waived
+        and not utterance
+        and not developing
+        and recommendation_readiness(state).sufficient
+    ):
         return GoalDecision(ConversationGoal.WRAP, CompletionReason.SUFFICIENT)
 
     last_move = state.last_move

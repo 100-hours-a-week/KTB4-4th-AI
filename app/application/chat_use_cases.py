@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from app.application.conversation_service import CompletedTurn, ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.llm_trace import bind_llm_session, llm_call
+from app.application.ports.fault_injection import (
+    ReplyDelayStore,
+    TestAccountConfig,
+    TestAccountStore,
+)
 from app.application.ports.model_gateway import ModelGateway
 from app.application.ports.session_lock import SessionLease, SessionLock
 from app.application.profile_keyword_prompts import KeywordSetPayload, build_keyword_messages
@@ -19,6 +24,7 @@ from app.application.search_intent_service import (
     intent_targets,
     onboarding_intent_targets,
 )
+from app.core.metrics import record_mock_reply, record_reply_delay
 from app.domain.conversation.guards import fix_summary_intro, reply_question, stable_reply_prefix
 from app.domain.conversation.models import (
     CompletionReason,
@@ -37,7 +43,7 @@ from app.domain.profile.keywords import (
 )
 from app.domain.profile.memory import LongTermMemory, combined_profile, merge_memory
 from app.domain.profile.merger import friend_summary_values, normalize_text, ranked_friend_signals
-from app.domain.profile.models import ProfileState, TasteField, utc_now
+from app.domain.profile.models import ExtractionDelta, ProfileState, TasteField, utc_now
 from app.domain.profile.onboarding import OnboardingProfile
 
 logger = logging.getLogger(__name__)
@@ -55,6 +61,31 @@ _END_MARK = "종료"
 
 def _is_end_mark(text: str) -> bool:
     return text.strip().strip("'\"`.!~ ") == _END_MARK
+
+
+# 부하 테스트 세션은 대화가 끝나지 않으므로 매 턴 읽고 쓰는 상태가 커지지 않게 최근 기록만 둔다.
+# 프롬프트는 최근 기록만 쓰므로(conversation_prompts.MAX_HISTORY_MESSAGES) 응답 경로는 같다.
+TEST_SESSION_HISTORY_LIMIT = 40
+
+# 부하 테스트 Mock 응답. 모델 응답처럼 여러 조각으로 흘려보내고 매 턴 다른 질문으로 끝낸다.
+MOCK_GREETING = "안녕하세요, 부하 테스트용 니쥬예요. 요즘 어떻게 지내세요?"
+
+
+def _mock_reply_chunks(turn: int) -> tuple[str, ...]:
+    return (
+        "테스트 응답이에요. ",
+        f"{turn}번째 이야기 고마워요. ",
+        f"{turn + 1}번째 이야기도 들려줄래요?",
+    )
+
+
+async def _no_extraction() -> tuple[ExtractionDelta, bool]:
+    return ExtractionDelta(), False
+
+
+def _trim_test_history(state: ConversationState) -> None:
+    if state.turn_limits_waived and len(state.history) > TEST_SESSION_HISTORY_LIMIT:
+        state.history = state.history[-TEST_SESSION_HISTORY_LIMIT:]
 
 
 def _turn_goal(
@@ -165,6 +196,9 @@ class ChatUseCases:
         summary_timeout_seconds: float = 10.0,
         search_intents: SearchIntentService | None = None,
         keyword_model: str | None = None,
+        reply_delay: ReplyDelayStore | None = None,
+        reply_delay_max_seconds: float = 10.0,
+        test_accounts: TestAccountStore | None = None,
     ) -> None:
         """search_intents 가 있으면 새로 들어온 관심사의 검색 의도를 백그라운드로 만들어 둔다.
 
@@ -183,6 +217,74 @@ class ChatUseCases:
         self._summary_timeout_seconds = summary_timeout_seconds
         self._session_lock = session_lock
         self._lock_wait_seconds = lock_wait_seconds
+        self._reply_delay = reply_delay
+        self._reply_delay_max_seconds = reply_delay_max_seconds
+        self._test_accounts = test_accounts
+
+    async def _injected_reply_delay(self, *, session_id: int, user_id: int) -> float:
+        """부하·장애 테스트용 지연 시간. 설정이 없거나 읽지 못하면 0이라 평소 요청은 그대로 간다."""
+        if self._reply_delay is None:
+            return 0.0
+        try:
+            config = await self._reply_delay.get()
+        except Exception:
+            logger.warning("reply delay config read failed: session=%s", session_id, exc_info=True)
+            return 0.0
+        if config is None:
+            return 0.0
+        return min(
+            config.delay_for(session_id=session_id, user_id=user_id),
+            self._reply_delay_max_seconds,
+        )
+
+    async def _delay_reply_for_test(self, *, session_id: int, user_id: int) -> None:
+        delay = await self._injected_reply_delay(session_id=session_id, user_id=user_id)
+        if delay > 0:
+            logger.info("fault injection: reply delay session=%s delay_s=%s", session_id, delay)
+            record_reply_delay(delay)
+            await asyncio.sleep(delay)
+
+    async def _test_account(self, *, session_id: int, user_id: int) -> TestAccountConfig | None:
+        """user_id가 승인된 부하 테스트 계정이면 그 설정. 목록을 읽지 못하면 일반 사용자로 본다."""
+        if self._test_accounts is None:
+            return None
+        try:
+            config = await self._test_accounts.get()
+        except Exception:
+            logger.warning("test account list read failed: session=%s", session_id, exc_info=True)
+            return None
+        if config is None or user_id not in config.user_ids:
+            return None
+        return config
+
+    @staticmethod
+    def _mark_test_session(state: ConversationState, config: TestAccountConfig) -> None:
+        state.turn_limits_waived = True
+        state.mock_model_calls = config.mock_model
+        logger.info(
+            "load test account: session=%s user=%s mock_model=%s",
+            state.session_id,
+            state.user_id,
+            config.mock_model,
+        )
+
+    async def _apply_test_account_policy(self, state: ConversationState, user_id: int) -> None:
+        """승인된 부하 테스트 계정이면 이 세션의 턴 제한과 자동 마무리를 끄고 Mock 여부를 정한다.
+
+        한 번 정하면 세션 상태에 남아서 계정 목록이 만료돼도 그 세션은 끝까지 같은 정책을 쓴다.
+        """
+        if state.turn_limits_waived:
+            return
+        config = await self._test_account(session_id=state.session_id, user_id=user_id)
+        if config is not None:
+            self._mark_test_session(state, config)
+
+    async def _mock_reply(self, state: ConversationState, *, user_id: int) -> AsyncIterator[str]:
+        """모델 대신 고정 응답을 흘려보낸다. 응답 지연 설정은 실제 모델 호출과 똑같이 받는다."""
+        await self._delay_reply_for_test(session_id=state.session_id, user_id=user_id)
+        record_mock_reply("reply")
+        for chunk in _mock_reply_chunks(state.turn_count + 1):
+            yield chunk
 
     def _prepare_intents(self, completed: CompletedTurn) -> None:
         """이번 턴에 저장된 관심사의 검색 의도를 만든다. 세션 종료 때 추천이 캐시를 읽는다."""
@@ -263,12 +365,16 @@ class ChatUseCases:
         *,
         goal: ConversationGoal,
         session_id: int,
+        lenient: bool = False,
     ) -> tuple[str, bool]:
         """질문이 빠졌거나 반복된 응답에 질문을 보완한다. 두 번째 값은 니쥬가 대화를 마쳤는지다.
 
         니쥬가 방금 응답에서 대화를 마치겠다고 했으면 질문을 붙이지 않고 마무리 턴으로 바꾼다.
         사용자 말의 표현이 아니라 니쥬 응답을 보고 판단하므로, 사용자가 공부나 관계를
         그만두고 싶다는 이야기는 니쥬가 질문을 이어 가는 한 종료로 보지 않는다.
+
+        lenient면(부하 테스트 계정) 보완해도 질문이 빠지거나 반복될 때 실패하지 않고 원래
+        응답을 쓴다. 같은 문장을 반복해서 보내는 테스트가 응답 품질 검사로 끊기지 않게 한다.
         """
         cleaned = self._conversations.guard_reply(reply, goal)
         if goal == ConversationGoal.WRAP:
@@ -312,15 +418,21 @@ class ChatUseCases:
         )
         if goal != ConversationGoal.OPENING and _is_end_mark(repair):
             if not reaction:
+                if lenient:
+                    return cleaned, False
                 raise ResponseModelUnavailableError("question_missing_or_repeated")
             return reaction, True
         question = reply_question(self._conversations.guard_reply(repair, goal))
         if not question or normalize_text(question) in asked_questions:
+            if lenient:
+                return cleaned, False
             raise ResponseModelUnavailableError("question_missing_or_repeated")
         if reaction and reaction[-1] not in ".!~ㅎㅠ":
             reaction += "."
         result = f"{reaction} {question}".strip()
         if not reply_question(result):
+            if lenient:
+                return cleaned, False
             raise ResponseModelUnavailableError("question_not_renderable")
         return result, False
 
@@ -342,22 +454,35 @@ class ChatUseCases:
                 onboarding=onboarding,
                 memory=memory,
             )
-            greeting = await self._complete(
-                prepared.messages,
-                timeout_seconds=self._response_timeout_seconds,
-                purpose="opening",
-                session_id=conversation_room_id,
+            test_account = await self._test_account(
+                session_id=conversation_room_id, user_id=user_id
             )
-            greeting, _ = await self._ensure_reply_question(
-                greeting,
-                prepared.messages,
-                goal=ConversationGoal.OPENING,
-                session_id=conversation_room_id,
-            )
+            if test_account is not None:
+                self._mark_test_session(prepared.state, test_account)
+            if prepared.state.mock_model_calls:
+                greeting = MOCK_GREETING
+                record_mock_reply("opening")
+            else:
+                greeting = await self._complete(
+                    prepared.messages,
+                    timeout_seconds=self._response_timeout_seconds,
+                    purpose="opening",
+                    session_id=conversation_room_id,
+                )
+                greeting, _ = await self._ensure_reply_question(
+                    greeting,
+                    prepared.messages,
+                    goal=ConversationGoal.OPENING,
+                    session_id=conversation_room_id,
+                )
             greeting = self._conversations.record_opening(prepared.state, greeting)
             await self._ensure_held(lease, conversation_room_id)
             await self._states.save(prepared.state)
-            if self._search_intents is not None and onboarding is not None:
+            if (
+                self._search_intents is not None
+                and onboarding is not None
+                and not prepared.state.mock_model_calls
+            ):
                 self._search_intents.schedule(onboarding_intent_targets(onboarding.interests))
             return StartedSession(state=prepared.state, greeting=greeting)
 
@@ -374,31 +499,46 @@ class ChatUseCases:
             if state is None or state.user_id != user_id:
                 raise SessionNotFoundError(session_id)
             self._validate_sendable(state)
+            await self._apply_test_account_policy(state, user_id)
 
             prepared = self._conversations.prepare_turn(
                 state,
                 message,
             )
+            mock = state.mock_model_calls
             # 추출은 응답 결과를 쓰지 않으므로 응답 생성과 동시에 시작한다.
             # 한 턴의 시간은 둘의 합이 아니라 더 오래 걸리는 쪽이 된다.
-            extraction = asyncio.create_task(self._conversations.extract(state, message))
+            extraction = asyncio.create_task(
+                _no_extraction() if mock else self._conversations.extract(state, message)
+            )
             try:
-                raw_reply = await self._complete(
-                    prepared.messages,
-                    timeout_seconds=self._response_timeout_seconds,
-                    purpose="reply",
-                    session_id=session_id,
-                )
-                raw_reply, ended = await self._ensure_reply_question(
-                    raw_reply,
-                    prepared.messages,
-                    goal=prepared.decision.goal,
-                    session_id=session_id,
-                )
+                if mock:
+                    chunks = [chunk async for chunk in self._mock_reply(state, user_id=user_id)]
+                    raw_reply = self._conversations.guard_reply(
+                        "".join(chunks), prepared.decision.goal
+                    )
+                    ended = False
+                else:
+                    await self._delay_reply_for_test(session_id=session_id, user_id=user_id)
+                    raw_reply = await self._complete(
+                        prepared.messages,
+                        timeout_seconds=self._response_timeout_seconds,
+                        purpose="reply",
+                        session_id=session_id,
+                    )
+                    raw_reply, ended = await self._ensure_reply_question(
+                        raw_reply,
+                        prepared.messages,
+                        goal=prepared.decision.goal,
+                        session_id=session_id,
+                        lenient=state.turn_limits_waived,
+                    )
             except BaseException:
                 extraction.cancel()
                 raise
-            goal, completion_reason = _turn_goal(prepared.decision, ended)
+            goal, completion_reason = _turn_goal(
+                prepared.decision, ended and not state.turn_limits_waived
+            )
             completed = await self._conversations.complete_turn(
                 state,
                 utterance=message,
@@ -409,9 +549,11 @@ class ChatUseCases:
                 move=prepared.decision.move,
                 scene=prepared.decision.scene,
             )
+            _trim_test_history(completed.state)
             await self._ensure_held(lease, session_id)
             await self._states.save(completed.state)
-            self._prepare_intents(completed)
+            if not mock:
+                self._prepare_intents(completed)
             return completed
 
     async def find_confirmed_turn(
@@ -459,6 +601,7 @@ class ChatUseCases:
                 yield ConfirmedTurn(state)
                 return
             self._validate_sendable(state)
+            await self._apply_test_account_policy(state, user_id)
 
             prepared = self._conversations.prepare_turn(state, message)
             # 질문 누락·반복을 고쳐도 이미 보낸 반응은 바뀌지 않도록 질문 문장을 보류한다.
@@ -470,11 +613,19 @@ class ChatUseCases:
             delta_count = 0
             outcome = "cancelled"
             goal = prepared.decision.goal
-            extraction = asyncio.create_task(self._conversations.extract(state, message))
+            mock = state.mock_model_calls
+            extraction = asyncio.create_task(
+                _no_extraction() if mock else self._conversations.extract(state, message)
+            )
+            reply_tokens = (
+                self._mock_reply(state, user_id=user_id)
+                if mock
+                else self._stream_reply(prepared.messages, session_id=session_id, user_id=user_id)
+            )
             emitted = ""
             try:
                 raw_reply = ""
-                async for token in self._stream_reply(prepared.messages, session_id=session_id):
+                async for token in reply_tokens:
                     if first_token_ms is None:
                         first_token_ms = (time.monotonic() - started) * 1000
                     raw_reply += token
@@ -486,13 +637,20 @@ class ChatUseCases:
                         yield ReplyDelta(stable[len(emitted) :])
                         emitted = stable
                 reply_ms = (time.monotonic() - started) * 1000
-                raw_reply, ended = await self._ensure_reply_question(
-                    raw_reply,
-                    prepared.messages,
-                    goal=prepared.decision.goal,
-                    session_id=session_id,
+                if mock:
+                    raw_reply = self._conversations.guard_reply(raw_reply, prepared.decision.goal)
+                    ended = False
+                else:
+                    raw_reply, ended = await self._ensure_reply_question(
+                        raw_reply,
+                        prepared.messages,
+                        goal=prepared.decision.goal,
+                        session_id=session_id,
+                        lenient=state.turn_limits_waived,
+                    )
+                goal, completion_reason = _turn_goal(
+                    prepared.decision, ended and not state.turn_limits_waived
                 )
-                goal, completion_reason = _turn_goal(prepared.decision, ended)
                 if goal != ConversationGoal.WRAP and raw_reply.startswith(emitted):
                     remainder = raw_reply[len(emitted) :]
                     if remainder:
@@ -512,9 +670,11 @@ class ChatUseCases:
                     scene=prepared.decision.scene,
                 )
                 completed.state.last_user_message_id = user_message_id
+                _trim_test_history(completed.state)
                 await self._ensure_held(lease, session_id)
                 await self._states.save(completed.state)
-                self._prepare_intents(completed)
+                if not mock:
+                    self._prepare_intents(completed)
 
                 if completed.reply.startswith(emitted):
                     if len(completed.reply) > len(emitted):
@@ -543,7 +703,7 @@ class ChatUseCases:
                     "first_token_ms=%s first_delta_ms=%s reply_ms=%s total_ms=%d deltas=%d",
                     session_id,
                     user_message_id,
-                    self._response_model,
+                    "mock" if mock else self._response_model,
                     goal.value,
                     outcome,
                     _rounded(first_token_ms),
@@ -553,8 +713,13 @@ class ChatUseCases:
                     delta_count,
                 )
 
-    async def _stream_reply(self, messages, *, session_id: int) -> AsyncIterator[str]:
-        """응답 모델 스트림. 실패는 _complete와 같은 기준으로 로그를 남기고 바꾼다."""
+    async def _stream_reply(self, messages, *, session_id: int, user_id: int) -> AsyncIterator[str]:
+        """응답 모델 스트림. 실패는 _complete와 같은 기준으로 로그를 남기고 바꾼다.
+
+        테스트용 지연은 응답 제한 시간과 모델 호출 추적 바깥에서 건다. 그래야 지연이 응답
+        제한 시간을 잡아먹지 않고, Langfuse의 모델 지연 시간에도 섞이지 않는다.
+        """
+        await self._delay_reply_for_test(session_id=session_id, user_id=user_id)
         started = time.monotonic()
         try:
             async with asyncio.timeout(self._response_timeout_seconds):

@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     chat_session_lock_wait_seconds: float = Field(default=20.0, ge=0)
     # 관심사별 검색 의도를 추출 모델로 만들어 Redis에 캐시한다. 끄면 추천은 템플릿 쿼리만 쓴다.
     search_intent_enabled: bool = True
+    # 부하·장애 테스트용 응답 지연. 켜면 Redis 키(needu:fault:reply-delay)에 지정한 사용자·세션의
+    # 응답 스트림만 늦추고, 설정은 /v1/internal/fault/reply-delay 로 재배포 없이 바꾼다.
+    # 꺼 두면 키가 있어도 읽지 않는다.
+    fault_injection_enabled: bool = False
+    fault_injection_max_delay_seconds: float = Field(default=10.0, gt=0, le=60)
     ai_database_url: str | None = None
 
     # 백엔드 MySQL 원본. 같은 EC2에 있으면 127.0.0.1 로 붙는다.

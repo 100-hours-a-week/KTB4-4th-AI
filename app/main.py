@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -16,6 +17,7 @@ from app.application.conversation_service import ConversationService
 from app.application.conversation_state_store import ConversationStateStore
 from app.application.ports.catalog_repository import CatalogRepository
 from app.application.ports.embedder import Embedder
+from app.application.ports.fault_injection import ReplyDelayStore, TestAccountStore
 from app.application.ports.judgment_gateway import JudgmentGateway
 from app.application.ports.model_gateway import ModelGateway
 from app.application.ports.recommendation_service import RecommendationService
@@ -28,6 +30,7 @@ from app.application.search_intent_service import SearchIntentService
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
+from app.core.metrics import PrometheusMiddleware, metrics_endpoint
 from app.core.middleware import RequestIdMiddleware
 from app.infrastructure.embedding import OpenAICompatibleEmbedder
 from app.infrastructure.model_gateway import (
@@ -43,6 +46,14 @@ from app.infrastructure.persistence import (
     RedisSessionLock,
     RedisSessionStore,
 )
+from app.infrastructure.persistence.redis_fault_injection import (
+    InMemoryReplyDelayStore,
+    InMemoryTestAccountStore,
+    RedisReplyDelayStore,
+    RedisTestAccountStore,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _secret_value(secret: SecretStr | None) -> str | None:
@@ -256,6 +267,28 @@ def create_app(
                 timeout_seconds=resolved_settings.extraction_model_timeout_seconds,
             )
 
+        # 부하·장애 테스트용 응답 지연. 꺼져 있으면 설정을 읽지 않고 제어 API도 404다.
+        reply_delay_store: ReplyDelayStore | None = None
+        test_account_store: TestAccountStore | None = None
+        if resolved_settings.fault_injection_enabled:
+            reply_delay_store = (
+                RedisReplyDelayStore(redis_client)
+                if redis_client is not None
+                else InMemoryReplyDelayStore()
+            )
+            test_account_store = (
+                RedisTestAccountStore(redis_client)
+                if redis_client is not None
+                else InMemoryTestAccountStore()
+            )
+            logger.warning(
+                "fault injection enabled: max_delay_s=%s store=%s",
+                resolved_settings.fault_injection_max_delay_seconds,
+                type(reply_delay_store).__name__,
+            )
+        application.state.reply_delay_store = reply_delay_store
+        application.state.test_account_store = test_account_store
+
         state_store = ConversationStateStore(
             resolved_session_store,
             idle_ttl_seconds=resolved_settings.chat_session_idle_ttl_seconds,
@@ -281,6 +314,9 @@ def create_app(
             summary_timeout_seconds=resolved_settings.summary_model_timeout_seconds,
             search_intents=resolved_intents,
             keyword_model=resolved_settings.extraction_model_name,
+            reply_delay=reply_delay_store,
+            reply_delay_max_seconds=resolved_settings.fault_injection_max_delay_seconds,
+            test_accounts=test_account_store,
         )
         resolved_recommendation_service = recommendation_service
         resolved_catalog = catalog_repository
@@ -361,8 +397,12 @@ def create_app(
     )
     application.state.settings = resolved_settings
     application.add_middleware(RequestIdMiddleware)
+    # 가장 바깥에 둬서 다른 미들웨어 시간까지 포함한 요청 처리 시간을 잰다.
+    application.add_middleware(PrometheusMiddleware)
     register_exception_handlers(application)
     application.include_router(api_router)
+    # Prometheus 수집용. 인증 없이 열고 API 문서에는 넣지 않는다.
+    application.add_route("/metrics", metrics_endpoint, include_in_schema=False)
     return application
 
 

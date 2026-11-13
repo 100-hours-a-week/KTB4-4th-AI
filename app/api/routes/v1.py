@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends
 
 from app.api.routes.v1_catalog import router as catalog_router
 from app.api.routes.v1_chat import router as chat_router
+from app.api.routes.v1_internal_fault import router as fault_router
 from app.core.security import require_service_token
 
 router = APIRouter(dependencies=[Depends(require_service_token)])
 router.include_router(chat_router, prefix="/chat", tags=["chat"])
 router.include_router(catalog_router, prefix="/catalog", tags=["catalog"])
+router.include_router(fault_router, prefix="/internal/fault", tags=["internal"])
