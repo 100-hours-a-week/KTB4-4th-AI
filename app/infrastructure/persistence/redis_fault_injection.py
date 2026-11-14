@@ -84,7 +84,13 @@ class InMemoryReplyDelayStore:
 
 
 def _encode_accounts(config: TestAccountConfig) -> str:
-    return json.dumps({"user_ids": sorted(config.user_ids), "mock_model": config.mock_model})
+    return json.dumps(
+        {
+            "user_ids": sorted(config.user_ids),
+            "mock_model": config.mock_model,
+            "mock_opening": config.mock_opening,
+        }
+    )
 
 
 def _decode_accounts(raw: str) -> TestAccountConfig:
@@ -93,13 +99,14 @@ def _decode_accounts(raw: str) -> TestAccountConfig:
         user_ids=frozenset(int(value) for value in body.get("user_ids", [])),
         # 키를 직접 넣을 때 빠뜨려도 비용이 드는 쪽으로 가지 않게 기본은 Mock이다.
         mock_model=bool(body.get("mock_model", True)),
+        mock_opening=bool(body.get("mock_opening", False)),
     )
 
 
 class RedisTestAccountStore:
     """부하 테스트 계정 설정을 Redis 키 하나에 둔다.
 
-    SET needu:fault:test-accounts '{"user_ids":[1,2,3],"mock_model":true}' EX 7200
+    SET needu:fault:test-accounts '{"user_ids":[1],"mock_model":false,"mock_opening":true}' EX 7200
     """
 
     def __init__(self, client: Redis, *, key: str = TEST_ACCOUNTS_KEY) -> None:
