@@ -39,12 +39,17 @@ class TestAccountConfig:
 
     mock_model이면 모델·외부 API를 부르지 않고 고정 응답을 돌려준다. 끄면 실제 모델(RunPod)을
     부른다. 응답 지연과 따로 둬서, 지연은 장애 구간에만 켜고 계정 정책은 테스트 내내 유지한다.
+
+    mock_opening이면 mock_model이 꺼져 있어도 세션 생성 때 첫인사만 고정 문구로 채운다.
+    대화방을 미리 대량으로 만들 때 RunPod에 첫인사 호출이 몰리지 않게 하고, 메시지 응답은
+    실제 모델로 부하를 건다.
     """
 
     __test__ = False
 
     user_ids: frozenset[int]
     mock_model: bool = True
+    mock_opening: bool = False
 
 
 class TestAccountStore(Protocol):
