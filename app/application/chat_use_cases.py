@@ -459,7 +459,10 @@ class ChatUseCases:
             )
             if test_account is not None:
                 self._mark_test_session(prepared.state, test_account)
-            if prepared.state.mock_model_calls:
+            # 부하 테스트 계정은 첫인사만 Mock으로 둘 수 있다.
+            # 메시지 응답은 mock_model_calls를 따른다.
+            mock_opening = test_account is not None and test_account.mock_opening
+            if prepared.state.mock_model_calls or mock_opening:
                 greeting = MOCK_GREETING
                 record_mock_reply("opening")
             else:

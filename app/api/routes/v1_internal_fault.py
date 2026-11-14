@@ -99,6 +99,8 @@ class TestAccountsRequest(ApiModel):
     user_ids: list[int] = Field(min_length=1, max_length=100000)
     # true면 모델·외부 API 대신 고정 응답을 쓴다. false면 실제 모델(RunPod)을 부른다.
     mock_model: bool = True
+    # true면 mockModel이 false여도 세션 생성 때 첫인사만 고정 문구로 채운다(모델 호출 없음).
+    mock_opening: bool = False
     # 테스트 내내 유지하도록 기본 2시간, 최대 12시간.
     # 이미 정책이 켜진 세션은 목록이 만료돼도 그대로 유지된다.
     ttl_seconds: int = Field(default=7200, ge=60, le=43200)
@@ -110,6 +112,7 @@ class TestAccountsResponse(ApiModel):
     active: bool
     user_count: int
     mock_model: bool | None = None
+    mock_opening: bool | None = None
     expires_in_seconds: int | None = None
 
 
@@ -133,6 +136,7 @@ async def _current_accounts(store: TestAccountStore) -> TestAccountsResponse:
         active=True,
         user_count=len(config.user_ids),
         mock_model=config.mock_model,
+        mock_opening=config.mock_opening,
         expires_in_seconds=await store.ttl_seconds(),
     )
 
@@ -146,7 +150,11 @@ async def get_test_accounts(request: Request) -> TestAccountsResponse:
 async def set_test_accounts(body: TestAccountsRequest, request: Request) -> TestAccountsResponse:
     store = _accounts(request)
     await store.set(
-        TestAccountConfig(user_ids=frozenset(body.user_ids), mock_model=body.mock_model),
+        TestAccountConfig(
+            user_ids=frozenset(body.user_ids),
+            mock_model=body.mock_model,
+            mock_opening=body.mock_opening,
+        ),
         ttl_seconds=body.ttl_seconds,
     )
     return await _current_accounts(store)

@@ -303,6 +303,57 @@ def test_account_config_round_trip() -> None:
     assert _decode_accounts(_encode_accounts(config)) == config
     # 직접 넣을 때 mock_model을 빠뜨리면 비용이 들지 않는 Mock으로 본다.
     assert _decode_accounts('{"user_ids": [1]}').mock_model is True
+    assert _decode_accounts('{"user_ids": [1]}').mock_opening is False
+    opening_only = TestAccountConfig(user_ids=frozenset({1}), mock_model=False, mock_opening=True)
+    assert _decode_accounts(_encode_accounts(opening_only)) == opening_only
+
+
+def test_mock_opening_skips_only_greeting_model_call() -> None:
+    class OpeningForbiddenGateway(StreamGateway):
+        async def complete(self, messages, *, model: str) -> str:
+            raise AssertionError("opening model called")
+
+    gateway = OpeningForbiddenGateway()
+    app = make_app(gateway=gateway)
+    with TestClient(app) as client:
+        put = client.put(
+            ACCOUNTS_URL,
+            headers=HEADERS,
+            json={"userIds": [1], "mockModel": False, "mockOpening": True},
+        )
+        assert put.json()["mockModel"] is False
+        assert put.json()["mockOpening"] is True
+        created = client.post(
+            "/v1/chat/sessions",
+            headers=HEADERS,
+            json={"userId": 1, "conversationRoomId": 9001},
+        )
+        assert created.status_code == 201, created.json()
+        assert created.json()["greeting"].endswith(chat_use_cases.MOCK_GREETING)
+        events, _ = parse_sse(stream(client, 1).text)
+
+    # 첫인사는 모델을 부르지 않고, 메시지 응답은 실제 모델 스트림을 탄다.
+    assert events[-1][0] == "completed", events[-1]
+    assert gateway.stream_calls == 1
+    state = asyncio.run(app.state.conversation_state_store.load(9001))
+    assert state.mock_model_calls is False
+
+
+def test_normal_user_still_gets_model_greeting_when_mock_opening_on() -> None:
+    with TestClient(make_app()) as client:
+        client.put(
+            ACCOUNTS_URL,
+            headers=HEADERS,
+            json={"userIds": [2], "mockModel": False, "mockOpening": True},
+        )
+        created = client.post(
+            "/v1/chat/sessions",
+            headers=HEADERS,
+            json={"userId": 1, "conversationRoomId": 9001},
+        )
+
+    assert created.status_code == 201, created.json()
+    assert chat_use_cases.MOCK_GREETING not in created.json()["greeting"]
 
 
 def test_mock_account_never_calls_model() -> None:
